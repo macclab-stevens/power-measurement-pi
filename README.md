@@ -260,3 +260,90 @@ the later predictor are unchanged.
 3. **Power-prediction model**: features = op class, tensor shapes, MACs, params,
    arm freq, temp, thread count, backend; target = `P_delta_W` / `E_per_call_mJ`.
    The dataset schema (§7) is designed for this.
+
+---
+
+## 11. Long-duration collection (`collect.py`)
+
+`collect.py` runs the full capture pipeline **repeatedly** so you can leave the
+Pi collecting per-layer / per-op power data unattended for hours.
+
+### Usage
+```bash
+cd /home/macc2026/Desktop/pi_power_measurement
+uv run python collect.py --hours 6                        # 6 hours, default cycle
+uv run python collect.py --runs 50                        # fixed number of cycles
+uv run python collect.py --hours 8 --frames 40 --bench 5 --warmup 10 --conf 0.25
+```
+
+### Flags (forwarded to `src/run.py` per cycle)
+| Flag | Default | Meaning |
+|---|---|---|
+| `--hours` | 0 | stop after this many hours (0 = no time budget) |
+| `--runs` | 0 | stop after this many cycles (0 = no count budget; give at least one) |
+| `--frames` | 30 | detection frames per cycle |
+| `--bench` | 3.0 | seconds per isolated op benchmark per cycle |
+| `--warmup` | 10 | warm-up inference passes before baseline per cycle |
+| `--conf` | 0.25 | detection confidence threshold |
+| `--imgsz` | 640 | inference input size |
+| `--threads` | 4 | torch threads |
+| `--weights` | `yolo11n.pt` | model to run (swap freely) |
+| `--cooldown` | 8.0 | seconds idle between cycles (heat/DVFS settle) |
+| `--max-fail` | 1 | consecutive failed cycles before aborting |
+| `--out` | `runs` | output base directory |
+
+### How it works
+Each cycle is an **isolated `src/run.py` subprocess** (fresh camera, sampler,
+model). That means hours of collection never accumulate memory or drift, and one
+bad cycle cannot take down the rest. It honors whichever budget (`--hours` or
+`--runs`) you set and stops cleanly.
+
+### Outputs (under `runs/`)
+- `collect_report.csv` — one row per cycle: `cycle, started, duration_s,
+  returncode, outdir, fps, baseline_W, hz, layer_rows, op_rows, perop_rows,
+  skipped, best_conf`. This is the run-level overview to build the training
+  table from.
+- `collect.log` — full collector log + per-cycle status (OK/FAILED + stdout tail).
+- `<ts>/` — the full normal dataset for every cycle (see §7).
+
+### Practical notes
+- **Put a recognisable object in front of the camera** (COCO class preferred).
+  If nothing is detected, a cycle fails acceptance (`best_conf 0.000`) and counts
+  toward `--max-fail`. Detection now handles the empty-frame case cleanly
+  (`Detector.max_conf` returns 0.0).
+- Throughput: a `--frames 30 --bench 3` cycle takes ~4–5 min, so `--hours 6`
+  yields ~70 cycles (~70 datasets). For "tons of data" just raise the hours.
+- Data grows fast (≈1.5 MB samples.csv per cycle) but is gitignored — archive
+  `runs/` separately if you need to keep it.
+
+---
+
+## 12. Git & version control (local repo, no remote)
+
+The project is a **git repository on the Pi** at
+`/home/macc2026/Desktop/pi_power_measurement` — created locally and **not pushed
+to any remote**.
+
+### Current state
+```
+01ef510 gitignore: ignore redownloadable yolo weights (*.pt)
+e80bae4 YOLO11n Pi-5 power harness: per-layer/per-op power data collection
+```
+
+### What is / isn't tracked
+- **Tracked:** `src/` (cam, detector, layers, microbench, powersampler, run),
+  `collect.py`, `analyze_trends.py`, `verify.py`, `README.md`, `pyproject.toml`,
+  `uv.lock`, `.gitignore`.
+- **Ignored (`.gitignore`):** `runs/` (raw datasets — stay on disk, out of git),
+  `.venv/`, `*.pt` (redownloadable weights), `*.log`, `__pycache__/`, `.DS_Store`.
+
+### Everyday commands
+```bash
+git status                 # what changed
+git log --oneline          # commit history
+git add <files>            # stage changes (e.g. git add src/run.py)
+git commit -m "description"
+git diff                   # review unstaged changes
+```
+Data and weights are intentionally kept out of git; code + tooling + docs are
+the tracked artifacts. `runs/` is the thing to archive/back up on its own.
