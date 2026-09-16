@@ -1,15 +1,20 @@
 """Per-operation steady-state power via isolated microbenchmarks.
 
-For each unique leaf-module config (config_id) found by LayerProfiler:
-- allocate inputs ONCE outside the timed loop (cache-hot steady state),
+For each unique leaf MEASUREMENT config (config_id = op + attrs + input
+shapes + dtypes) found by LayerProfiler:
+- replay inputs ONCE outside the timed loop (cache-hot; dtype-aware; zeros for
+  int-index/bool-mask args so values are legal, empty for floats),
 - deepcopy the actual module instance (identical semantics),
 - loop it for ~bench_s, sampling VDD_CORE power the whole time,
 - P_delta = P_mean - idle baseline; E_per_call = P_delta * t_per_call.
 
 Windows below `require_samples` are retried (+1 s, up to 2 times). Any
-module that cannot be benchmarked (input alloc or forward failure after
-warmup) is emitted as a SKIPPED row — run.py treats SKIPPED as fatal so a
-dataset is never silently missing its highest-value ops.
+config that cannot be benchmarked is a SKIPPED row — run.py treats SKIPPED as
+fatal so a dataset is never silently missing its highest-value ops.
+
+Input reconstruction supports tensor / list (Concat) / const / multi-tensor
+args and int64/bool dtypes, so LM embedding indices, boolean masks and
+nn.MultiheadAttention-style multi-tensor leaves replay instead of skipping.
 """
 from __future__ import annotations
 
@@ -19,22 +24,43 @@ import time
 import torch
 
 
-def _alloc_inputs(entry: dict) -> list:
-    """Build fresh tensors for one forward call, matching recorded shapes/kind."""
-    if entry["input_kind"] == "list":
-        return [torch.empty(tuple(s), dtype=torch.float32) for s in entry["input_shapes"]]
-    if entry["input_kind"] == "tensor":
-        (s,) = entry["input_shapes"]
-        return [torch.empty(tuple(s), dtype=torch.float32)]
-    raise ValueError(f"unsupported input_kind={entry['input_kind']} for {entry['class']}")
+def _alloc(shape, dtype, value):
+    # dtype is stored as str(t.dtype) = "torch.float32" -> take the tail
+    dt = getattr(torch, str(dtype).rsplit(".", 1)[-1]) if dtype else torch.float32
+    if value == "zeros":
+        return torch.zeros(tuple(shape), dtype=dt)
+    return torch.empty(tuple(shape), dtype=dt)
 
 
-def _forward(mod, entry: dict, ins: list):
-    """Call the module with the input shape it actually receives:
-    list-kind modules (e.g. Concat) take one list arg, not splatted tensors."""
-    if entry["input_kind"] == "list":
-        return mod(ins)
-    return mod(*ins)
+def _replay_args(rec: dict) -> list:
+    """Rebuild the exact positional arg list for one forward call."""
+    out = []
+    for a in rec.get("args", []):
+        k = a["k"]
+        if k == "tensor":
+            out.append(_alloc(a["shape"], a.get("dtype"), a.get("value", "empty")))
+        elif k == "const":
+            out.append(a["v"])
+        elif k == "list":
+            sub = []
+            for s in a.get("sub", []):
+                if s.get("k") == "tensor":
+                    sub.append(_alloc(s["shape"], s.get("dtype"), s.get("value", "empty")))
+                else:
+                    sub.append(s.get("v"))
+            out.append(sub)
+        elif k == "dict":
+            out.append(a.get("v", {}))
+        else:
+            raise ValueError(f"unhandled arg kind {k}")
+    return out
+
+
+def _forward(mod, args: list):
+    """list-kind modules (Concat) take one list arg, not splatted tensors."""
+    if len(args) == 1 and isinstance(args[0], list):
+        return mod(args[0])
+    return mod(*args)
 
 
 def _skip(entry: dict, reason: str, err: Exception) -> dict:
@@ -42,8 +68,9 @@ def _skip(entry: dict, reason: str, err: Exception) -> dict:
         "config_id": entry["config_id"],
         "class": entry["class"],
         "config_json": entry["config_json"],
-        "input_kind": entry["input_kind"],
+        "input_kind": "multi",
         "input_shapes": entry["input_shapes"],
+        "macs": entry.get("macs"), "bytes_moved": entry.get("bytes_moved"),
         "window_s": None, "N_calls": 0, "t_per_call_ms": None,
         "P_mean_W": None, "P_delta_W": None, "E_per_call_mJ": None,
         "temp_start_C": None, "temp_end_C": None,
@@ -55,18 +82,14 @@ def _skip(entry: dict, reason: str, err: Exception) -> dict:
 
 def bench_configs(profiler, sampler, baseline_W, bench_s, require_samples=30,
                   max_retries=2, log=None):
-    """Benchmark every leaf config; returns list of perop_power rows.
-
-    `log(message)` (if given) emits one human-readable line per op so the run
-    visibly reports which layer/op is being worked on and its measured power.
-    """
+    """Benchmark every leaf config; returns list of perop_power rows."""
     rows = []
     items = list(profiler.leaf_configs().items())
     total = len(items)
     for i, (cid, entry) in enumerate(items, 1):
         if log:
             log(f"bench [{i}/{total}] {entry['class']} {entry['config_id']} "
-                f"shapes={entry['input_shapes']} kind={entry['input_kind']}")
+                f"shapes={entry['input_shapes']}")
         rows.append(_bench_one(entry, sampler, baseline_W, bench_s,
                                require_samples, max_retries, log))
     return rows
@@ -74,7 +97,7 @@ def bench_configs(profiler, sampler, baseline_W, bench_s, require_samples=30,
 
 def _bench_one(entry, sampler, baseline_W, bench_s, require_samples, max_retries, log=None):
     try:
-        ins = _alloc_inputs(entry)
+        args = _replay_args(entry["input_kind"])
     except Exception as e:  # noqa: BLE001
         if log:
             log(f"    input alloc failed: {e}")
@@ -83,14 +106,13 @@ def _bench_one(entry, sampler, baseline_W, bench_s, require_samples, max_retries
     try:
         mod = copy.deepcopy(entry["module"]).eval()
         with torch.no_grad():
-            for _ in range(5):  # warmup (also primes any lazy internal buffers)
-                _forward(mod, entry, ins)
+            for _ in range(5):  # warmup (also primes lazy internal buffers)
+                _forward(mod, args)
     except Exception as e:  # noqa: BLE001
         if log:
             log(f"    SKIPPED (warmup): {e}")
         return _skip(entry, "warmup", e)
 
-    # extend window until we have enough samples (degraded-Hz safety net)
     target_ms = bench_s * 1000.0
     msec, retries = bench_s * 1000.0, 0
     sampler.marker(f"bench:{entry['config_id']}")
@@ -101,7 +123,7 @@ def _bench_one(entry, sampler, baseline_W, bench_s, require_samples, max_retries
             t_start = time.perf_counter()
             n = 0
             while sampler.now_ms() - w0 < msec:
-                _forward(mod, entry, ins)
+                _forward(mod, args)
                 n += 1
             t_end = time.perf_counter()
             stats = sampler.window(w0, sampler.now_ms())
@@ -130,8 +152,10 @@ def _bench_one(entry, sampler, baseline_W, bench_s, require_samples, max_retries
         "config_id": entry["config_id"],
         "class": entry["class"],
         "config_json": entry["config_json"],
-        "input_kind": entry["input_kind"],
+        "input_kind": "multi",
         "input_shapes": entry["input_shapes"],
+        "macs": (entry.get("macs") if entry.get("macs") is not None else None),
+        "bytes_moved": entry.get("bytes_moved"),
         "window_s": round((sampler.now_ms() - w0) / 1000.0, 3),
         "N_calls": n,
         "t_per_call_ms": round(t_per_call, 4) if t_per_call else None,

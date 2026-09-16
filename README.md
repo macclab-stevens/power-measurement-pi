@@ -347,3 +347,81 @@ git diff                   # review unstaged changes
 ```
 Data and weights are intentionally kept out of git; code + tooling + docs are
 the tracked artifacts. `runs/` is the thing to archive/back up on its own.
+
+---
+
+## 13. Model-agnostic generalization (implemented, M1–M3)
+
+The harness no longer requires YOLO. It runs **any PyTorch model** through a
+`TaskAdapter` while measuring op-/layer-wise power the same way. Grounded in the
+adversarial review (§ in `plan_power_generalization.md`).
+
+### Architecture (three decoupled planes)
+- **Data plane (measurement)** — `powersampler.py` (model-agnostic contract),
+  `layers.py` hooks, `torch.profiler`, `microbench.py`.
+- **Control plane (task drivers)** — `tasks.py`: `ImageTask` (classification +
+  detection) and `TokenLMTask` (causal LM: prefill + decode). Adding a family =
+  one adapter file; no data-plane change.
+- **Structure plane** — deferred by review (see below); cheap structural signal
+  (`path`, `callsite`, `mode`, ordered `op_sequence`) captured in the dataset now.
+
+### Measurement identity (the critical fix)
+`config_id` = sha256(class + structural attrs + **input shapes** + **input
+dtypes**). It deliberately excludes path/callsite, so identical (op,shape,dtype)
+configs share ONE bench. `path`, `callsite`, `mode` are separate structural
+columns. Benches are deduped per measurement config.
+
+### Input capture (multi-arg / dtype-aware replay)
+Per forward argument we record kind + shape + dtype + replay spec, so
+`microbench` replays correctly instead of SKIPPING:
+- int64 index tensors (Embedding) and bool masks replay as **zeros** (legal values);
+- multi-argument positional leaves (e.g. `nn.MultiheadAttention` q,k,v) replay
+  as multiple tensors — verified end-to-end (`verify_multiarg.py`);
+- Concat list-kind inputs unchanged.
+
+### Call-site-aware timing
+Per-path stack tags every invocation (fixes the old single-slot `_start[path]`
+bug for shared/tied/reentrant modules). Every call is recorded with frame, mode
+and input-config index.
+
+### Features (per site)
+`macs` (Conv2d/Conv1d/ConvTranspose2d/Linear), `bytes_moved` (= sum in/out
+numel × dtype bytes) and `arithmetic_intensity` (= macs/bytes) — power tracks
+memory bandwidth, so these matter more than MACs for attention/decode.
+
+### Usage
+```bash
+uv run src/run.py --task image --model yolo11n.pt --check-image bus.jpg \
+                  --frames 25 --bench 3               # detection (golden)
+uv run src/run.py --task image --model <classif.pt>   # classification
+uv run src/run.py --task lm --model minigpt --seq 64  # causal LM (torch-only)
+uv run src/run.py --task lm --model hf:gpt2 --seq 64  # needs `uv add transformers`
+uv run python verify.py runs/<ts>                     # schema/identity/acceptance
+```
+
+### Outputs (schema additions vs §7)
+- `layer_table.csv` += `input_dtypes`, `macs`, `bytes_moved`, `arith_intensity`,
+  `callsite`, `mode`.
+- `perop_power.csv` += `input_dtypes`, `macs`, `bytes_moved`.
+- `op_table.csv` += `mode` (per-mode aten timing).
+- `run_meta.json` += `task`, `modes`, `arch_fingerprint`, `op_sequence`,
+  `seq_len`, `params_M`.
+
+### Acceptance (task-gated)
+Per-task oracle replaces object-conf. Global invariants kept: **SKIPPED is
+fatal**, samples≥30, hz≥50, baseline in range, op_table non-empty, per-dominant-op
+P_delta>0.01 W. `--check-image` still requires object conf≥`--conf` for image
+detection.
+
+### Deferred by review
+Full fx→networkx graph emission. Site identity + execution order are already in
+the dataset (cheap); build the DAG with a future graph-aggregating envelope
+predictor, whose schema will dictate it. Verified runs:
+`runs/golden_yolo11n`, `runs/golden_minigpt`.
+
+### Verified (post-implementation)
+- YOLO golden: 324 layer sites, 165 configs, SKIPPED=0, dominant-op green.
+- Mini-GPT LM: prefill+decode, int64 Embedding / multi-arg replay / per-mode
+  distinct configs, SKIPPED=0, dominant-op green.
+- `verify_multiarg.py`: 3-tensor positional replay + int64/bool + per-mode
+  identity all pass.
