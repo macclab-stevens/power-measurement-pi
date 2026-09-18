@@ -58,3 +58,26 @@ def test_full_hookup_beats_fallback_on_synthetic(tmp_path):
     for fam, v in res.items():
         assert v["fallbacks"] == 0, "%s fallbacks %s" % (fam, v["fallbacks"])
         assert v["full_mape"] < v["base_mape"], "%s full %s vs base %s" % (fam, v["full_mape"], v["base_mape"])
+def test_hillclimb_picks_improving_level_on_synthetic():
+    import math
+    import random
+    mod = _load_sibling_evaluate()
+    rng = random.Random(0)
+    per_fam = {}
+    for fi, fam in enumerate(["famA", "famB", "famC", "famD"]):
+        items = []
+        for i in range(6):
+            teff = 500 + fi * 300 + i * 200
+            nbytes = 20000 + fi * 10000 + i * 5000
+            logT = math.log(teff)
+            logB = math.log(nbytes)
+            ai = logT - logB
+            y = 1.0 + 0.9 * logT + 0.2 * logB + 2.0 * ai + rng.uniform(-0.01, 0.01)
+            feat = {"t_eff": float(teff), "bytes": float(nbytes), "temp0": 55.0, "freq": 2400.0, "attn_flops": 0.0, "fam_idx": float(fi), "class": "forward", "phase": "forward", "unseen_cid": False}
+            items.append((feat, y, math.exp(y), "forward"))
+        per_fam[fam] = items
+    res = mod._choose_level_loto(per_fam, max_rounds=5)
+    assert res["level"] >= 1, "hill-climb should pick level>=1 when truth needs AI term, got %s" % (res,)
+    curve = res.get("curve", res.get("rounds", []))
+    assert res.get("stale", 0) >= 2 or len(curve) < 5, "stale-stop should fire, got %s" % (res,)
+
