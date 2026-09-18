@@ -446,12 +446,41 @@ def hillclimb(train, valid, max_rounds=5):
             if stale >= 2: break
     return {**best, "rounds": hist, "stale": stale}
 def lomo(run_dirs, bootstrap_n=1000, seed=0):
-    # per family: fit levels 0..best on rest (targets.build_phase_targets, leakage on A/B only),
-    # forecast held-out phase-anchored E via stitch (t_fwd prior from TRAIN families),
-    # forward MAPE vs latency-only (train mean_P x planned t) + bootstrap CI. Returns dict.
-    return {}
+    import random
+    from targets import build_phase_targets
+    fams = sorted({family_of(d) for d in run_dirs})
+    res = {}
+    for fam in fams:
+        te = [d for d in run_dirs if family_of(d) == fam]
+        tr = [d for d in run_dirs if family_of(d) != fam]
+        train_rows = [r for d in tr for r in build_phase_targets(d)]
+        mean_p = sum(r["P_mean"] for r in train_rows)/max(1, len(train_rows))
+        t_prior = sum(r["dur_s"] for r in train_rows if r["phase"] in FORWARD)/max(1, sum(1 for r in train_rows if r["phase"] in FORWARD))
+        rows, fb = [], 0
+        for d in te:
+            for r in build_phase_targets(d):
+                planned = t_prior if r["phase"] in FORWARD else r["dur_s"]
+                base = mean_p*planned  # latency-only arm, planned durations only (never test-measured P)
+                full = None  # delta-model E_pred hookup in implementation (Task 3 models + Task 4 stitch)
+                rows.append({"phase": r["phase"], "E": r["E_mJ"], "dur_s": r["dur_s"],
+                             "E_pred": base if full is None else full, "fallback": full is None})
+                fb += (full is None)
+        to_fw = lambda rs: [{"phase": r["phase"], "E": r["E"], "E_pred": r["E_pred"]} for r in rs]
+        fm = forward_mape(to_fw(rows))
+        bm = forward_mape([{"phase": r["phase"], "E": r["E"],
+                            "E_pred": mean_p*(t_prior if r["phase"] in FORWARD else r["dur_s"])} for r in rows])
+        rng = random.Random(seed); ds = []
+        for _ in range(bootstrap_n):
+            s = [rng.choice(rows) for _ in rows]
+            ds.append(forward_mape(to_fw(s)))
+        ds.sort(); res[fam] = {"full_mape": fm, "base_mape": bm, "n": len(rows), "fallbacks": fb,
+            "ci95": [ds[int(0.025*bootstrap_n)], ds[int(0.975*bootstrap_n)]]}
+    return res
 def write_report(res, out):
-    with open(out, "w") as f: f.write("# Trace forecast report\n")
+    with open(out, "w") as f:
+        f.write("# Trace forecast report (forward-weighted primary)\n\n| family | n | baseMAPE | fullMAPE | ci95 | fallbacks |\n|---|---|---|---|---|---|\n")
+        for k, v in sorted(res.items()):
+            f.write(f"| {k} | {v['n']} | {v['base_mape']:.4f} | {v['full_mape']:.4f} | {v['ci95']} | {v['fallbacks']} |\n")
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser(); ap.add_argument("--runs", nargs="+", required=True)
