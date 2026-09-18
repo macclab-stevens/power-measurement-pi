@@ -31,17 +31,17 @@ import time
 import torch
 import torch.nn as nn
 
-# Structural attrs snapshot per op kind (generalized beyond conv). Captured when
-# present; absent attrs are simply omitted from the identity.
-_ATTRS = (
-    "in_channels", "out_channels", "kernel_size", "stride", "padding",
-    "dilation", "groups", "dim", "reg_max", "nc",
-    "in_features", "out_features", "bias",
-    "num_embeddings", "embedding_dim", "padding_idx",
-    "normalized_shape", "eps", "elementwise_affine",
-    "num_heads", "embed_dim", "batch_first", "add_bias_kv",
-    "max_len", "head_dim", "dropout",
-)
+SCHEMA_VERSION = 3
+_ALLOW = {
+    "Conv2d": ("in_channels","out_channels","kernel_size","stride","padding","dilation","groups"),
+    "Conv1d": ("in_channels","out_channels","kernel_size","stride","padding","dilation","groups"),
+    "ConvTranspose2d": ("in_channels","out_channels","kernel_size","stride","padding","groups"),
+    "Linear": ("in_features","out_features"),
+    "Embedding": ("num_embeddings","embedding_dim","padding_idx"),
+    "LayerNorm": ("normalized_shape","eps","elementwise_affine"),
+    "BatchNorm2d": ("eps","momentum"),
+    "MultiheadAttention": ("embed_dim","num_heads","batch_first","dropout"),
+}
 
 DTYPE_BYTES = {torch.float32: 4, torch.float16: 2, torch.bfloat16: 2,
                torch.float64: 8, torch.int8: 1, torch.uint8: 1,
@@ -61,15 +61,18 @@ def _ser(v):
     return str(v)
 
 
-def module_config(mod: nn.Module) -> dict:
-    """Structural attrs for an op (class + present attrs only)."""
-    cfg = {"class": type(mod).__name__}
-    for n in _ATTRS:
-        try:
-            if hasattr(mod, n):
-                cfg[n] = _ser(getattr(mod, n))
-        except Exception:  # noqa: BLE001 - some modules raise in getattr
-            pass
+def module_config(mod):
+    import torch.nn as nn
+    cls = type(mod).__name__
+    cfg = {"class": cls}
+    for k in _ALLOW.get(cls, ()):
+        if hasattr(mod, k):
+            v = getattr(mod, k)
+            cfg[k] = _ser(v)
+    # booleans only, never values:
+    if hasattr(mod, "bias"):
+        b = getattr(mod, "bias")
+        cfg["has_bias"] = b is not None
     return cfg
 
 
