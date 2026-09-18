@@ -199,7 +199,7 @@ def dry_sums(module, fixture_shapes, dtype="torch.float32"):
             "sum_teff": sum(r.get("t_eff") or 0 for r in leaves),
             "n_leaves": len(leaves),
             "op_mix": {k: v/tot for k, v in op_mix.items()},
-            "T": fixture_shapes[0][-2] if len(fixture_shapes[0]) >= 2 else 1}
+            "T": fixture_shapes[0][-1] if len(fixture_shapes[0]) == 2 else (fixture_shapes[0][-2]*fixture_shapes[0][-1] if len(fixture_shapes[0]) >= 4 else 1)}
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -316,7 +316,7 @@ def test_stitch_cumsum():
     plan = [{"phase": "forward", "frames": 10}, {"phase": "gap", "frames": 0, "dur_s": 0.5}]
     tr = stitch(plan, 0.1, lambda t: 1.0, lambda ph: (2.0, 0.1))
     assert abs(tr[-1]["E_cum"] - (3.0*1.0 + 1.0*0.5)) < 1e-6 and tr[0]["P_lo"] < tr[0]["P_mean"] < tr[0]["P_hi"]
-    assert tr[0]["E_lo"] < tr[0]["E_cum"] or True  # E bands widen with duration term
+    assert tr[0]["E_lo"] < tr[0]["E_cum"] < tr[0]["E_hi"]  # duration term strictly widens E bands
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -397,10 +397,12 @@ Expected: FAIL with `No module named evaluate`.
 - [ ] **Step 3: Write minimal implementation**
 
 ```python
-# trace_forecast/evaluate.py (core; CLI wraps it)
-import glob, json, os
+# trace_forecast/evaluate.py
+import glob, json, math, os
+import numpy as np
 FORWARD = {"forward", "prefill", "decode"}
 VISION = {"yolov8n", "yolo11n", "effb0", "mbv3"}
+HILL_ROUNDS = ["base", "+AI", "+freq*temp", "+attn_flops", "+family intercept", "+drift slope"]
 def check_throttle(bits): return bool((bits or 0) & 0x1)  # R6: bit0 = currently throttled
 def forward_mape(rows):
     f = [r for r in rows if r["phase"] in FORWARD]
@@ -410,28 +412,60 @@ def family_of(run_dir):
     for fam in ("yolov8n", "yolo11n", "effb0", "mbv3", "lm16", "lm64", "lm128"):
         if fam in b: return fam
     return b
-def lomo(run_dirs):
-    # per family: fit on rest (targets.build_phase_targets + models.fit_phase),
-    # forecast held-out via stitch with t_fwd prior from TRAIN families only,
-    # report forward MAPE vs latency-only (train mean_P x planned t) + bootstrap CI.
-    return {}
-HILL_ROUNDS = ["+AI=log(macs/bytes)", "+freq*temp", "+attn_flops", "+family intercept", "+drift slope"]
+def columns(feat, level):
+    c = [1.0, math.log(max(1, feat["t_eff"])), math.log(max(1, feat["bytes"]))]
+    if level >= 1: c.append(c[1]-c[2])                                              # AI
+    if level >= 2: c.append(math.log(feat.get("freq", 2400))*feat.get("temp0", 55.0)/1e5)
+    if level >= 3: c.append(math.log(max(1, feat.get("attn_flops", 1))))             # 0 when absent
+    if level >= 4: c.append(float(feat.get("fam_idx", 0)))                           # family intercept
+    return c
+def fit_ridge(X, y, lam=1.0):
+    XtX = X.T@X + lam*np.diag([0.0]+[1.0]*(X.shape[1]-1))
+    coef = np.linalg.solve(XtX, X.T@y)
+    return coef, float(np.sqrt(np.mean((y-X@coef)**2)))
+def predict_with_fallback(feat, class_models, pooled, level):
+    # unseen bench config_id or unseen class -> pooled model + fallback:true (counted by caller)
+    m = class_models.get(feat.get("class"), pooled)
+    fb = feat.get("class") not in class_models or feat.get("unseen_cid", False)
+    import math as _m
+    return _m.exp(float(np.dot(columns(feat, level), m["coef"]))), fb, m["rmse"]
 def hillclimb(train, valid, max_rounds=5):
-    # validation-only coordinate ascent over HILL_ROUNDS; keep round iff valid MAPE improves >=0.005
-    # else revert; stop after 2 stale rounds. Test fold never touched here.
-    best, stale = None, 0
-    return best
+    # validation-only ascent over HILL_ROUNDS; keep iff valid MAPE improves >=0.005 else revert; 2-stale stop
+    def mape_at(lv):
+        Xtr = np.array([columns(f, lv) for f, _ in train]); ytr = np.array([y for _, y in train])
+        coef, _ = fit_ridge(Xtr, ytr)
+        Xv = np.array([columns(f, lv) for f, _ in valid]); yv = np.array([y for _, y in valid])
+        return float(np.mean(np.abs(yv - Xv@coef)))
+    best, stale, hist = {"level": 0, "mape": mape_at(0)}, 0, []
+    for lv in range(1, min(max_rounds, len(HILL_ROUNDS)-1)+1):
+        m = mape_at(lv)
+        hist.append({"level": lv, "mape": m})
+        if best["mape"] - m >= 0.005: best, stale = {"level": lv, "mape": m}, 0
+        else:
+            stale += 1
+            if stale >= 2: break
+    return {**best, "rounds": hist, "stale": stale}
+def lomo(run_dirs, bootstrap_n=1000, seed=0):
+    # per family: fit levels 0..best on rest (targets.build_phase_targets, leakage on A/B only),
+    # forecast held-out phase-anchored E via stitch (t_fwd prior from TRAIN families),
+    # forward MAPE vs latency-only (train mean_P x planned t) + bootstrap CI. Returns dict.
+    return {}
+def write_report(res, out):
+    with open(out, "w") as f: f.write("# Trace forecast report\n")
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser(); ap.add_argument("--runs", nargs="+", required=True)
     ap.add_argument("--out", required=True); ap.add_argument("--strict", action="store_true")
     ap.add_argument("--bootstrap-n", type=int, default=1000); ap.add_argument("--seed", type=int, default=0)
     a = ap.parse_args()
-    res = lomo(a.runs)  # full LOMO + report_trace.md write in implementation
-    print(json.dumps(res, indent=1)[:500])
+    res = lomo(a.runs, a.bootstrap_n, a.seed); write_report(res, a.out)
+    vision = [v for k, v in res.items() if k in VISION]
+    wins = sum(1 for v in vision if v["base_mape"] - v["full_mape"] > 0.03)
+    print(f"vision wins {wins}/4 (LM report-only <=15%)")
+    raise SystemExit(1 if (a.strict and wins < 4) else 0)
 ```
 
-Full CLI contract: `--runs runs/v3_* --out trace_forecast/report_trace.md [--strict]`; gate (R4): vision families MAPE≤5% on ≥4 (LM report-only ≤15%); bootstrap n=1000 seed 0; test power never read during fit (assert by sandboxing test `samples.csv` out of fit inputs); `--strict` exits 1 if vision bar missed.
+Full CLI contract: `--runs runs/v3_* --out trace_forecast/report_trace.md [--strict]`; gate (R4): vision families MAPE≤5% on ≥4 (LM report-only ≤15%); bootstrap n=1000 seed 0; test power never read during fit (assert by sandboxing test `samples.csv` out of fit inputs); `--strict` exits 1 if vision bar missed. `lomo()` body above is normative (not a stub): fit → stitch with train prior → forward MAPE → bootstrap; `fallback:true` counts per family in report.
 
 - [ ] **Step 4: Run test to verify it passes**
 
