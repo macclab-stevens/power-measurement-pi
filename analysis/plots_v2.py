@@ -44,6 +44,13 @@ def _f(x):
 
 
 def load_rows(run_dir):
+    if os.path.exists(os.path.join(run_dir, "_TAINTED_V2")):
+        return []
+    try:
+        if json.load(open(os.path.join(run_dir, "run_meta.json"))).get("schema_version") != SCHEMA:
+            return []
+    except (OSError, ValueError):
+        return []
     rows = []
     with open(os.path.join(run_dir, "perop_power.csv")) as f:
         for r in csv.DictReader(f):
@@ -85,20 +92,21 @@ def epred(coef, t, b):
 
 
 def arms(rows, scaling):
+    pool_rmse = float(np.mean([v.get("rmse", 0.5) for v in scaling.values()])) if scaling else 0.5
     pool = None
     if scaling:
         a = np.mean([v["a"] for v in scaling.values()])
         bt = np.mean([v["b_T"] for v in scaling.values()])
         cb = np.mean([v.get("c_B", v.get("c_bytes")) for v in scaling.values()])
-        pool = {"a": a, "b_T": bt, "c_B": cb, "rmse": 0.5}
+        pool = {"a": a, "b_T": bt, "c_B": cb, "rmse": pool_rmse}
     mean_p = float(np.mean([r["E"] / r["t"] for r in rows]))
     for r in rows:
         r["E_base"] = mean_p * r["t"]
         c = scaling.get(r["class"], pool) if scaling else None
         ok = c and r["t_eff"] and r["bytes"] and r["t_eff"] > 0 and r["bytes"] > 0
         r["E_full"] = epred(c, r["t_eff"], r["bytes"]) if ok else None
-        r["rmse"] = c.get("rmse", 0.5) if ok else 0.5
-    return mean_p
+        r["rmse"] = c.get("rmse", pool_rmse) if ok else pool_rmse
+    return mean_p, pool_rmse
 
 
 def mape(yt, yp):
@@ -106,16 +114,19 @@ def mape(yt, yp):
     return float(np.mean(np.abs(yt - yp) / np.maximum(np.abs(yt), 1e-12)))
 
 
-def footnote(run, threads, tbh):
-    return ("src=%s | %s rail only | schema_version=%d | threads=%s | "
+def footnote(run, threads, tbh, schema):
+    return ("src=%s | %s rail only | schema_version=%s | threads=%s | "
             "governor=ondemand (default; perf pin needs sudo) | PSU stock "
-            "5V/5A throttle_bits=%s" % (run, RAIL, SCHEMA, threads, tbh))
+            "5V/5A throttle_bits=%s" % (run, RAIL, schema, threads, tbh))
 
 
-def fig_roofline(rows, path, note):
+def build_cmap(rows):
+    return {c: PAL[i % len(PAL)] for i, c in enumerate(sorted({r["class"] for r in rows}))}
+
+
+def fig_roofline(rows, path, note, cmap):
     pts = [r for r in rows if r["macs"] and r["bytes"] and r["macs"] > 0 and r["bytes"] > 0]
     cls = sorted({r["class"] for r in pts})
-    cmap = {c: PAL[i % len(PAL)] for i, c in enumerate(cls)}
     fig, ax = plt.subplots(figsize=(8, 6))
     bmax = max(r["bytes"] for r in pts)
     for r in pts:
@@ -128,7 +139,7 @@ def fig_roofline(rows, path, note):
     ax.set_title("Roofline-power: energy vs intensity (VDD_CORE, schema 3)")
     knee = float(np.median([r["macs"] / r["bytes"] for r in pts]))
     ax.axvline(knee, color="k", ls="--", lw=1)
-    ax.text(knee, ax.get_ylim()[0] * 1.1, " knee (median AI=%.1f)" % knee, fontsize=7)
+    ax.text(knee, ax.get_ylim()[0] * 1.1, " median AI=%.1f" % knee, fontsize=7)
     ax.text(0.02, 0.94, "memory-bound <-", transform=ax.transAxes, fontsize=8)
     ax.text(0.78, 0.94, "-> compute-bound", transform=ax.transAxes, fontsize=8)
     ax.legend(handles=[mpatches.Patch(color=cmap[c], label=c) for c in cls],
@@ -138,7 +149,7 @@ def fig_roofline(rows, path, note):
     fig.savefig(path, dpi=150); plt.close(fig)
 
 
-def fig_iqr(rows, path, note, verdict):
+def fig_iqr(rows, path, note, verdict, cmap):
     by = {}
     for r in rows:
         by.setdefault(r["class"], []).append(r)
@@ -151,7 +162,7 @@ def fig_iqr(rows, path, note, verdict):
         v = np.array([r["P"] for r in by[c]])
         m, q1, q3 = np.median(v), *np.percentile(v, [25, 75])
         med.append(m); lo.append(m - q1); hi.append(q3 - m); ns.append(len(v))
-    a1.barh(y, med, xerr=[lo, hi], capsize=3, color=PAL[0], ecolor="k")
+    a1.barh(y, med, xerr=[lo, hi], capsize=3, color=[cmap[c] for c in order], ecolor="k")
     a1.set_yticks(y); a1.set_yticklabels(["%s (n=%d)" % (c, n) for c, n in zip(order, ns)])
     a1.set_xlabel("P_delta_ABAB (W)"); a1.set_title("raw power: median+IQR")
     a1.set_xlim(left=0)
@@ -176,7 +187,7 @@ def fig_iqr(rows, path, note, verdict):
     fig.savefig(path, dpi=150); plt.close(fig)
 
 
-def fig_waterfall(rows, path, note, mean_p):
+def fig_waterfall(rows, path, note, mean_p, cmap):
     by = {}
     for r in rows:
         by.setdefault(r["class"], []).append(r)
@@ -194,7 +205,7 @@ def fig_waterfall(rows, path, note, mean_p):
     left = 0
     for c, v in zip(cls, pred_c):
         ax.barh([labels[0]], [v], left=left,
-                color=PAL[cls.index(c) % len(PAL)], label="%s %.1f mJ" % (c, v))
+                color=cmap[c], label="%s %.1f mJ" % (c, v))
         left += v
     ax.errorbar([pred], [labels[0]], xerr=[[pred - lo], [hi - pred]],
                 fmt="none", ecolor="k", capsize=4)
@@ -219,15 +230,18 @@ def main():
     rows = load_rows(run)
     if not rows:
         raise SystemExit("no valid rows in %s" % run)
-    threads, tbh, _ = load_meta(run)
+    threads, tbh, schema = load_meta(run)
+    if schema != SCHEMA:
+        raise SystemExit("schema_version=%r want %d (run=%s)" % (schema, SCHEMA, run))
     scaling = load_scaling(repo, a.scaling)
-    mean_p = arms(rows, scaling)
+    mean_p, pool_rmse = arms(rows, scaling)
     ok = [r for r in rows if r["E_full"]]
-    mb, mf = (mape([r["E"] for r in rows], [r["E_base"] for r in rows]),
+    mb, mf = (mape([r["E"] for r in ok], [r["E_base"] for r in ok]) if ok else float("nan"),
               mape([r["E"] for r in ok], [r["E_full"] for r in ok]) if ok else float("nan"))
-    verdict = ("residuals NOT shrunk: MAPE base=%.3f full=%.3f "
-               "(T6 0/7 FAIL honest)" % (mb, mf))
-    note = footnote(a.run, threads, tbh)
+    verdict = ("residuals NOT shrunk: MAPE base=%.3f (n=%d) full=%.3f (n=%d) "
+               "(T6 0/7 FAIL honest)" % (mb, len(ok), mf, len(ok)))
+    note = footnote(a.run, threads, tbh, schema) + " | bounds pooled fallback rmse=%.3f" % pool_rmse
+    cmap = build_cmap(rows)
     d, b = os.path.split(os.path.abspath(a.out))
     if "waterfall" in b:
         pr, pi = b.replace("waterfall", "roofline"), b.replace("waterfall", "iqr")
@@ -235,9 +249,9 @@ def main():
         pr, pi = "roofline_" + b, "iqr_" + b
     os.makedirs(d or ".", exist_ok=True)
     pr, pi = os.path.join(d, pr), os.path.join(d, pi)
-    fig_roofline(rows, pr, note)
-    fig_iqr(rows, pi, note + " | " + verdict, verdict)
-    fig_waterfall(rows, os.path.abspath(a.out), note, mean_p)
+    fig_roofline(rows, pr, note, cmap)
+    fig_iqr(rows, pi, note + " | " + verdict, verdict, cmap)
+    fig_waterfall(rows, os.path.abspath(a.out), note, mean_p, cmap)
     print("wrote:\n%s\n%s\n%s" % (pr, pi, os.path.abspath(a.out)))
 
 

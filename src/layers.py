@@ -202,6 +202,7 @@ def _bytes_moved(in_args, out_shapes, out_dtype="torch.float32"):
     import torch
     b = sum(a.get("bytes",0) for a in _arg_tensors(in_args))
     per_elem = {"torch.float32":4,"torch.float16":2,"torch.bfloat16":2,"torch.float64":8,
+                "torch.int8":1,"torch.uint8":1,"torch.int16":2,
                 "torch.int64":8,"torch.int32":4,"torch.bool":1}.get(str(out_dtype),4)
     for s in out_shapes or []:
         n = 1

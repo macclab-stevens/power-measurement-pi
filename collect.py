@@ -84,7 +84,7 @@ def _run_matrix(args, log) -> int:
         else:
             v = subprocess.run([sys.executable, "verify.py", outdir], cwd=HERE,
                                capture_output=True, text=True, timeout=300)
-            green = "OVERALL: GREEN" in (v.stdout or "")
+            green = (v.returncode == 0 and "OVERALL: GREEN" in (v.stdout or ""))
             log.info(f"matrix {name}: {'GREEN' if green else 'VERIFY-FAIL'}\n{tail}")
             results.append((name, "GREEN" if green else "VERIFY-FAIL"))
         if args.cooldown > 0:
