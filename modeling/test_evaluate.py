@@ -1,21 +1,28 @@
+import importlib.util
 import os
 import sys
 sys.path.insert(0, os.path.dirname(__file__))
+def _load_sibling_evaluate():
+    path = os.path.join(os.path.dirname(__file__), "evaluate.py")
+    spec = importlib.util.spec_from_file_location("modeling_evaluate_sibling", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def test_ablation_beats_latency_only():
-    from evaluate import mape
+    mape = _load_sibling_evaluate().mape
     assert mape([1.0, 2.0], [1.1, 1.9]) < 0.1
 
 
 def test_mape_known_value():
-    from evaluate import mape
+    mape = _load_sibling_evaluate().mape
     # (0.1/1.0 + 0.1/2.0)/2 = 0.075
     assert abs(mape([1.0, 2.0], [1.1, 1.9]) - 0.075) < 1e-9
 
 
 def test_smape_known_value():
-    from evaluate import smape
+    smape = _load_sibling_evaluate().smape
     # 2*|1-1.1|/(1+1.1)=0.095238..., 2*|2-1.9|/(2+1.9)=0.051282...
     v = smape([1.0, 2.0], [1.1, 1.9])
     assert 0.07 < v < 0.08, v
@@ -23,13 +30,13 @@ def test_smape_known_value():
 
 def test_mae_log_known_value():
     import math
-    from evaluate import mae_log
+    mae_log = _load_sibling_evaluate().mae_log
     v = mae_log([1.0, math.e], [1.0, 1.0])
     assert abs(v - 0.5) < 1e-9, v
 
 
 def test_baseline_latency_only_formula():
-    from evaluate import baseline_latency_only
+    baseline_latency_only = _load_sibling_evaluate().baseline_latency_only
     train = [
         {"p_abab_w": 2.0, "t_per_call_ms": 1.0, "t_eff": 10,
          "bytes": 100, "e_mj": 2.0, "cls": "Conv2d", "family": "a"},
@@ -47,7 +54,8 @@ def test_baseline_latency_only_formula():
 
 def test_full_model_beats_baseline_on_synthetic_scaling():
     import numpy as np
-    from evaluate import baseline_latency_only, full_model, mape
+    _m = _load_sibling_evaluate()
+    baseline_latency_only, full_model, mape = _m.baseline_latency_only, _m.full_model, _m.mape
     rng = np.random.default_rng(1)
     # Synthetic: E follows exact scaling law in (t_eff, bytes); t_per_call
     # is independent noise so latency-only baseline cannot win.
@@ -69,7 +77,7 @@ def test_full_model_beats_baseline_on_synthetic_scaling():
 
 def test_bootstrap_ci_valid():
     import numpy as np
-    from evaluate import bootstrap_delta
+    bootstrap_delta = _load_sibling_evaluate().bootstrap_delta
     y = np.array([1.0, 2.0, 3.0, 4.0])
     pb = np.array([1.1, 1.9, 3.2, 3.8])
     pf = np.array([1.0, 2.0, 3.0, 4.0])

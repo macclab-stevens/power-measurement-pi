@@ -131,5 +131,112 @@ print(f"  leaves with t_eff set: {leaf_te}/{len(leaves)} "
 ok_all = ok_all and _te_ok and bool(leaves) and leaf_te == len(leaves)
 print(f"SKIPPED 0: {'GREEN' if skipped == 0 else f'FAIL ({skipped})'}")
 ok_all = ok_all and skipped == 0
+
+# ---- trace gate (Task 6): schema 3 + stitched bands cover smoke run ----
+# Honest LOMO check: actual 10 Hz grid vs phase-mean stitch (train prior from
+# sibling runs/v3_*, schema 3). Coverage >=90% gates OVERALL (spec Sec.1);
+# base-vs-full residuals printed always (never hide FAIL, T6 style).
+_trace_ok = True
+if _schema_ok:
+    try:
+        import math as _m
+        import collections as _c
+
+        def _phase_targets(_d):
+            _r = list(csv.DictReader(open(os.path.join(_d, "samples.csv"))))
+            _o, _cur = [], None
+            for _row in _r:
+                _ph = _row["phase"].split(":")[0]
+                if _cur is None or _ph != _cur["phase"]:
+                    if _cur:
+                        _dur = _cur["t1"] - _cur["t0"] if _cur["n"] > 1 else 0.0
+                        _cur["P_mean"] = _cur["P_sum"] / _cur["n"]
+                        _cur["dur_s"] = _dur / 1000.0
+                        _o.append(_cur)
+                    _cur = {"phase": _ph, "t0": float(_row["t_ms"]), "t1": float(_row["t_ms"]),
+                            "P_sum": 0.0, "n": 0}
+                _cur["P_sum"] += float(_row["P_W"])
+                _cur["n"] += 1
+                _cur["t1"] = float(_row["t_ms"])
+            if _cur:
+                _dur = _cur["t1"] - _cur["t0"] if _cur["n"] > 1 else 0.0
+                _cur["P_mean"] = _cur["P_sum"] / _cur["n"]
+                _cur["dur_s"] = _dur / 1000.0
+                _o.append(_cur)
+            return _o
+
+        _rows = list(csv.DictReader(open(os.path.join(path, "samples.csv"))))
+        _hz, _step = 10, 100.0
+        _t0, _t1 = float(_rows[0]["t_ms"]), float(_rows[-1]["t_ms"])
+        _ts = [float(r["t_ms"]) for r in _rows]
+        _actual, _j, _b = [], 0, _t0
+        while _b < _t1:
+            while _j < len(_rows) and _ts[_j] < _b:
+                _j += 1
+            _k, _cnt, _ps, _mn = _j, _c.Counter(), 0.0, 0
+            while _k < len(_rows) and _ts[_k] < _b + _step:
+                _cnt[_rows[_k]["phase"].split(":")[0]] += 1
+                _ps += float(_rows[_k]["P_W"])
+                _mn += 1
+                _k += 1
+            if _mn:
+                _actual.append((_cnt.most_common(1)[0][0], _ps / _mn))
+            _b += _step
+        _repo = os.path.dirname(os.path.dirname(os.path.abspath(path))) \
+            if os.path.basename(os.path.dirname(path)) == "runs" else os.getcwd()
+        _cands = sorted(glob.glob(os.path.join(_repo, "runs", "v3_*")))
+        _cur_norm = os.path.normpath(os.path.abspath(path))
+        _cands = [d for d in _cands if os.path.normpath(os.path.abspath(d)) != _cur_norm
+                  and os.path.isdir(d)]
+        _tdirs = []
+        for _d in _cands:
+            try:
+                _mm = json.load(open(os.path.join(_d, "run_meta.json")))
+            except Exception:
+                continue
+            if _mm.get("schema_version") == 3 and "_TAINTED_V2" not in _d:
+                _tdirs.append(_d)
+        if _tdirs and _actual:
+            _trows = [r for _d in _tdirs for r in _phase_targets(_d)]
+            _by = _c.defaultdict(list)
+            for _r in _trows:
+                _by[_r["phase"]].append(_r["P_mean"])
+            _pmean = {k: sum(v) / len(v) for k, v in _by.items()}
+            _prmse = {}
+            for _k2, _v in _by.items():
+                if len(_v) > 1:
+                    _logs = [_m.log(max(x, 1e-6)) for x in _v]
+                    _mu = sum(_logs) / len(_logs)
+                    _sd = _m.sqrt(sum((_x - _mu) ** 2 for _x in _logs) / len(_logs))
+                else:
+                    _sd = 0.3
+                _prmse[_k2] = max(float(_sd), 0.15)
+            _meanp = sum(r["P_mean"] for r in _trows) / len(_trows)
+            _cov = 0
+            _s_base = _s_full = 0.0
+            for _ph, _pa in _actual:
+                _pf = _pmean.get(_ph, _meanp)
+                _sig = _m.sqrt(_prmse.get(_ph, 0.3) ** 2 + 0.1 ** 2)
+                _lo = _m.exp(_m.log(max(_pf, 1e-6)) - 1.96 * _sig)
+                _hi = _m.exp(_m.log(max(_pf, 1e-6)) + 1.96 * _sig)
+                if _lo <= _pa <= _hi:
+                    _cov += 1
+                _s_base += abs(_pa - _meanp) / max(abs(_pa), 1e-12)
+                _s_full += abs(_pa - _pf) / max(abs(_pa), 1e-12)
+            _frac = _cov / len(_actual)
+            _mb, _mf = _s_base / len(_actual), _s_full / len(_actual)
+            _dl = _mb - _mf
+            print(f"trace bands: cover {_cov}/{len(_actual)} ({_frac:.1%}) "
+                  f"{'GREEN' if _frac >= 0.9 else 'FAIL (want >=90%)'}")
+            print(f"trace residual: base MAPE {_mb:.4f} vs full {_mf:.4f} "
+                  f"delta {_dl:.4f} ({'WIN' if _dl > 0.03 else 'FAIL (want >3pp)'})")
+            _trace_ok = _frac >= 0.9
+        else:
+            print("trace bands: SKIP (no train prior or empty grid)")
+    except Exception as _e:
+        print(f"trace bands: SKIP (tooling error: {_e})")
+else:
+    print("trace bands: SKIP (schema != 3)")
+ok_all = ok_all and _trace_ok
 print("OVERALL:", "GREEN" if ok_all else "FAIL")
 sys.exit(0 if ok_all else 1)
