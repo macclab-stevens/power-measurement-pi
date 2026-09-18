@@ -232,19 +232,28 @@ def lomo(run_dirs, bootstrap_n=1000, seed=0):
         bm = forward_mape([{"phase": r["phase"], "E": r["E"],
                             "E_pred": mean_p*(t_prior if r["phase"] in FORWARD else r["dur_s"])*1000.0} for r in rows])
         rng = random.Random(seed); ds = []
-        for _ in range(bootstrap_n):
-            s = [rng.choice(rows) for _ in rows]
-            ds.append(forward_mape(to_fw(s)))
-        ds.sort(); res[fam] = {"full_mape": fm, "base_mape": bm, "n": len(rows), "fallbacks": fb,
-            "ci95": [ds[int(0.025*bootstrap_n)], ds[int(0.975*bootstrap_n)]], "level": level}
+        fw_rows = [r for r in rows if r["phase"] in FORWARD]
+        if fw_rows:
+            for _ in range(bootstrap_n):
+                s = [rng.choice(fw_rows) for _ in fw_rows]
+                ds.append(forward_mape(to_fw(s)))
+        else:
+            ds = [0.0] * bootstrap_n
+        ds.sort()
+        fwd_actual = sum(r["dur_s"] for r in rows if r["phase"] in FORWARD) / max(1, sum(1 for r in rows if r["phase"] in FORWARD))
+        dur_ratio = (fwd_actual / t_prior) if t_prior > 0 else 0.0
+        res[fam] = {"full_mape": fm, "base_mape": bm, "n": len(rows), "fallbacks": fb,
+            "ci95": [ds[int(0.025*bootstrap_n)], ds[int(0.975*bootstrap_n)]], "level": level,
+            "mean_p": mean_p, "t_prior": t_prior, "fwd_actual": fwd_actual, "dur_ratio": dur_ratio}
     return res
 def write_report(res, out):
     with open(out, "w") as f:
-        f.write("# Trace forecast report (forward-weighted primary)\n\n| family | n | baseMAPE | fullMAPE | ci95 | fallbacks | level |\n|---|---|---|---|---|---|---|\n")
+        f.write("# Trace forecast report (forward-weighted primary)\n\n| family | n | baseMAPE | fullMAPE | ci95 | fallbacks | level | mean_p_W | t_prior_s | fwd_actual_s | dur_ratio |\n|---|---|---|---|---|---|---|---|---|---|---|\n")
         for k, v in sorted(res.items()):
-            f.write(f"| {k} | {v['n']} | {v['base_mape']:.4f} | {v['full_mape']:.4f} | {v['ci95']} | {v['fallbacks']} | {v.get('level', 0)} |\n")
+            f.write(f"| {k} | {v['n']} | {v['base_mape']:.4f} | {v['full_mape']:.4f} | {v['ci95']} | {v['fallbacks']} | {v.get('level', 0)} | {v.get('mean_p', 0.0):.4f} | {v.get('t_prior', 0.0):.4f} | {v.get('fwd_actual', 0.0):.4f} | {v.get('dur_ratio', 0.0):.4f} |\n")
 if __name__ == "__main__":
     import argparse
+    import sys
     ap = argparse.ArgumentParser(); ap.add_argument("--runs", nargs="+", required=True)
     ap.add_argument("--out", required=True); ap.add_argument("--strict", action="store_true")
     ap.add_argument("--bootstrap-n", type=int, default=1000); ap.add_argument("--seed", type=int, default=0)
