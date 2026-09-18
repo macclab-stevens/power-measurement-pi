@@ -19,6 +19,16 @@ def _finalize(cur):
     cur["P_mean"] = cur["P_sum"]/cur["n"]; cur["dur_s"] = dur_ms/1000.0
     cur["E_mJ"] = cur["P_mean"]*dur_ms
     return cur
+# Task C single-sample policy (explicit keep+guard, NOT observed in LM data:
+# runs/v3_lm16,64,128 have 0 n==1 / 0 dur==0 / 0 E==0 segments, so no fix
+# to build_phase_targets behavior). n==1 rows are KEPT with dur_s==0/E_mJ==0;
+# train drops E<=0 (evaluate._build_train_items skips silently), eval
+# forward_mape raises ZeroDivisionError on E==0 (never hit on LM data).
+def is_valid_phase_target(row):
+    try:
+        return int(row.get("n", 0)) >= 2 and float(row.get("E_mJ", 0)) > 0 and float(row.get("dur_s", 0)) > 0
+    except Exception:
+        return False
 def leakage_inputs(run_dir):
     # R3: baseline_A/B samples ONLY (never gap/bench hot rows), temp = nearest prior context.csv row
     rows = [r for r in _read_samples(run_dir) if r["phase"] in ("baseline_A", "baseline_B")]
