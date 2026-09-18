@@ -1,0 +1,26 @@
+{
+  "model": "yolo11n.pt",
+  "imgsz": 640,
+  "conf": 0.25,
+  "threads": 4,
+  "frames": 8,
+  "mean_fps": 4.262,
+  "baseline_W": 1.419364,
+  "achieved_sample_hz": 193.5,
+  "throttle_bits": 327680,
+  "camera": {
+    "exposure_us": 66.64,
+    "analogue_gain": 6.625,
+    "colour_gain": null,
+    "ae_locked": true,
+    "awb_locked": true
+  },
+  "hostname": "raspberrypi",
+  "kernel": "6.18.39+rpt-rpi-2712",
+  "ts": "20260915T031011",
+  "outdir": "runs/20260915T031011",
+  "torch_version": "2.14.0+cu130",
+  "ultralytics_version": "8.4.152",
+  "join_contract": "layer_table.config_id <-> perop_power.config_id; op_table is aten-level timing (no module join); all tables time-anchored by run ts; E_mJ = P_W * t_ms; P_delta = P_mean - baseline_W",
+  "methodology": "steady-state isolation microbench (deepcopy leaf module, cache-hot inputs, VDD_CORE PMIC rail); per-op power is attributed, not instantaneous"
+}

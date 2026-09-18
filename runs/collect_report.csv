@@ -1,0 +1,2 @@
+cycle,started,duration_s,returncode,outdir,fps,baseline_W,hz,layer_rows,op_rows,perop_rows,skipped,best_conf
+1,2026-09-15 13:16:30,103.7,1,,4.10,1.4694,208,226,64,45,0,0.000

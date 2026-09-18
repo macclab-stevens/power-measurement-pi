@@ -1,0 +1,61 @@
+{
+  "task": "lm",
+  "model": "minigpt-explicit",
+  "modes": [
+    "prefill",
+    "decode"
+  ],
+  "imgsz": 640,
+  "conf": 0.25,
+  "seq_len": 128,
+  "threads": 4,
+  "frames_per_mode": 10,
+  "warmup_passes": 10,
+  "params_M": 0.083,
+  "mean_fps": null,
+  "baseline_W": 0.769314,
+  "baseline_A_W": 0.761163,
+  "baseline_B_W": 0.777466,
+  "baseline_drift_W": 0.016304,
+  "schema_version": 3,
+  "achieved_sample_hz": 177.4,
+  "throttle_bits": 327680,
+  "arch_fingerprint": {
+    "Embedding": 2,
+    "Linear": 10,
+    "LayerNorm": 8
+  },
+  "op_sequence": {
+    "prefill": [
+      "tok",
+      "n1.0",
+      "qkv.0",
+      "proj.0",
+      "n2.0",
+      "n1.1",
+      "qkv.1",
+      "proj.1",
+      "n2.1",
+      "head"
+    ],
+    "decode": [
+      "tok",
+      "n1.0",
+      "qkv.0",
+      "proj.0",
+      "n2.0",
+      "n1.1",
+      "qkv.1",
+      "proj.1",
+      "n2.1",
+      "head"
+    ]
+  },
+  "hostname": "raspberrypi",
+  "kernel": "6.18.39+rpt-rpi-2712",
+  "ts": "20260917T220003",
+  "outdir": "runs/v3_lm128",
+  "torch_version": "2.14.0+cu130",
+  "join_contract": "measurement config_id = op+attrs+shape+dtype; layer_table.config_id <-> perop_power.config_id; path/callsite + mode are structural columns; E_mJ = P_W * t_ms; P_delta = P_mean - baseline_W",
+  "methodology": "steady-state isolation microbench (deepcopy leaf, dtype-aware cache-hot inputs, VDD_CORE PMIC rail); per-op power is attributed, not instantaneous"
+}

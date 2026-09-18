@@ -1,0 +1,4231 @@
+[
+  {
+    "path": "features.0.0",
+    "class": "Conv2d",
+    "macs": 10838016,
+    "bytes_moved": 2211200,
+    "hw": 12544,
+    "in_shape": [
+      1,
+      3,
+      224,
+      224
+    ],
+    "out_shape": [
+      1,
+      32,
+      112,
+      112
+    ]
+  },
+  {
+    "path": "features.0.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 3211520,
+    "hw": 12544,
+    "in_shape": [
+      1,
+      32,
+      112,
+      112
+    ],
+    "out_shape": [
+      1,
+      32,
+      112,
+      112
+    ]
+  },
+  {
+    "path": "features.0.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 3211264,
+    "hw": 12544,
+    "in_shape": [
+      1,
+      32,
+      112,
+      112
+    ],
+    "out_shape": [
+      1,
+      32,
+      112,
+      112
+    ]
+  },
+  {
+    "path": "features.1.0.block.0.0",
+    "class": "Conv2d",
+    "macs": 3612672,
+    "bytes_moved": 3212416,
+    "hw": 12544,
+    "in_shape": [
+      1,
+      32,
+      112,
+      112
+    ],
+    "out_shape": [
+      1,
+      32,
+      112,
+      112
+    ]
+  },
+  {
+    "path": "features.1.0.block.0.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 3211520,
+    "hw": 12544,
+    "in_shape": [
+      1,
+      32,
+      112,
+      112
+    ],
+    "out_shape": [
+      1,
+      32,
+      112,
+      112
+    ]
+  },
+  {
+    "path": "features.1.0.block.0.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 3211264,
+    "hw": 12544,
+    "in_shape": [
+      1,
+      32,
+      112,
+      112
+    ],
+    "out_shape": [
+      1,
+      32,
+      112,
+      112
+    ]
+  },
+  {
+    "path": "features.1.0.block.1.avgpool",
+    "class": "AdaptiveAvgPool2d",
+    "macs": 0,
+    "bytes_moved": 1605760,
+    "hw": 1,
+    "in_shape": [
+      1,
+      32,
+      112,
+      112
+    ],
+    "out_shape": [
+      1,
+      32,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.1.0.block.1.fc1",
+    "class": "Conv2d",
+    "macs": 256,
+    "bytes_moved": 1216,
+    "hw": 1,
+    "in_shape": [
+      1,
+      32,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      8,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.1.0.block.1.activation",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 64,
+    "hw": 1,
+    "in_shape": [
+      1,
+      8,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      8,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.1.0.block.1.fc2",
+    "class": "Conv2d",
+    "macs": 256,
+    "bytes_moved": 1312,
+    "hw": 1,
+    "in_shape": [
+      1,
+      8,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      32,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.1.0.block.1.scale_activation",
+    "class": "Sigmoid",
+    "macs": 0,
+    "bytes_moved": 256,
+    "hw": 1,
+    "in_shape": [
+      1,
+      32,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      32,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.1.0.block.2.0",
+    "class": "Conv2d",
+    "macs": 6422528,
+    "bytes_moved": 2410496,
+    "hw": 12544,
+    "in_shape": [
+      1,
+      32,
+      112,
+      112
+    ],
+    "out_shape": [
+      1,
+      16,
+      112,
+      112
+    ]
+  },
+  {
+    "path": "features.1.0.block.2.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 1605760,
+    "hw": 12544,
+    "in_shape": [
+      1,
+      16,
+      112,
+      112
+    ],
+    "out_shape": [
+      1,
+      16,
+      112,
+      112
+    ]
+  },
+  {
+    "path": "features.2.0.block.0.0",
+    "class": "Conv2d",
+    "macs": 19267584,
+    "bytes_moved": 5625856,
+    "hw": 12544,
+    "in_shape": [
+      1,
+      16,
+      112,
+      112
+    ],
+    "out_shape": [
+      1,
+      96,
+      112,
+      112
+    ]
+  },
+  {
+    "path": "features.2.0.block.0.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 9634560,
+    "hw": 12544,
+    "in_shape": [
+      1,
+      96,
+      112,
+      112
+    ],
+    "out_shape": [
+      1,
+      96,
+      112,
+      112
+    ]
+  },
+  {
+    "path": "features.2.0.block.0.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 9633792,
+    "hw": 12544,
+    "in_shape": [
+      1,
+      96,
+      112,
+      112
+    ],
+    "out_shape": [
+      1,
+      96,
+      112,
+      112
+    ]
+  },
+  {
+    "path": "features.2.0.block.1.0",
+    "class": "Conv2d",
+    "macs": 2709504,
+    "bytes_moved": 6024576,
+    "hw": 3136,
+    "in_shape": [
+      1,
+      96,
+      112,
+      112
+    ],
+    "out_shape": [
+      1,
+      96,
+      56,
+      56
+    ]
+  },
+  {
+    "path": "features.2.0.block.1.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 2409216,
+    "hw": 3136,
+    "in_shape": [
+      1,
+      96,
+      56,
+      56
+    ],
+    "out_shape": [
+      1,
+      96,
+      56,
+      56
+    ]
+  },
+  {
+    "path": "features.2.0.block.1.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 2408448,
+    "hw": 3136,
+    "in_shape": [
+      1,
+      96,
+      56,
+      56
+    ],
+    "out_shape": [
+      1,
+      96,
+      56,
+      56
+    ]
+  },
+  {
+    "path": "features.2.0.block.2.avgpool",
+    "class": "AdaptiveAvgPool2d",
+    "macs": 0,
+    "bytes_moved": 1204608,
+    "hw": 1,
+    "in_shape": [
+      1,
+      96,
+      56,
+      56
+    ],
+    "out_shape": [
+      1,
+      96,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.2.0.block.2.fc1",
+    "class": "Conv2d",
+    "macs": 384,
+    "bytes_moved": 1952,
+    "hw": 1,
+    "in_shape": [
+      1,
+      96,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      4,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.2.0.block.2.activation",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 32,
+    "hw": 1,
+    "in_shape": [
+      1,
+      4,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      4,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.2.0.block.2.fc2",
+    "class": "Conv2d",
+    "macs": 384,
+    "bytes_moved": 2320,
+    "hw": 1,
+    "in_shape": [
+      1,
+      4,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      96,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.2.0.block.2.scale_activation",
+    "class": "Sigmoid",
+    "macs": 0,
+    "bytes_moved": 768,
+    "hw": 1,
+    "in_shape": [
+      1,
+      96,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      96,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.2.0.block.3.0",
+    "class": "Conv2d",
+    "macs": 7225344,
+    "bytes_moved": 1514496,
+    "hw": 3136,
+    "in_shape": [
+      1,
+      96,
+      56,
+      56
+    ],
+    "out_shape": [
+      1,
+      24,
+      56,
+      56
+    ]
+  },
+  {
+    "path": "features.2.0.block.3.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 602304,
+    "hw": 3136,
+    "in_shape": [
+      1,
+      24,
+      56,
+      56
+    ],
+    "out_shape": [
+      1,
+      24,
+      56,
+      56
+    ]
+  },
+  {
+    "path": "features.2.1.block.0.0",
+    "class": "Conv2d",
+    "macs": 10838016,
+    "bytes_moved": 2121216,
+    "hw": 3136,
+    "in_shape": [
+      1,
+      24,
+      56,
+      56
+    ],
+    "out_shape": [
+      1,
+      144,
+      56,
+      56
+    ]
+  },
+  {
+    "path": "features.2.1.block.0.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 3613824,
+    "hw": 3136,
+    "in_shape": [
+      1,
+      144,
+      56,
+      56
+    ],
+    "out_shape": [
+      1,
+      144,
+      56,
+      56
+    ]
+  },
+  {
+    "path": "features.2.1.block.0.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 3612672,
+    "hw": 3136,
+    "in_shape": [
+      1,
+      144,
+      56,
+      56
+    ],
+    "out_shape": [
+      1,
+      144,
+      56,
+      56
+    ]
+  },
+  {
+    "path": "features.2.1.block.1.0",
+    "class": "Conv2d",
+    "macs": 4064256,
+    "bytes_moved": 3617856,
+    "hw": 3136,
+    "in_shape": [
+      1,
+      144,
+      56,
+      56
+    ],
+    "out_shape": [
+      1,
+      144,
+      56,
+      56
+    ]
+  },
+  {
+    "path": "features.2.1.block.1.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 3613824,
+    "hw": 3136,
+    "in_shape": [
+      1,
+      144,
+      56,
+      56
+    ],
+    "out_shape": [
+      1,
+      144,
+      56,
+      56
+    ]
+  },
+  {
+    "path": "features.2.1.block.1.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 3612672,
+    "hw": 3136,
+    "in_shape": [
+      1,
+      144,
+      56,
+      56
+    ],
+    "out_shape": [
+      1,
+      144,
+      56,
+      56
+    ]
+  },
+  {
+    "path": "features.2.1.block.2.avgpool",
+    "class": "AdaptiveAvgPool2d",
+    "macs": 0,
+    "bytes_moved": 1806912,
+    "hw": 1,
+    "in_shape": [
+      1,
+      144,
+      56,
+      56
+    ],
+    "out_shape": [
+      1,
+      144,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.2.1.block.2.fc1",
+    "class": "Conv2d",
+    "macs": 864,
+    "bytes_moved": 4080,
+    "hw": 1,
+    "in_shape": [
+      1,
+      144,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      6,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.2.1.block.2.activation",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 48,
+    "hw": 1,
+    "in_shape": [
+      1,
+      6,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      6,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.2.1.block.2.fc2",
+    "class": "Conv2d",
+    "macs": 864,
+    "bytes_moved": 4632,
+    "hw": 1,
+    "in_shape": [
+      1,
+      6,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      144,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.2.1.block.2.scale_activation",
+    "class": "Sigmoid",
+    "macs": 0,
+    "bytes_moved": 1152,
+    "hw": 1,
+    "in_shape": [
+      1,
+      144,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      144,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.2.1.block.3.0",
+    "class": "Conv2d",
+    "macs": 10838016,
+    "bytes_moved": 2121216,
+    "hw": 3136,
+    "in_shape": [
+      1,
+      144,
+      56,
+      56
+    ],
+    "out_shape": [
+      1,
+      24,
+      56,
+      56
+    ]
+  },
+  {
+    "path": "features.2.1.block.3.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 602304,
+    "hw": 3136,
+    "in_shape": [
+      1,
+      24,
+      56,
+      56
+    ],
+    "out_shape": [
+      1,
+      24,
+      56,
+      56
+    ]
+  },
+  {
+    "path": "features.2.1.stochastic_depth",
+    "class": "StochasticDepth",
+    "macs": 0,
+    "bytes_moved": 602112,
+    "hw": 3136,
+    "in_shape": [
+      1,
+      24,
+      56,
+      56
+    ],
+    "out_shape": [
+      1,
+      24,
+      56,
+      56
+    ]
+  },
+  {
+    "path": "features.3.0.block.0.0",
+    "class": "Conv2d",
+    "macs": 10838016,
+    "bytes_moved": 2121216,
+    "hw": 3136,
+    "in_shape": [
+      1,
+      24,
+      56,
+      56
+    ],
+    "out_shape": [
+      1,
+      144,
+      56,
+      56
+    ]
+  },
+  {
+    "path": "features.3.0.block.0.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 3613824,
+    "hw": 3136,
+    "in_shape": [
+      1,
+      144,
+      56,
+      56
+    ],
+    "out_shape": [
+      1,
+      144,
+      56,
+      56
+    ]
+  },
+  {
+    "path": "features.3.0.block.0.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 3612672,
+    "hw": 3136,
+    "in_shape": [
+      1,
+      144,
+      56,
+      56
+    ],
+    "out_shape": [
+      1,
+      144,
+      56,
+      56
+    ]
+  },
+  {
+    "path": "features.3.0.block.1.0",
+    "class": "Conv2d",
+    "macs": 2822400,
+    "bytes_moved": 2272320,
+    "hw": 784,
+    "in_shape": [
+      1,
+      144,
+      56,
+      56
+    ],
+    "out_shape": [
+      1,
+      144,
+      28,
+      28
+    ]
+  },
+  {
+    "path": "features.3.0.block.1.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 904320,
+    "hw": 784,
+    "in_shape": [
+      1,
+      144,
+      28,
+      28
+    ],
+    "out_shape": [
+      1,
+      144,
+      28,
+      28
+    ]
+  },
+  {
+    "path": "features.3.0.block.1.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 903168,
+    "hw": 784,
+    "in_shape": [
+      1,
+      144,
+      28,
+      28
+    ],
+    "out_shape": [
+      1,
+      144,
+      28,
+      28
+    ]
+  },
+  {
+    "path": "features.3.0.block.2.avgpool",
+    "class": "AdaptiveAvgPool2d",
+    "macs": 0,
+    "bytes_moved": 452160,
+    "hw": 1,
+    "in_shape": [
+      1,
+      144,
+      28,
+      28
+    ],
+    "out_shape": [
+      1,
+      144,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.3.0.block.2.fc1",
+    "class": "Conv2d",
+    "macs": 864,
+    "bytes_moved": 4080,
+    "hw": 1,
+    "in_shape": [
+      1,
+      144,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      6,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.3.0.block.2.activation",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 48,
+    "hw": 1,
+    "in_shape": [
+      1,
+      6,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      6,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.3.0.block.2.fc2",
+    "class": "Conv2d",
+    "macs": 864,
+    "bytes_moved": 4632,
+    "hw": 1,
+    "in_shape": [
+      1,
+      6,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      144,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.3.0.block.2.scale_activation",
+    "class": "Sigmoid",
+    "macs": 0,
+    "bytes_moved": 1152,
+    "hw": 1,
+    "in_shape": [
+      1,
+      144,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      144,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.3.0.block.3.0",
+    "class": "Conv2d",
+    "macs": 4515840,
+    "bytes_moved": 600064,
+    "hw": 784,
+    "in_shape": [
+      1,
+      144,
+      28,
+      28
+    ],
+    "out_shape": [
+      1,
+      40,
+      28,
+      28
+    ]
+  },
+  {
+    "path": "features.3.0.block.3.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 251200,
+    "hw": 784,
+    "in_shape": [
+      1,
+      40,
+      28,
+      28
+    ],
+    "out_shape": [
+      1,
+      40,
+      28,
+      28
+    ]
+  },
+  {
+    "path": "features.3.1.block.0.0",
+    "class": "Conv2d",
+    "macs": 7526400,
+    "bytes_moved": 916480,
+    "hw": 784,
+    "in_shape": [
+      1,
+      40,
+      28,
+      28
+    ],
+    "out_shape": [
+      1,
+      240,
+      28,
+      28
+    ]
+  },
+  {
+    "path": "features.3.1.block.0.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 1507200,
+    "hw": 784,
+    "in_shape": [
+      1,
+      240,
+      28,
+      28
+    ],
+    "out_shape": [
+      1,
+      240,
+      28,
+      28
+    ]
+  },
+  {
+    "path": "features.3.1.block.0.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 1505280,
+    "hw": 784,
+    "in_shape": [
+      1,
+      240,
+      28,
+      28
+    ],
+    "out_shape": [
+      1,
+      240,
+      28,
+      28
+    ]
+  },
+  {
+    "path": "features.3.1.block.1.0",
+    "class": "Conv2d",
+    "macs": 4704000,
+    "bytes_moved": 1529280,
+    "hw": 784,
+    "in_shape": [
+      1,
+      240,
+      28,
+      28
+    ],
+    "out_shape": [
+      1,
+      240,
+      28,
+      28
+    ]
+  },
+  {
+    "path": "features.3.1.block.1.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 1507200,
+    "hw": 784,
+    "in_shape": [
+      1,
+      240,
+      28,
+      28
+    ],
+    "out_shape": [
+      1,
+      240,
+      28,
+      28
+    ]
+  },
+  {
+    "path": "features.3.1.block.1.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 1505280,
+    "hw": 784,
+    "in_shape": [
+      1,
+      240,
+      28,
+      28
+    ],
+    "out_shape": [
+      1,
+      240,
+      28,
+      28
+    ]
+  },
+  {
+    "path": "features.3.1.block.2.avgpool",
+    "class": "AdaptiveAvgPool2d",
+    "macs": 0,
+    "bytes_moved": 753600,
+    "hw": 1,
+    "in_shape": [
+      1,
+      240,
+      28,
+      28
+    ],
+    "out_shape": [
+      1,
+      240,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.3.1.block.2.fc1",
+    "class": "Conv2d",
+    "macs": 2400,
+    "bytes_moved": 10640,
+    "hw": 1,
+    "in_shape": [
+      1,
+      240,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      10,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.3.1.block.2.activation",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 80,
+    "hw": 1,
+    "in_shape": [
+      1,
+      10,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      10,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.3.1.block.2.fc2",
+    "class": "Conv2d",
+    "macs": 2400,
+    "bytes_moved": 11560,
+    "hw": 1,
+    "in_shape": [
+      1,
+      10,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      240,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.3.1.block.2.scale_activation",
+    "class": "Sigmoid",
+    "macs": 0,
+    "bytes_moved": 1920,
+    "hw": 1,
+    "in_shape": [
+      1,
+      240,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      240,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.3.1.block.3.0",
+    "class": "Conv2d",
+    "macs": 7526400,
+    "bytes_moved": 916480,
+    "hw": 784,
+    "in_shape": [
+      1,
+      240,
+      28,
+      28
+    ],
+    "out_shape": [
+      1,
+      40,
+      28,
+      28
+    ]
+  },
+  {
+    "path": "features.3.1.block.3.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 251200,
+    "hw": 784,
+    "in_shape": [
+      1,
+      40,
+      28,
+      28
+    ],
+    "out_shape": [
+      1,
+      40,
+      28,
+      28
+    ]
+  },
+  {
+    "path": "features.3.1.stochastic_depth",
+    "class": "StochasticDepth",
+    "macs": 0,
+    "bytes_moved": 250880,
+    "hw": 784,
+    "in_shape": [
+      1,
+      40,
+      28,
+      28
+    ],
+    "out_shape": [
+      1,
+      40,
+      28,
+      28
+    ]
+  },
+  {
+    "path": "features.4.0.block.0.0",
+    "class": "Conv2d",
+    "macs": 7526400,
+    "bytes_moved": 916480,
+    "hw": 784,
+    "in_shape": [
+      1,
+      40,
+      28,
+      28
+    ],
+    "out_shape": [
+      1,
+      240,
+      28,
+      28
+    ]
+  },
+  {
+    "path": "features.4.0.block.0.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 1507200,
+    "hw": 784,
+    "in_shape": [
+      1,
+      240,
+      28,
+      28
+    ],
+    "out_shape": [
+      1,
+      240,
+      28,
+      28
+    ]
+  },
+  {
+    "path": "features.4.0.block.0.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 1505280,
+    "hw": 784,
+    "in_shape": [
+      1,
+      240,
+      28,
+      28
+    ],
+    "out_shape": [
+      1,
+      240,
+      28,
+      28
+    ]
+  },
+  {
+    "path": "features.4.0.block.1.0",
+    "class": "Conv2d",
+    "macs": 423360,
+    "bytes_moved": 949440,
+    "hw": 196,
+    "in_shape": [
+      1,
+      240,
+      28,
+      28
+    ],
+    "out_shape": [
+      1,
+      240,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.4.0.block.1.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 378240,
+    "hw": 196,
+    "in_shape": [
+      1,
+      240,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      240,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.4.0.block.1.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 376320,
+    "hw": 196,
+    "in_shape": [
+      1,
+      240,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      240,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.4.0.block.2.avgpool",
+    "class": "AdaptiveAvgPool2d",
+    "macs": 0,
+    "bytes_moved": 189120,
+    "hw": 1,
+    "in_shape": [
+      1,
+      240,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      240,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.4.0.block.2.fc1",
+    "class": "Conv2d",
+    "macs": 2400,
+    "bytes_moved": 10640,
+    "hw": 1,
+    "in_shape": [
+      1,
+      240,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      10,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.4.0.block.2.activation",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 80,
+    "hw": 1,
+    "in_shape": [
+      1,
+      10,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      10,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.4.0.block.2.fc2",
+    "class": "Conv2d",
+    "macs": 2400,
+    "bytes_moved": 11560,
+    "hw": 1,
+    "in_shape": [
+      1,
+      10,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      240,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.4.0.block.2.scale_activation",
+    "class": "Sigmoid",
+    "macs": 0,
+    "bytes_moved": 1920,
+    "hw": 1,
+    "in_shape": [
+      1,
+      240,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      240,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.4.0.block.3.0",
+    "class": "Conv2d",
+    "macs": 3763200,
+    "bytes_moved": 327680,
+    "hw": 196,
+    "in_shape": [
+      1,
+      240,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      80,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.4.0.block.3.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 126080,
+    "hw": 196,
+    "in_shape": [
+      1,
+      80,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      80,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.4.1.block.0.0",
+    "class": "Conv2d",
+    "macs": 7526400,
+    "bytes_moved": 592640,
+    "hw": 196,
+    "in_shape": [
+      1,
+      80,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      480,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.4.1.block.0.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 756480,
+    "hw": 196,
+    "in_shape": [
+      1,
+      480,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      480,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.4.1.block.0.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 752640,
+    "hw": 196,
+    "in_shape": [
+      1,
+      480,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      480,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.4.1.block.1.0",
+    "class": "Conv2d",
+    "macs": 846720,
+    "bytes_moved": 769920,
+    "hw": 196,
+    "in_shape": [
+      1,
+      480,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      480,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.4.1.block.1.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 756480,
+    "hw": 196,
+    "in_shape": [
+      1,
+      480,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      480,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.4.1.block.1.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 752640,
+    "hw": 196,
+    "in_shape": [
+      1,
+      480,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      480,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.4.1.block.2.avgpool",
+    "class": "AdaptiveAvgPool2d",
+    "macs": 0,
+    "bytes_moved": 378240,
+    "hw": 1,
+    "in_shape": [
+      1,
+      480,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      480,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.4.1.block.2.fc1",
+    "class": "Conv2d",
+    "macs": 9600,
+    "bytes_moved": 40480,
+    "hw": 1,
+    "in_shape": [
+      1,
+      480,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      20,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.4.1.block.2.activation",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 160,
+    "hw": 1,
+    "in_shape": [
+      1,
+      20,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      20,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.4.1.block.2.fc2",
+    "class": "Conv2d",
+    "macs": 9600,
+    "bytes_moved": 42320,
+    "hw": 1,
+    "in_shape": [
+      1,
+      20,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      480,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.4.1.block.2.scale_activation",
+    "class": "Sigmoid",
+    "macs": 0,
+    "bytes_moved": 3840,
+    "hw": 1,
+    "in_shape": [
+      1,
+      480,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      480,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.4.1.block.3.0",
+    "class": "Conv2d",
+    "macs": 7526400,
+    "bytes_moved": 592640,
+    "hw": 196,
+    "in_shape": [
+      1,
+      480,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      80,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.4.1.block.3.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 126080,
+    "hw": 196,
+    "in_shape": [
+      1,
+      80,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      80,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.4.1.stochastic_depth",
+    "class": "StochasticDepth",
+    "macs": 0,
+    "bytes_moved": 125440,
+    "hw": 196,
+    "in_shape": [
+      1,
+      80,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      80,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.4.2.block.0.0",
+    "class": "Conv2d",
+    "macs": 7526400,
+    "bytes_moved": 592640,
+    "hw": 196,
+    "in_shape": [
+      1,
+      80,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      480,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.4.2.block.0.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 756480,
+    "hw": 196,
+    "in_shape": [
+      1,
+      480,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      480,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.4.2.block.0.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 752640,
+    "hw": 196,
+    "in_shape": [
+      1,
+      480,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      480,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.4.2.block.1.0",
+    "class": "Conv2d",
+    "macs": 846720,
+    "bytes_moved": 769920,
+    "hw": 196,
+    "in_shape": [
+      1,
+      480,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      480,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.4.2.block.1.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 756480,
+    "hw": 196,
+    "in_shape": [
+      1,
+      480,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      480,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.4.2.block.1.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 752640,
+    "hw": 196,
+    "in_shape": [
+      1,
+      480,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      480,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.4.2.block.2.avgpool",
+    "class": "AdaptiveAvgPool2d",
+    "macs": 0,
+    "bytes_moved": 378240,
+    "hw": 1,
+    "in_shape": [
+      1,
+      480,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      480,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.4.2.block.2.fc1",
+    "class": "Conv2d",
+    "macs": 9600,
+    "bytes_moved": 40480,
+    "hw": 1,
+    "in_shape": [
+      1,
+      480,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      20,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.4.2.block.2.activation",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 160,
+    "hw": 1,
+    "in_shape": [
+      1,
+      20,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      20,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.4.2.block.2.fc2",
+    "class": "Conv2d",
+    "macs": 9600,
+    "bytes_moved": 42320,
+    "hw": 1,
+    "in_shape": [
+      1,
+      20,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      480,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.4.2.block.2.scale_activation",
+    "class": "Sigmoid",
+    "macs": 0,
+    "bytes_moved": 3840,
+    "hw": 1,
+    "in_shape": [
+      1,
+      480,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      480,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.4.2.block.3.0",
+    "class": "Conv2d",
+    "macs": 7526400,
+    "bytes_moved": 592640,
+    "hw": 196,
+    "in_shape": [
+      1,
+      480,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      80,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.4.2.block.3.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 126080,
+    "hw": 196,
+    "in_shape": [
+      1,
+      80,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      80,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.4.2.stochastic_depth",
+    "class": "StochasticDepth",
+    "macs": 0,
+    "bytes_moved": 125440,
+    "hw": 196,
+    "in_shape": [
+      1,
+      80,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      80,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.5.0.block.0.0",
+    "class": "Conv2d",
+    "macs": 7526400,
+    "bytes_moved": 592640,
+    "hw": 196,
+    "in_shape": [
+      1,
+      80,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      480,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.5.0.block.0.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 756480,
+    "hw": 196,
+    "in_shape": [
+      1,
+      480,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      480,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.5.0.block.0.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 752640,
+    "hw": 196,
+    "in_shape": [
+      1,
+      480,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      480,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.5.0.block.1.0",
+    "class": "Conv2d",
+    "macs": 2352000,
+    "bytes_moved": 800640,
+    "hw": 196,
+    "in_shape": [
+      1,
+      480,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      480,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.5.0.block.1.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 756480,
+    "hw": 196,
+    "in_shape": [
+      1,
+      480,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      480,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.5.0.block.1.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 752640,
+    "hw": 196,
+    "in_shape": [
+      1,
+      480,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      480,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.5.0.block.2.avgpool",
+    "class": "AdaptiveAvgPool2d",
+    "macs": 0,
+    "bytes_moved": 378240,
+    "hw": 1,
+    "in_shape": [
+      1,
+      480,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      480,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.5.0.block.2.fc1",
+    "class": "Conv2d",
+    "macs": 9600,
+    "bytes_moved": 40480,
+    "hw": 1,
+    "in_shape": [
+      1,
+      480,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      20,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.5.0.block.2.activation",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 160,
+    "hw": 1,
+    "in_shape": [
+      1,
+      20,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      20,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.5.0.block.2.fc2",
+    "class": "Conv2d",
+    "macs": 9600,
+    "bytes_moved": 42320,
+    "hw": 1,
+    "in_shape": [
+      1,
+      20,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      480,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.5.0.block.2.scale_activation",
+    "class": "Sigmoid",
+    "macs": 0,
+    "bytes_moved": 3840,
+    "hw": 1,
+    "in_shape": [
+      1,
+      480,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      480,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.5.0.block.3.0",
+    "class": "Conv2d",
+    "macs": 10536960,
+    "bytes_moved": 679168,
+    "hw": 196,
+    "in_shape": [
+      1,
+      480,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      112,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.5.0.block.3.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 176512,
+    "hw": 196,
+    "in_shape": [
+      1,
+      112,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      112,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.5.1.block.0.0",
+    "class": "Conv2d",
+    "macs": 14751744,
+    "bytes_moved": 915712,
+    "hw": 196,
+    "in_shape": [
+      1,
+      112,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      672,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.5.1.block.0.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 1059072,
+    "hw": 196,
+    "in_shape": [
+      1,
+      672,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      672,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.5.1.block.0.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 1053696,
+    "hw": 196,
+    "in_shape": [
+      1,
+      672,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      672,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.5.1.block.1.0",
+    "class": "Conv2d",
+    "macs": 3292800,
+    "bytes_moved": 1120896,
+    "hw": 196,
+    "in_shape": [
+      1,
+      672,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      672,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.5.1.block.1.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 1059072,
+    "hw": 196,
+    "in_shape": [
+      1,
+      672,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      672,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.5.1.block.1.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 1053696,
+    "hw": 196,
+    "in_shape": [
+      1,
+      672,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      672,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.5.1.block.2.avgpool",
+    "class": "AdaptiveAvgPool2d",
+    "macs": 0,
+    "bytes_moved": 529536,
+    "hw": 1,
+    "in_shape": [
+      1,
+      672,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      672,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.5.1.block.2.fc1",
+    "class": "Conv2d",
+    "macs": 18816,
+    "bytes_moved": 78176,
+    "hw": 1,
+    "in_shape": [
+      1,
+      672,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      28,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.5.1.block.2.activation",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 224,
+    "hw": 1,
+    "in_shape": [
+      1,
+      28,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      28,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.5.1.block.2.fc2",
+    "class": "Conv2d",
+    "macs": 18816,
+    "bytes_moved": 80752,
+    "hw": 1,
+    "in_shape": [
+      1,
+      28,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      672,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.5.1.block.2.scale_activation",
+    "class": "Sigmoid",
+    "macs": 0,
+    "bytes_moved": 5376,
+    "hw": 1,
+    "in_shape": [
+      1,
+      672,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      672,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.5.1.block.3.0",
+    "class": "Conv2d",
+    "macs": 14751744,
+    "bytes_moved": 915712,
+    "hw": 196,
+    "in_shape": [
+      1,
+      672,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      112,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.5.1.block.3.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 176512,
+    "hw": 196,
+    "in_shape": [
+      1,
+      112,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      112,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.5.1.stochastic_depth",
+    "class": "StochasticDepth",
+    "macs": 0,
+    "bytes_moved": 175616,
+    "hw": 196,
+    "in_shape": [
+      1,
+      112,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      112,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.5.2.block.0.0",
+    "class": "Conv2d",
+    "macs": 14751744,
+    "bytes_moved": 915712,
+    "hw": 196,
+    "in_shape": [
+      1,
+      112,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      672,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.5.2.block.0.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 1059072,
+    "hw": 196,
+    "in_shape": [
+      1,
+      672,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      672,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.5.2.block.0.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 1053696,
+    "hw": 196,
+    "in_shape": [
+      1,
+      672,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      672,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.5.2.block.1.0",
+    "class": "Conv2d",
+    "macs": 3292800,
+    "bytes_moved": 1120896,
+    "hw": 196,
+    "in_shape": [
+      1,
+      672,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      672,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.5.2.block.1.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 1059072,
+    "hw": 196,
+    "in_shape": [
+      1,
+      672,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      672,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.5.2.block.1.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 1053696,
+    "hw": 196,
+    "in_shape": [
+      1,
+      672,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      672,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.5.2.block.2.avgpool",
+    "class": "AdaptiveAvgPool2d",
+    "macs": 0,
+    "bytes_moved": 529536,
+    "hw": 1,
+    "in_shape": [
+      1,
+      672,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      672,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.5.2.block.2.fc1",
+    "class": "Conv2d",
+    "macs": 18816,
+    "bytes_moved": 78176,
+    "hw": 1,
+    "in_shape": [
+      1,
+      672,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      28,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.5.2.block.2.activation",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 224,
+    "hw": 1,
+    "in_shape": [
+      1,
+      28,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      28,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.5.2.block.2.fc2",
+    "class": "Conv2d",
+    "macs": 18816,
+    "bytes_moved": 80752,
+    "hw": 1,
+    "in_shape": [
+      1,
+      28,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      672,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.5.2.block.2.scale_activation",
+    "class": "Sigmoid",
+    "macs": 0,
+    "bytes_moved": 5376,
+    "hw": 1,
+    "in_shape": [
+      1,
+      672,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      672,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.5.2.block.3.0",
+    "class": "Conv2d",
+    "macs": 14751744,
+    "bytes_moved": 915712,
+    "hw": 196,
+    "in_shape": [
+      1,
+      672,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      112,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.5.2.block.3.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 176512,
+    "hw": 196,
+    "in_shape": [
+      1,
+      112,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      112,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.5.2.stochastic_depth",
+    "class": "StochasticDepth",
+    "macs": 0,
+    "bytes_moved": 175616,
+    "hw": 196,
+    "in_shape": [
+      1,
+      112,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      112,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.6.0.block.0.0",
+    "class": "Conv2d",
+    "macs": 14751744,
+    "bytes_moved": 915712,
+    "hw": 196,
+    "in_shape": [
+      1,
+      112,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      672,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.6.0.block.0.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 1059072,
+    "hw": 196,
+    "in_shape": [
+      1,
+      672,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      672,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.6.0.block.0.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 1053696,
+    "hw": 196,
+    "in_shape": [
+      1,
+      672,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      672,
+      14,
+      14
+    ]
+  },
+  {
+    "path": "features.6.0.block.1.0",
+    "class": "Conv2d",
+    "macs": 823200,
+    "bytes_moved": 725760,
+    "hw": 49,
+    "in_shape": [
+      1,
+      672,
+      14,
+      14
+    ],
+    "out_shape": [
+      1,
+      672,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.6.0.block.1.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 268800,
+    "hw": 49,
+    "in_shape": [
+      1,
+      672,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      672,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.6.0.block.1.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 263424,
+    "hw": 49,
+    "in_shape": [
+      1,
+      672,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      672,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.6.0.block.2.avgpool",
+    "class": "AdaptiveAvgPool2d",
+    "macs": 0,
+    "bytes_moved": 134400,
+    "hw": 1,
+    "in_shape": [
+      1,
+      672,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      672,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.6.0.block.2.fc1",
+    "class": "Conv2d",
+    "macs": 18816,
+    "bytes_moved": 78176,
+    "hw": 1,
+    "in_shape": [
+      1,
+      672,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      28,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.6.0.block.2.activation",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 224,
+    "hw": 1,
+    "in_shape": [
+      1,
+      28,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      28,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.6.0.block.2.fc2",
+    "class": "Conv2d",
+    "macs": 18816,
+    "bytes_moved": 80752,
+    "hw": 1,
+    "in_shape": [
+      1,
+      28,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      672,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.6.0.block.2.scale_activation",
+    "class": "Sigmoid",
+    "macs": 0,
+    "bytes_moved": 5376,
+    "hw": 1,
+    "in_shape": [
+      1,
+      672,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      672,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.6.0.block.3.0",
+    "class": "Conv2d",
+    "macs": 6322176,
+    "bytes_moved": 685440,
+    "hw": 49,
+    "in_shape": [
+      1,
+      672,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      192,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.6.0.block.3.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 76800,
+    "hw": 49,
+    "in_shape": [
+      1,
+      192,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      192,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.6.1.block.0.0",
+    "class": "Conv2d",
+    "macs": 10838016,
+    "bytes_moved": 1148160,
+    "hw": 49,
+    "in_shape": [
+      1,
+      192,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1152,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.6.1.block.0.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 460800,
+    "hw": 49,
+    "in_shape": [
+      1,
+      1152,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1152,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.6.1.block.0.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 451584,
+    "hw": 49,
+    "in_shape": [
+      1,
+      1152,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1152,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.6.1.block.1.0",
+    "class": "Conv2d",
+    "macs": 1411200,
+    "bytes_moved": 566784,
+    "hw": 49,
+    "in_shape": [
+      1,
+      1152,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1152,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.6.1.block.1.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 460800,
+    "hw": 49,
+    "in_shape": [
+      1,
+      1152,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1152,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.6.1.block.1.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 451584,
+    "hw": 49,
+    "in_shape": [
+      1,
+      1152,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1152,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.6.1.block.2.avgpool",
+    "class": "AdaptiveAvgPool2d",
+    "macs": 0,
+    "bytes_moved": 230400,
+    "hw": 1,
+    "in_shape": [
+      1,
+      1152,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1152,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.6.1.block.2.fc1",
+    "class": "Conv2d",
+    "macs": 55296,
+    "bytes_moved": 226176,
+    "hw": 1,
+    "in_shape": [
+      1,
+      1152,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      48,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.6.1.block.2.activation",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 384,
+    "hw": 1,
+    "in_shape": [
+      1,
+      48,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      48,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.6.1.block.2.fc2",
+    "class": "Conv2d",
+    "macs": 55296,
+    "bytes_moved": 230592,
+    "hw": 1,
+    "in_shape": [
+      1,
+      48,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      1152,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.6.1.block.2.scale_activation",
+    "class": "Sigmoid",
+    "macs": 0,
+    "bytes_moved": 9216,
+    "hw": 1,
+    "in_shape": [
+      1,
+      1152,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      1152,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.6.1.block.3.0",
+    "class": "Conv2d",
+    "macs": 10838016,
+    "bytes_moved": 1148160,
+    "hw": 49,
+    "in_shape": [
+      1,
+      1152,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      192,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.6.1.block.3.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 76800,
+    "hw": 49,
+    "in_shape": [
+      1,
+      192,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      192,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.6.1.stochastic_depth",
+    "class": "StochasticDepth",
+    "macs": 0,
+    "bytes_moved": 75264,
+    "hw": 49,
+    "in_shape": [
+      1,
+      192,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      192,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.6.2.block.0.0",
+    "class": "Conv2d",
+    "macs": 10838016,
+    "bytes_moved": 1148160,
+    "hw": 49,
+    "in_shape": [
+      1,
+      192,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1152,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.6.2.block.0.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 460800,
+    "hw": 49,
+    "in_shape": [
+      1,
+      1152,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1152,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.6.2.block.0.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 451584,
+    "hw": 49,
+    "in_shape": [
+      1,
+      1152,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1152,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.6.2.block.1.0",
+    "class": "Conv2d",
+    "macs": 1411200,
+    "bytes_moved": 566784,
+    "hw": 49,
+    "in_shape": [
+      1,
+      1152,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1152,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.6.2.block.1.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 460800,
+    "hw": 49,
+    "in_shape": [
+      1,
+      1152,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1152,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.6.2.block.1.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 451584,
+    "hw": 49,
+    "in_shape": [
+      1,
+      1152,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1152,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.6.2.block.2.avgpool",
+    "class": "AdaptiveAvgPool2d",
+    "macs": 0,
+    "bytes_moved": 230400,
+    "hw": 1,
+    "in_shape": [
+      1,
+      1152,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1152,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.6.2.block.2.fc1",
+    "class": "Conv2d",
+    "macs": 55296,
+    "bytes_moved": 226176,
+    "hw": 1,
+    "in_shape": [
+      1,
+      1152,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      48,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.6.2.block.2.activation",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 384,
+    "hw": 1,
+    "in_shape": [
+      1,
+      48,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      48,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.6.2.block.2.fc2",
+    "class": "Conv2d",
+    "macs": 55296,
+    "bytes_moved": 230592,
+    "hw": 1,
+    "in_shape": [
+      1,
+      48,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      1152,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.6.2.block.2.scale_activation",
+    "class": "Sigmoid",
+    "macs": 0,
+    "bytes_moved": 9216,
+    "hw": 1,
+    "in_shape": [
+      1,
+      1152,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      1152,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.6.2.block.3.0",
+    "class": "Conv2d",
+    "macs": 10838016,
+    "bytes_moved": 1148160,
+    "hw": 49,
+    "in_shape": [
+      1,
+      1152,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      192,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.6.2.block.3.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 76800,
+    "hw": 49,
+    "in_shape": [
+      1,
+      192,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      192,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.6.2.stochastic_depth",
+    "class": "StochasticDepth",
+    "macs": 0,
+    "bytes_moved": 75264,
+    "hw": 49,
+    "in_shape": [
+      1,
+      192,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      192,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.6.3.block.0.0",
+    "class": "Conv2d",
+    "macs": 10838016,
+    "bytes_moved": 1148160,
+    "hw": 49,
+    "in_shape": [
+      1,
+      192,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1152,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.6.3.block.0.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 460800,
+    "hw": 49,
+    "in_shape": [
+      1,
+      1152,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1152,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.6.3.block.0.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 451584,
+    "hw": 49,
+    "in_shape": [
+      1,
+      1152,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1152,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.6.3.block.1.0",
+    "class": "Conv2d",
+    "macs": 1411200,
+    "bytes_moved": 566784,
+    "hw": 49,
+    "in_shape": [
+      1,
+      1152,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1152,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.6.3.block.1.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 460800,
+    "hw": 49,
+    "in_shape": [
+      1,
+      1152,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1152,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.6.3.block.1.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 451584,
+    "hw": 49,
+    "in_shape": [
+      1,
+      1152,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1152,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.6.3.block.2.avgpool",
+    "class": "AdaptiveAvgPool2d",
+    "macs": 0,
+    "bytes_moved": 230400,
+    "hw": 1,
+    "in_shape": [
+      1,
+      1152,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1152,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.6.3.block.2.fc1",
+    "class": "Conv2d",
+    "macs": 55296,
+    "bytes_moved": 226176,
+    "hw": 1,
+    "in_shape": [
+      1,
+      1152,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      48,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.6.3.block.2.activation",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 384,
+    "hw": 1,
+    "in_shape": [
+      1,
+      48,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      48,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.6.3.block.2.fc2",
+    "class": "Conv2d",
+    "macs": 55296,
+    "bytes_moved": 230592,
+    "hw": 1,
+    "in_shape": [
+      1,
+      48,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      1152,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.6.3.block.2.scale_activation",
+    "class": "Sigmoid",
+    "macs": 0,
+    "bytes_moved": 9216,
+    "hw": 1,
+    "in_shape": [
+      1,
+      1152,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      1152,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.6.3.block.3.0",
+    "class": "Conv2d",
+    "macs": 10838016,
+    "bytes_moved": 1148160,
+    "hw": 49,
+    "in_shape": [
+      1,
+      1152,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      192,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.6.3.block.3.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 76800,
+    "hw": 49,
+    "in_shape": [
+      1,
+      192,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      192,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.6.3.stochastic_depth",
+    "class": "StochasticDepth",
+    "macs": 0,
+    "bytes_moved": 75264,
+    "hw": 49,
+    "in_shape": [
+      1,
+      192,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      192,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.7.0.block.0.0",
+    "class": "Conv2d",
+    "macs": 10838016,
+    "bytes_moved": 1148160,
+    "hw": 49,
+    "in_shape": [
+      1,
+      192,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1152,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.7.0.block.0.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 460800,
+    "hw": 49,
+    "in_shape": [
+      1,
+      1152,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1152,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.7.0.block.0.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 451584,
+    "hw": 49,
+    "in_shape": [
+      1,
+      1152,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1152,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.7.0.block.1.0",
+    "class": "Conv2d",
+    "macs": 508032,
+    "bytes_moved": 493056,
+    "hw": 49,
+    "in_shape": [
+      1,
+      1152,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1152,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.7.0.block.1.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 460800,
+    "hw": 49,
+    "in_shape": [
+      1,
+      1152,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1152,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.7.0.block.1.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 451584,
+    "hw": 49,
+    "in_shape": [
+      1,
+      1152,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1152,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.7.0.block.2.avgpool",
+    "class": "AdaptiveAvgPool2d",
+    "macs": 0,
+    "bytes_moved": 230400,
+    "hw": 1,
+    "in_shape": [
+      1,
+      1152,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1152,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.7.0.block.2.fc1",
+    "class": "Conv2d",
+    "macs": 55296,
+    "bytes_moved": 226176,
+    "hw": 1,
+    "in_shape": [
+      1,
+      1152,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      48,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.7.0.block.2.activation",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 384,
+    "hw": 1,
+    "in_shape": [
+      1,
+      48,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      48,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.7.0.block.2.fc2",
+    "class": "Conv2d",
+    "macs": 55296,
+    "bytes_moved": 230592,
+    "hw": 1,
+    "in_shape": [
+      1,
+      48,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      1152,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.7.0.block.2.scale_activation",
+    "class": "Sigmoid",
+    "macs": 0,
+    "bytes_moved": 9216,
+    "hw": 1,
+    "in_shape": [
+      1,
+      1152,
+      1,
+      1
+    ],
+    "out_shape": [
+      1,
+      1152,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "features.7.0.block.3.0",
+    "class": "Conv2d",
+    "macs": 18063360,
+    "bytes_moved": 1763072,
+    "hw": 49,
+    "in_shape": [
+      1,
+      1152,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      320,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.7.0.block.3.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 128000,
+    "hw": 49,
+    "in_shape": [
+      1,
+      320,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      320,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.8.0",
+    "class": "Conv2d",
+    "macs": 20070400,
+    "bytes_moved": 1952000,
+    "hw": 49,
+    "in_shape": [
+      1,
+      320,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1280,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.8.1",
+    "class": "BatchNorm2d",
+    "macs": 0,
+    "bytes_moved": 512000,
+    "hw": 49,
+    "in_shape": [
+      1,
+      1280,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1280,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "features.8.2",
+    "class": "SiLU",
+    "macs": 0,
+    "bytes_moved": 501760,
+    "hw": 49,
+    "in_shape": [
+      1,
+      1280,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1280,
+      7,
+      7
+    ]
+  },
+  {
+    "path": "avgpool",
+    "class": "AdaptiveAvgPool2d",
+    "macs": 0,
+    "bytes_moved": 256000,
+    "hw": 1,
+    "in_shape": [
+      1,
+      1280,
+      7,
+      7
+    ],
+    "out_shape": [
+      1,
+      1280,
+      1,
+      1
+    ]
+  },
+  {
+    "path": "classifier.0",
+    "class": "Dropout",
+    "macs": 0,
+    "bytes_moved": 10240,
+    "hw": 1,
+    "in_shape": [
+      1,
+      1280
+    ],
+    "out_shape": [
+      1,
+      1280
+    ]
+  },
+  {
+    "path": "classifier.1",
+    "class": "Linear",
+    "macs": 1280000,
+    "bytes_moved": 5133120,
+    "hw": 1,
+    "in_shape": [
+      1,
+      1280
+    ],
+    "out_shape": [
+      1,
+      1000
+    ]
+  }
+]
