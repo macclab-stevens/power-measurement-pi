@@ -196,6 +196,30 @@ class MiniGPT(nn.Module):
         return self.head(x)
 
 
+class MiniGPTExplicit(torch.nn.Module):
+    def __init__(self, d_model=64, nhead=4, nlayer=2, vocab=256):
+        super().__init__()
+        import math
+        self.d=d_model; self.nhead=nhead
+        self.tok=torch.nn.Embedding(vocab,d_model)
+        self.pos=torch.nn.Parameter(torch.zeros(1,256,d_model))
+        self.qkv=torch.nn.ModuleList([torch.nn.Linear(d_model,3*d_model) for _ in range(nlayer)])
+        self.proj=torch.nn.ModuleList([torch.nn.Linear(d_model,d_model) for _ in range(nlayer)])
+        self.n1=torch.nn.ModuleList([torch.nn.LayerNorm(d_model) for _ in range(nlayer)])
+        self.n2=torch.nn.ModuleList([torch.nn.LayerNorm(d_model) for _ in range(nlayer)])
+        self.head=torch.nn.Linear(d_model,vocab)
+    def forward(self, idx):
+        import math, torch.nn.functional as F
+        T=idx.shape[1]; x=self.tok(idx)*math.sqrt(self.d)+self.pos[:,:T]
+        B,T,C=x.shape; H=self.nhead; Dh=C//H
+        for qkv,proj,n1,n2 in zip(self.qkv,self.proj,self.n1,self.n2):
+            h=n1(x); q,k,v=qkv(h).chunk(3,dim=-1)
+            q=q.view(B,T,H,Dh).transpose(1,2); k=k.view(B,T,H,Dh).transpose(1,2); v=v.view(B,T,H,Dh).transpose(1,2)
+            a=F.scaled_dot_product_attention(q,k,v,is_causal=True)
+            a=a.transpose(1,2).reshape(B,T,C); x=x+proj(a); x=x+n2(x)
+        return self.head(x)
+
+
 class TokenLMTask(TaskAdapter):
     name = "lm"
 
@@ -209,6 +233,9 @@ class TokenLMTask(TaskAdapter):
         self._seq = opt.seq
         if model == "minigpt":
             self._module = MiniGPT(vocab=self._vocab)
+            self._vocab = 256
+        elif model == "minigpt-explicit":
+            self._module = MiniGPTExplicit()
             self._vocab = 256
         elif model.startswith("hf:"):
             # optional transformers-backed causal LM (needs: uv add transformers)
