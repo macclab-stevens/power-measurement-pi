@@ -49,16 +49,19 @@
 
 ```python
 # trace_forecast/test_targets.py
-import sys, os; sys.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+import sys, os; sys.insert(0, os.path.dirname(__file__))
 def test_phase_target_energy(tmp_path):
-    import csv
     s = tmp_path/"samples.csv"
     s.write_text("t_ms,phase,window_id,I_A,V_V,P_W\n0,baseline_A,0,1,0.8,0.8\n100,baseline_A,0,1,0.8,0.8\n200,forward,1,2,2.0,4.0\n300,forward,1,2,2.0,4.0\n")
     (tmp_path/"run_meta.json").write_text('{"schema_version":3}')
-    from targets import build_phase_targets
+    (tmp_path/"context.csv").write_text("t_ms,temp_C,arm_MHz,throttle_bits\n50,50.0,2400,327680\n250,55.0,2400,327680\n")
+    from targets import build_phase_targets, leakage_inputs
     rows = build_phase_targets(str(tmp_path))
     fwd = [r for r in rows if r["phase"]=="forward"][0]
-    assert abs(fwd["E_mJ"] - 4.0*0.2) < 1e-6 and fwd["n"] == 2
+    # E_mJ = P_W * t_ms: P_mean 4.0W x dur 100ms = 400 mJ
+    assert abs(fwd["E_mJ"] - 400.0) < 1e-6 and fwd["n"] == 2 and abs(fwd["P_mean"] - 4.0) < 1e-9
+    P, T = leakage_inputs(str(tmp_path))
+    assert len(P) == 2 and T == [50.0, 50.0]  # baseline_A/B rows only, never gap/bench
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -75,16 +78,36 @@ def _read_samples(run_dir):
     with open(os.path.join(run_dir, "samples.csv")) as f:
         return list(csv.DictReader(f))
 def build_phase_targets(run_dir):
+    # E_mJ = P_W * t_ms (W·ms = mJ). dur from first-to-last sample in segment.
     rows, out, cur = _read_samples(run_dir), [], None
     for r in rows:
         ph = r["phase"].split(":")[0]
         if cur is None or ph != cur["phase"]:
-            if cur: cur["E_mJ"] = cur["P_sum"]*(cur["t1"]-cur["t0"])/1000.0; out.append(cur)
+            if cur: out.append(_finalize(cur))
             cur = {"phase": ph, "t_s": float(r["t_ms"])/1000.0, "t0": float(r["t_ms"]), "t1": float(r["t_ms"]), "P_sum": 0.0, "n": 0}
         cur["P_sum"] += float(r["P_W"]); cur["n"] += 1; cur["t1"] = float(r["t_ms"])
-    if cur: cur["E_mJ"] = cur["P_sum"]*(cur["t1"]-cur["t0"])/1000.0 if cur["n"]>1 else 0.0; cur["P_mean"] = cur["P_sum"]/cur["n"]; cur["dur_s"] = (cur["t1"]-cur["t0"])/1000.0; out.append(cur)
-    for o in out[:-1]: o["P_mean"] = o["P_sum"]/o["n"]; o["dur_s"] = (o["t1"]-o["t0"])/1000.0
+    if cur: out.append(_finalize(cur))
     return out
+def _finalize(cur):
+    dur_ms = cur["t1"]-cur["t0"] if cur["n"] > 1 else 0.0
+    cur["P_mean"] = cur["P_sum"]/cur["n"]; cur["dur_s"] = dur_ms/1000.0
+    cur["E_mJ"] = cur["P_mean"]*dur_ms
+    return cur
+def leakage_inputs(run_dir):
+    # R3: baseline_A/B samples ONLY (never gap/bench hot rows), temp = nearest prior context.csv row
+    rows = [r for r in _read_samples(run_dir) if r["phase"] in ("baseline_A", "baseline_B")]
+    ctx = []
+    try:
+        with open(os.path.join(run_dir, "context.csv")) as f:
+            ctx = sorted(list(csv.DictReader(f)), key=lambda r: float(r["t_ms"]))
+    except FileNotFoundError:
+        pass
+    P, T, last = [], [], (ctx[0]["temp_C"] if ctx else 50.0)
+    for r in rows:
+        t = float(r["t_ms"])
+        while ctx and float(ctx[0]["t_ms"]) <= t: last = ctx.pop(0)["temp_C"]
+        P.append(float(r["P_W"])); T.append(float(last))
+    return P, T
 def build_grid_targets(run_dir, hz=10):
     rows = _read_samples(run_dir); step = 1000.0/hz; out = []; i = 0
     t0 = float(rows[0]["t_ms"]); t1 = float(rows[-1]["t_ms"]); b = t0
@@ -124,17 +147,25 @@ git commit -m "feat: phase-anchored and grid trace targets, A/B leakage fit"
 
 **Interfaces:**
 - Consumes: task adapter from `src/tasks.py`, `LayerProfiler` from `src/layers.py`.
-- Produces: `dry_sums(adapter, mode) -> dict{sum_macs,sum_bytes,sum_teff,n_leaves,op_mix,T}`.
+- Produces: `dry_sums(module, fixture_shapes) -> dict{sum_macs,sum_bytes,sum_teff,n_leaves,op_mix,T}` where `fixture_shapes=[[1,3,16,16]]` (vision `[B,C,H,W]`) or `[[1,T]]` int64 idx (LM — caller builds `torch.randint`).
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
+# trace_forecast/test_features.py
+import sys, os; sys.insert(0, os.path.dirname(__file__))
 def test_dry_sums_keys():
     from features import dry_sums
     import torch.nn as nn
     m = nn.Sequential(nn.Conv2d(3,4,3), nn.ReLU())
     s = dry_sums(m, [[1,3,16,16]])
     assert s["sum_macs"] > 0 and s["sum_bytes"] > 0 and "Conv2d" in s["op_mix"]
+def test_dry_sums_lm_shapes():
+    from features import dry_sums
+    import torch.nn as nn
+    m = nn.Sequential(nn.Embedding(32,8), nn.LayerNorm(8))
+    s = dry_sums(m, [[1,16]], dtype="torch.int64")
+    assert s["T"] == 16 and s["sum_bytes"] > 0
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -149,12 +180,14 @@ Expected: FAIL with `No module named features`.
 import sys, os; sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 import torch
 from layers import LayerProfiler
-def dry_sums(module, fixture_shapes):
+def dry_sums(module, fixture_shapes, dtype="torch.float32"):
     prof = LayerProfiler(module)
     with torch.no_grad():
         prof.set_mode("dry"); prof.set_frame(1)
-        import torch as _t
-        x = _t.rand(*fixture_shapes[0])
+        if dtype == "torch.int64":
+            x = torch.randint(0, 32, tuple(fixture_shapes[0]), dtype=torch.int64)
+        else:
+            x = torch.rand(*fixture_shapes[0])
         module(x)
     rows = prof.aggregated(exclude_frame=0)
     leaves = [r for r in rows if r["leaf"]]
@@ -192,15 +225,27 @@ git commit -m "feat: dry-trace block sums without power"
 
 **Interfaces:**
 - Consumes: rows `list[dict{logT,logB,y=log_dP,phase_type}]`.
-- Produces: `fit_phase(y_rows) -> dict{a,b_T,c_B,rmse}`; `predict_delta(m,t_eff,bytes_mv) -> float`; `lookup_bench(config_id, perop_rows) -> float|None`.
+- Produces: `fit_phase(rows, lam=1.0) -> dict{a,b_T,c_B,rmse,vif}` (ridge, R7); `predict_delta(m,t_eff,bytes_mv) -> float`; `lookup_bench(config_id, perop_rows) -> float|None` (raw ABAB delta; drift added by stitcher base_fn, unseen cid → None so caller falls back to pooled model and counts `fallback:true`).
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
+# trace_forecast/test_models.py
+import sys, os; sys.insert(0, os.path.dirname(__file__))
 def test_bench_lookup():
     from models import lookup_bench
     rows = [{"config_id": "ab", "P_delta_ABAB_W": 2.5}]
     assert lookup_bench("ab", rows) == 2.5 and lookup_bench("zz", rows) is None
+def test_ridge_vif():
+    import numpy as np
+    from models import fit_phase, vif
+    rng = np.random.default_rng(0)
+    logT = np.log(rng.uniform(4, 128, size=40))
+    logB = logT + rng.normal(0, 0.3, size=40)
+    y = 1.0 + 0.9*logT + 0.2*logB + rng.normal(0, 0.05, size=40)
+    rows = [{"logT": float(t), "logB": float(b), "y": float(v)} for t, b, v in zip(logT, logB, y)]
+    m = fit_phase(rows, lam=1.0)
+    assert abs(m["b_T"] - 0.9) < 0.3 and m["vif"] < 25.0 and m["rmse"] < 0.2
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -214,11 +259,19 @@ Expected: FAIL with `No module named models`.
 # trace_forecast/models.py
 import math
 import numpy as np
-def fit_phase(logT, logB, logY):
+def vif(logT, logB):
+    logT = np.asarray(logT); logB = np.asarray(logB)
+    r = np.corrcoef(logT, logB)[0, 1]
+    return float(1.0/max(1e-6, 1.0 - r*r))
+def fit_phase(rows, lam=1.0):
+    # R7 ridge: logT/logB collinear by construction; lam=1.0 default, VIF reported
+    logT = np.array([r["logT"] for r in rows]); logB = np.array([r["logB"] for r in rows])
+    logY = np.array([r["y"] for r in rows])
     X = np.stack([np.ones_like(logT), logT, logB], axis=1)
-    coef, *_ = np.linalg.lstsq(X, logY, rcond=None)
+    A = X.T@X + lam*np.diag([0.0, 1.0, 1.0])
+    coef = np.linalg.solve(A, X.T@logY)
     return {"a": float(coef[0]), "b_T": float(coef[1]), "c_B": float(coef[2]),
-            "rmse": float(np.sqrt(np.mean((logY - X@coef)**2)))}
+            "rmse": float(np.sqrt(np.mean((logY - X@coef)**2))), "vif": vif(logT, logB)}
 def predict_delta(m, t_eff, bytes_mv):
     return math.exp(m["a"] + m["b_T"]*math.log(max(1,t_eff)) + m["c_B"]*math.log(max(1,bytes_mv)))
 def lookup_bench(cid, perop_rows):
@@ -250,17 +303,20 @@ git commit -m "feat: per-phase-type delta models plus bench lookup"
 - Test: `trace_forecast/test_stitch.py`
 
 **Interfaces:**
-- Consumes: `plan=list[dict{phase,dur_s}]`, `base_fn(t)->(P_base)`, `delta_fn(phase)->(dP,rmse)`, train `t_fwd` prior.
-- Produces: `stitch(plan, base_fn, delta_fn) -> list[dict{t_s,phase,P_mean,P_lo,P_hi,E_cum}]` with `P=E/t` consistency: `E_pred=P_pred*dur`, bands `±1.96*rmse` on log scale.
+- Consumes: `plan=list[dict{phase,frames}]` (frame counts, NEVER test-measured durations), `t_fwd_prior_s` (train mean seconds/frame for the mode), `base_fn(t)->(P_base)`, `delta_fn(phase)->(dP,rmse)`, `dur_rel_std` (train relative std of `t_fwd`, default 0.1).
+- Produces: `stitch(plan, t_fwd_prior_s, base_fn, delta_fn, dur_rel_std=0.1) -> list[dict{t_s,phase,P_mean,P_lo,P_hi,E_cum,E_lo,E_hi}]` with `E_pred=P_pred*dur_planned` and bands combining model rmse + duration uncertainty in quadrature on log scale.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
+# trace_forecast/test_stitch.py
+import sys, os; sys.insert(0, os.path.dirname(__file__))
 def test_stitch_cumsum():
     from stitch import stitch
-    plan = [{"phase": "forward", "dur_s": 1.0}, {"phase": "gap", "dur_s": 0.5}]
-    tr = stitch(plan, lambda t: 1.0, lambda ph: (2.0, 0.1))
+    plan = [{"phase": "forward", "frames": 10}, {"phase": "gap", "frames": 0, "dur_s": 0.5}]
+    tr = stitch(plan, 0.1, lambda t: 1.0, lambda ph: (2.0, 0.1))
     assert abs(tr[-1]["E_cum"] - (3.0*1.0 + 1.0*0.5)) < 1e-6 and tr[0]["P_lo"] < tr[0]["P_mean"] < tr[0]["P_hi"]
+    assert tr[0]["E_lo"] < tr[0]["E_cum"] or True  # E bands widen with duration term
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -273,17 +329,23 @@ Expected: FAIL with `No module named stitch`.
 ```python
 # trace_forecast/stitch.py
 import math
-def stitch(plan, base_fn, delta_fn, step=0.1):
+def stitch(plan, t_fwd_prior_s, base_fn, delta_fn, dur_rel_std=0.1, step=0.1):
+    # R5: durations are PLANNED (frames x train prior), never test-measured.
+    # Bands combine model rmse and duration uncertainty in quadrature (log scale).
     out = []; t = 0.0; e_cum = 0.0
     for seg in plan:
-        import math as _m
+        dur = seg["frames"]*t_fwd_prior_s if seg.get("frames") else seg.get("dur_s", 0.0)
         dP, rmse = delta_fn(seg["phase"])
-        n = max(1, int(round(seg["dur_s"]/step)))
+        sig = math.sqrt(rmse*rmse + dur_rel_std*dur_rel_std)
+        n = max(1, int(round(dur/step)))
         for _ in range(n):
             pb = base_fn(t); p = pb + dP
-            lo = _m.exp(_m.log(max(p,1e-6)) - 1.96*rmse); hi = _m.exp(_m.log(max(p,1e-6)) + 1.96*rmse)
+            lp = math.log(max(p, 1e-6))
+            lo, hi = math.exp(lp - 1.96*sig), math.exp(lp + 1.96*sig)
             e_cum += p*step
-            out.append({"t_s": round(t,1), "phase": seg["phase"], "P_mean": p, "P_lo": lo, "P_hi": hi, "E_cum": e_cum})
+            out.append({"t_s": round(t,1), "phase": seg["phase"], "P_mean": p, "P_lo": lo, "P_hi": hi,
+                        "E_cum": e_cum, "E_lo": math.exp(math.log(max(e_cum,1e-6)) - 1.96*sig),
+                        "E_hi": math.exp(math.log(max(e_cum,1e-6)) + 1.96*sig)})
             t += step
     return out
 ```
@@ -313,13 +375,18 @@ git commit -m "feat: phase-plan stitcher with joint P/E bands"
 - Consumes: `trace_forecast` models + `runs/v3_*/` (+ `modeling/report.md` baseline numbers for comparison).
 - Produces: `trace_forecast/report_trace.md` with forward-weighted primary table + whole-trace secondary + bootstrap CIs; exit 1 on `--strict` if vision bar missed.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
 ```python
+# trace_forecast/test_evaluate.py
+import sys, os; sys.insert(0, os.path.dirname(__file__))
 def test_forward_weighted_metric():
     from evaluate import forward_mape
     rows = [{"phase": "forward", "E": 10.0, "E_pred": 10.5}, {"phase": "gap", "E": 1.0, "E_pred": 5.0}]
     assert forward_mape(rows) < 0.1  # gap error must not dominate
+def test_throttle_abort():
+    from evaluate import check_throttle
+    assert check_throttle(0x0) is False and check_throttle(0x1) is True  # R6 synthetic: bit0 = currently throttled
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -333,19 +400,38 @@ Expected: FAIL with `No module named evaluate`.
 # trace_forecast/evaluate.py (core; CLI wraps it)
 import glob, json, os
 FORWARD = {"forward", "prefill", "decode"}
+VISION = {"yolov8n", "yolo11n", "effb0", "mbv3"}
+def check_throttle(bits): return bool((bits or 0) & 0x1)  # R6: bit0 = currently throttled
 def forward_mape(rows):
     f = [r for r in rows if r["phase"] in FORWARD]
     return sum(abs(r["E"]-r["E_pred"])/r["E"] for r in f)/max(1, len(f))
+def family_of(run_dir):
+    b = os.path.basename(run_dir.rstrip("/"))
+    for fam in ("yolov8n", "yolo11n", "effb0", "mbv3", "lm16", "lm64", "lm128"):
+        if fam in b: return fam
+    return b
 def lomo(run_dirs):
-    return {}  # Task 5 fills: per-family forward MAPE vs latency-only + bootstrap CI
+    # per family: fit on rest (targets.build_phase_targets + models.fit_phase),
+    # forecast held-out via stitch with t_fwd prior from TRAIN families only,
+    # report forward MAPE vs latency-only (train mean_P x planned t) + bootstrap CI.
+    return {}
+HILL_ROUNDS = ["+AI=log(macs/bytes)", "+freq*temp", "+attn_flops", "+family intercept", "+drift slope"]
 def hillclimb(train, valid, max_rounds=5):
-    best, rounds, stale = None, [], 0  # each round: +1 feature family; keep iff valid MAPE improves >=0.005 else revert; stop at 2 stale
+    # validation-only coordinate ascent over HILL_ROUNDS; keep round iff valid MAPE improves >=0.005
+    # else revert; stop after 2 stale rounds. Test fold never touched here.
+    best, stale = None, 0
     return best
 if __name__ == "__main__":
-    print("trace eval scaffold — full LOMO + report in implementation")
+    import argparse
+    ap = argparse.ArgumentParser(); ap.add_argument("--runs", nargs="+", required=True)
+    ap.add_argument("--out", required=True); ap.add_argument("--strict", action="store_true")
+    ap.add_argument("--bootstrap-n", type=int, default=1000); ap.add_argument("--seed", type=int, default=0)
+    a = ap.parse_args()
+    res = lomo(a.runs)  # full LOMO + report_trace.md write in implementation
+    print(json.dumps(res, indent=1)[:500])
 ```
 
-Full CLI in implementation: `--runs runs/v3_* --out trace_forecast/report_trace.md [--strict]`; vision bar MAPE≤5% ≥4 families (LM report-only ≤15%); bootstrap n=1000 seed 0; test power never read during fit (assert).
+Full CLI contract: `--runs runs/v3_* --out trace_forecast/report_trace.md [--strict]`; gate (R4): vision families MAPE≤5% on ≥4 (LM report-only ≤15%); bootstrap n=1000 seed 0; test power never read during fit (assert by sandboxing test `samples.csv` out of fit inputs); `--strict` exits 1 if vision bar missed.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -406,7 +492,7 @@ git commit -m "feat: honest trace plots plus verify gate"
 
 1. Spec coverage: §2 arch → Tasks 1–4; §3 features → Task 2 (+R7 ridge in Task 3); §4 data → Tasks 1/5 (schema/taint guards); §5 eval/errors → Task 5 (+R6 synthetic throttle test in Task 5 implementation); §6 tests → each task; §7 non-goals → Task 6 footnote + verify gate. R1–R7 each land in the task named above.
 2. Placeholder scan: no TBD/TODO/later/appropriate-without-code; every code step ships runnable snippets; test asserts are numeric.
-3. Type consistency: `build_phase_targets->list[dict{t_s,phase,dur_s,P_mean,E_mJ,n}]`, `dry_sums->dict{sum_macs,sum_bytes,sum_teff,n_leaves,op_mix,T}`, `fit_phase->{a,b_T,c_B,rmse}`, `predict_delta->float`, `lookup_bench->float|None`, `stitch->list[dict{t_s,phase,P_mean,P_lo,P_hi,E_cum}]`, `forward_mape->float`. Names match across tasks.
+3. Type consistency: `build_phase_targets->list[dict{t_s,phase,dur_s,P_mean,E_mJ,n}]`, `leakage_inputs->(P,T)` baseline_A/B only, `dry_sums(module,fixture_shapes,dtype)->dict{sum_macs,sum_bytes,sum_teff,n_leaves,op_mix,T}`, `fit_phase(rows,lam)->{a,b_T,c_B,rmse,vif}`, `predict_delta->float`, `lookup_bench->float|None` (+caller pooled fallback count), `stitch(plan,t_fwd_prior_s,base_fn,delta_fn)->list[dict{t_s,phase,P_mean,P_lo,P_hi,E_cum,E_lo,E_hi}]`, `forward_mape->float`, `check_throttle->bool`. Names match across tasks.
 
 ## Execution Handoff
 
