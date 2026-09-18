@@ -44,6 +44,59 @@ def _fmt(ts: float) -> str:
     return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
 
 
+MATRIX = [
+    ("v3_yolov8n_640", ["--task", "image", "--model", "yolov8n.pt",
+                        "--check-image", "bus.jpg", "--frames", "20", "--bench", "2"]),
+    ("v3_yolo11n_640", ["--task", "image", "--model", "yolo11n.pt",
+                        "--check-image", "bus.jpg", "--frames", "20", "--bench", "2"]),
+    ("v3_effb0", ["--task", "image", "--model", "torchvision:efficientnet_b0",
+                  "--frames", "15", "--bench", "2"]),
+    ("v3_mbv3", ["--task", "image", "--model", "torchvision:mobilenet_v3_small",
+                 "--frames", "15", "--bench", "2"]),
+    ("v3_lm16", ["--task", "lm", "--model", "minigpt-explicit",
+                 "--seq", "16", "--frames", "15", "--bench", "1"]),
+    ("v3_lm64", ["--task", "lm", "--model", "minigpt-explicit",
+                 "--seq", "64", "--frames", "15", "--bench", "1"]),
+    ("v3_lm128", ["--task", "lm", "--model", "minigpt-explicit",
+                  "--seq", "128", "--frames", "10", "--bench", "1"]),
+]
+
+
+def _run_matrix(args, log) -> int:
+    """Run the v3 6-family collection matrix (Task 4); returns 0 iff all GREEN."""
+    results = []
+    for name, spec in MATRIX:
+        outdir = os.path.join(args.out, name)
+        cmd = [sys.executable, "src/run.py", *spec, "--out", outdir]
+        log.info(f"matrix {name}: {' '.join(cmd)}")
+        try:
+            p = subprocess.run(cmd, cwd=HERE, capture_output=True,
+                               text=True, timeout=7200)
+        except subprocess.TimeoutExpired:
+            log.error(f"matrix {name}: TIMEOUT (2h cap)")
+            results.append((name, "TIMEOUT"))
+            continue
+        out = (p.stdout or "") + "\n" + (p.stderr or "")
+        tail = "\n".join(out.strip().splitlines()[-3:])
+        if p.returncode != 0:
+            log.error(f"matrix {name}: FAILED rc={p.returncode}\n{tail}")
+            results.append((name, f"RC{p.returncode}"))
+        else:
+            v = subprocess.run([sys.executable, "verify.py", outdir], cwd=HERE,
+                               capture_output=True, text=True, timeout=300)
+            green = "OVERALL: GREEN" in (v.stdout or "")
+            log.info(f"matrix {name}: {'GREEN' if green else 'VERIFY-FAIL'}\n{tail}")
+            results.append((name, "GREEN" if green else "VERIFY-FAIL"))
+        if args.cooldown > 0:
+            time.sleep(args.cooldown)
+    print("MATRIX SUMMARY:")
+    bad = 0
+    for name, st in results:
+        print(f"  {name}: {st}")
+        bad += st != "GREEN"
+    return 1 if bad else 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -66,9 +119,11 @@ def main() -> int:
     ap.add_argument("--max-fail", type=int, default=1,
                     help="consecutive failed cycles before collection aborts")
     ap.add_argument("--out", default="runs", help="output base directory")
+    ap.add_argument("--matrix", action="store_true",
+                    help="run the v3 6-family collection matrix (Task 4) and exit")
     args = ap.parse_args()
 
-    if args.hours <= 0 and args.runs <= 0:
+    if not args.matrix and args.hours <= 0 and args.runs <= 0:
         ap.error("give at least one of --hours or --runs")
 
     os.makedirs(args.out, exist_ok=True)
@@ -79,6 +134,10 @@ def main() -> int:
                   logging.FileHandler(os.path.join(args.out, "collect.log"))],
     )
     log = logging.getLogger("collect")
+
+    if args.matrix:
+        log.info("matrix mode: v3 6-family collection")
+        return _run_matrix(args, log)
 
     deadline = time.time() + args.hours * 3600.0 if args.hours > 0 else None
     report_path = os.path.join(args.out, "collect_report.csv")

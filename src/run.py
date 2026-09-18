@@ -178,6 +178,7 @@ def main():
                    ["path", "config_id", "class", "config_json",
                     "input_shapes", "input_dtypes", "out_shapes", "callsite", "mode",
                     "leaf", "params", "macs", "bytes_moved", "arith_intensity",
+                    "t_eff", "seq_len",
                     "count", "lat_mean_ms", "lat_median_ms", "lat_std_ms"], layer_rows)
         logger.info(f"layer profile: {len(layer_rows)} sites; "
                     f"{sum(1 for r in layer_rows if r['leaf'])} leaf configs")
@@ -203,6 +204,7 @@ def main():
         _write_csv(os.path.join(outdir, "perop_power.csv"),
                    ["config_id", "class", "config_json", "input_kind",
                     "input_shapes", "input_dtypes", "macs", "bytes_moved",
+                    "t_eff", "seq_len",
                     "window_s", "N_calls", "t_per_call_ms", "P_mean_W",
                     "P_delta_W", "baseline_interp_W", "P_delta_ABAB_W",
                     "E_per_call_mJ", "temp_start_C", "temp_end_C",
