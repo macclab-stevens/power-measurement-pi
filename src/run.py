@@ -77,7 +77,10 @@ def main():
     ap.add_argument("--seq", type=int, default=64, help="LM context length (prefill)")
     ap.add_argument("--check-image", default=None,
                     help="detection oracle: require object conf>=--conf on this image file")
-    ap.add_argument("--pin-freq", action="store_true", help="requires sudo (default off)")
+    ap.add_argument("--live-camera", action="store_true",
+                    help="feed real camera frames (cam.py) instead of synthetic fixtures")
+    ap.add_argument("--pin-freq", action="store_true",
+                    help="pin CPU to performance governor for consistent power measurements")
     args = ap.parse_args()
 
     torch.set_num_threads(args.threads)
@@ -144,6 +147,7 @@ def main():
         for mode in modes:
             logger.info(f"== mode: {mode} ==")
             prof.set_mode(mode)
+            sampler.marker(mode)  # tag phase so samples.csv carries measured mean-P
             for f in range(args.frames):
                 prof.set_frame(f)
                 if f == 0:
@@ -198,6 +202,11 @@ def main():
                    ["t_ms", "phase", "window_id", "I_A", "V_V", "P_W"], srows)
         ctx = sampler.context()
         flat = []
+        rail_keys: list[str] = []
+        for c in ctx:
+            for k in c.get("dump", {}):
+                if f"rail_{k}" not in rail_keys:
+                    rail_keys.append(f"rail_{k}")
         for c in ctx:
             row = {"t_ms": c.get("t_ms"), "temp_C": c.get("temp_C"),
                    "arm_MHz": c.get("arm_MHz"), "throttle_bits": c.get("throttle_bits")}
@@ -205,7 +214,7 @@ def main():
                 row[f"rail_{k}"] = v
             flat.append(row)
         _write_csv(os.path.join(outdir, "context.csv"),
-                   ["t_ms", "temp_C", "arm_MHz", "throttle_bits"], flat)
+                   ["t_ms", "temp_C", "arm_MHz", "throttle_bits"] + rail_keys, flat)
 
         # execution order (structural, per mode) -> run_meta
         op_seq: dict[str, list] = {}
@@ -292,9 +301,12 @@ def main():
         logger.info(f"[ok] dataset written to {outdir}")
     finally:
         sampler.stop()
+        try:
+            task.stop_camera()
+        except AttributeError:
+            pass
         if args.pin_freq:
             os.system("sudo sh -c 'echo ondemand > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor' 2>/dev/null")
-
 
 if __name__ == "__main__":
     main()

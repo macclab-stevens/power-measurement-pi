@@ -128,7 +128,7 @@ class PowerSampler:
     def snapshot_env(self) -> tuple[float | None, int | None, int | None]:
         """(temp_C, arm_freq_MHz, throttled_bits) measured synchronously; used to bracket bench windows."""
         try:
-            return _measure_temp(), _measure_clock_arm(), _get_throttled()
+            return _measure_temp(), _measure_clock_arm() // 1_000_000, _get_throttled()
         except Exception as e:  # noqa: BLE001 - env snapshot must never kill the bench
             return None, None, None
 

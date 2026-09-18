@@ -81,13 +81,25 @@ class ImageTask(TaskAdapter):
         self._conf = 0.25
         self._check_image = None
         self._checked = False
+        self._live = False
+        self._cam = None
+        self._frame_iter = None
 
     def load(self, model: str, opt):
         self._imgsz = opt.imgsz
         self._conf = opt.conf
         self._check_image = opt.check_image
+        self._live = getattr(opt, "live_camera", False)
+        # torchvision models (e.g. torchvision:efficientnet_b0)
+        if model.startswith(("torchvision:", "tv:")):
+            import torchvision.models as tvm
+            m_name = model.split(":", 1)[1]
+            if not hasattr(tvm, m_name):
+                raise ValueError(f"unknown torchvision model: {m_name}")
+            self._module = getattr(tvm, m_name)(weights=None).eval()
+            self._is_detection = False
         # ultralytics detection (yolo11n.pt / yolov8n.pt / .model)
-        if model.endswith(".pt") or model.startswith(("yolo", "yolov")):
+        elif model.endswith(".pt") or model.startswith(("yolo", "yolov")):
             import ultralytics  # noqa: WPS433
             yolo = ultralytics.YOLO(model)
             self._module = yolo.model            # the DetectionModel nn.Module
@@ -111,11 +123,28 @@ class ImageTask(TaskAdapter):
         return ["forward"]
 
     def _fixture(self):
+        if self._live:
+            if self._frame_iter is None:
+                from cam import Camera
+                self._cam = Camera(size=(640, 480))
+                meta = self._cam.start()
+                self._frame_iter = self._cam.frames()
+                self.cam_meta = meta
+            import numpy as np
+            frame = next(self._frame_iter)                     # HWC uint8 RGB888
+            t = torch.from_numpy(np.ascontiguousarray(frame)).permute(2, 0, 1)
+            return t.unsqueeze(0).float() / 255.0              # 1,3,H,W float32
         return torch.rand(1, 3, self._imgsz, self._imgsz)
 
     def run_one(self, mode: str):
         with torch.no_grad():
             return self._module(self._fixture())
+
+    def stop_camera(self):
+        if self._cam is not None:
+            self._cam.stop()
+            self._cam = None
+            self._frame_iter = None
 
     def oracle(self) -> bool:
         if self._is_detection and self._check_image:

@@ -97,7 +97,7 @@ def bench_configs(profiler, sampler, baseline_W, bench_s, require_samples=30,
 
 def _bench_one(entry, sampler, baseline_W, bench_s, require_samples, max_retries, log=None):
     try:
-        args = _replay_args(entry["input_kind"])
+        args = _replay_args(entry.get("input_kind") or {"args": []})
     except Exception as e:  # noqa: BLE001
         if log:
             log(f"    input alloc failed: {e}")
@@ -115,9 +115,9 @@ def _bench_one(entry, sampler, baseline_W, bench_s, require_samples, max_retries
 
     target_ms = bench_s * 1000.0
     msec, retries = bench_s * 1000.0, 0
+    env0 = sampler.snapshot_env()  # sync reads BEFORE the window marker: no self-contamination
     sampler.marker(f"bench:{entry['config_id']}")
     w0 = sampler.now_ms()
-    env0 = sampler.snapshot_env()
     try:
         while True:
             t_start = time.perf_counter()
@@ -152,8 +152,8 @@ def _bench_one(entry, sampler, baseline_W, bench_s, require_samples, max_retries
         "config_id": entry["config_id"],
         "class": entry["class"],
         "config_json": entry["config_json"],
-        "input_kind": "multi",
-        "input_shapes": entry["input_shapes"],
+        "input_kind": entry.get("input_kind", "multi"),
+        "input_dtypes": entry.get("input_dtypes", ""),
         "macs": (entry.get("macs") if entry.get("macs") is not None else None),
         "bytes_moved": entry.get("bytes_moved"),
         "window_s": round((sampler.now_ms() - w0) / 1000.0, 3),
