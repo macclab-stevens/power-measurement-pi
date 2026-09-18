@@ -179,9 +179,13 @@ def _bench_one(entry, sampler, baseline_W, bench_s, require_samples, max_retries
     p_delta_abab = (p_mean - baseline_interp) if p_mean is not None and baseline_interp is not None else None
     if log:
         t0c, f0 = (env0[0], env0[1]) if env0[0] else (None, None)
-        log(f"    done t={t_per_call:.3f}ms | P_delta={p_delta:.4f}W | "
-            f"P_delta_ABAB={p_delta_abab:.4f}W | base_interp={baseline_interp:.4f}W | "
-            f"E={p_delta * t_per_call:.4f}mJ | N={n} | samples={stats['count']} | "
+        pdS = f"{p_delta:.4f}" if p_delta is not None else "None"
+        paS = f"{p_delta_abab:.4f}" if p_delta_abab is not None else "None"
+        biS = f"{baseline_interp:.4f}" if baseline_interp is not None else "None"
+        eS = f"{p_delta * t_per_call:.4f}" if p_delta is not None and t_per_call else "None"
+        log(f"    done t={t_per_call:.3f}ms | P_delta={pdS}W | "
+            f"P_delta_ABAB={paS}W | base_interp={biS}W | "
+            f"E={eS}mJ | N={n} | samples={stats['count']} | "
             f"temp {t0c}->{env1[0]}C | freq {f0}->{env1[1]}MHz" if t_per_call else
             f"    done (no calls)")
     return {

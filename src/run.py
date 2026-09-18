@@ -160,15 +160,17 @@ def main():
         tB0 = sampler.now_ms()
         time.sleep(2.0)
         baseB = sampler.window(tB0, sampler.now_ms())
-        envB = sampler.snapshot_env()
         aP, bP = baseA["mean_P"], baseB["mean_P"]
         baseline_W = (aP + bP) / 2 if aP is not None and bP is not None else None
         baseline_drift_W = abs(aP - bP) if aP is not None and bP is not None else None
         if baseline_W is None or not (BASELINE_W_MIN <= baseline_W <= BASELINE_W_MAX):
             raise SystemExit(f"baseline_W={baseline_W} outside "
                              f"[{BASELINE_W_MIN}, {BASELINE_W_MAX}] - aborting")
-        logger.info(f"ABAB baseline: A={aP:.4f}W B={bP:.4f}W mean={baseline_W:.4f}W "
-                    f"drift={baseline_drift_W:.4f}W")
+        aS = f"{aP:.4f}" if aP is not None else "None"
+        bS = f"{bP:.4f}" if bP is not None else "None"
+        mS = f"{baseline_W:.4f}" if baseline_W is not None else "None"
+        dS = f"{baseline_drift_W:.4f}" if baseline_drift_W is not None else "None"
+        logger.info(f"ABAB baseline: A={aS}W B={bS}W mean={mS}W drift={dS}W")
 
         # ---- outputs ---------------------------------------------------------
         layer_rows = prof.aggregated(exclude_frame=0)
@@ -244,7 +246,7 @@ def main():
             "threads": args.threads, "frames_per_mode": args.frames,
             "warmup_passes": args.warmup, "params_M": round(n_params / 1e6, 3),
             "mean_fps": None,
-            "baseline_W": round(baseline_W, 6),
+            "baseline_W": round(baseline_W, 6) if baseline_W is not None else None,
             "baseline_A_W": round(aP, 6) if aP is not None else None,
             "baseline_B_W": round(bP, 6) if bP is not None else None,
             "baseline_drift_W": round(baseline_drift_W, 6) if baseline_drift_W is not None else None,
@@ -301,7 +303,7 @@ def main():
             errors.append("baseline drift unknown (empty A/B window)")
         elif baseline_drift_W > 0.5:
             errors.append(f"baseline drift {baseline_drift_W:.3f}W > 0.5W")
-        thr = envB[2] if envB else None
+        thr = ctx[-1].get("throttle_bits") if ctx else None
         if thr is not None and (thr & 0x1) != 0:
             errors.append(f"throttled during run (throttle_bits=0x{thr:x})")
         if not task.oracle():

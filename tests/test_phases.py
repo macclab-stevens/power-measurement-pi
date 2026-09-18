@@ -12,5 +12,6 @@ def test_no_idle_contamination():
     phases = {r["phase"].split(":")[0] for r in rows}
     assert phases & {"forward", "prefill", "decode"}, f"missing forward work, got {phases}"
     assert "gap" in phases, "inter-bench gaps must be labeled gap"
+    assert "idle" not in phases, f"idle phase leaked into samples: {sorted(phases)}"
     assert "baseline_A" in phases and "baseline_B" in phases, (
         f"missing ABAB baselines, got {phases}")
