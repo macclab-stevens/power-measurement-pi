@@ -77,7 +77,10 @@ def main():
     ap.add_argument("--seq", type=int, default=64, help="LM context length (prefill)")
     ap.add_argument("--check-image", default=None,
                     help="detection oracle: require object conf>=--conf on this image file")
-    ap.add_argument("--pin-freq", action="store_true", help="requires sudo (default off)")
+    ap.add_argument("--live-camera", action="store_true",
+                    help="feed real camera frames (cam.py) instead of synthetic fixtures")
+    ap.add_argument("--pin-freq", action="store_true",
+                    help="pin CPU to performance governor for consistent power measurements")
     args = ap.parse_args()
 
     torch.set_num_threads(args.threads)
@@ -128,22 +131,19 @@ def main():
             logger.info(f"warm-up: {args.warmup}x {modes} passes | "
                         f"temp {env0[0]}->{env1[0]}C | arm {env0[1]}->{env1[1]}MHz")
 
-        # idle baseline (2 s), sanity-bounded
-        sampler.marker("idle")
-        t0 = sampler.now_ms()
+        # ABAB global baseline, slice A (2 s) — slice B follows the forward loops
+        sampler.marker("baseline_A")
+        tA0 = sampler.now_ms()
         time.sleep(2.0)
-        base = sampler.window(t0, sampler.now_ms())
-        baseline_W = base["mean_P"]
-        if baseline_W is None or not (BASELINE_W_MIN <= baseline_W <= BASELINE_W_MAX):
-            raise SystemExit(f"baseline_W={baseline_W} outside "
-                             f"[{BASELINE_W_MIN}, {BASELINE_W_MAX}] - aborting")
-        logger.info(f"idle baseline = {baseline_W:.4f} W ({base['count']} samples)")
+        baseA = sampler.window(tA0, sampler.now_ms())
+        logger.info(f"baseline_A = {baseA['mean_P']} W ({baseA['count']} samples)")
 
         # ---- per-mode measurement -------------------------------------------
         op_rows = []
         for mode in modes:
             logger.info(f"== mode: {mode} ==")
             prof.set_mode(mode)
+            sampler.marker(mode)  # tag phase so samples.csv carries measured mean-P
             for f in range(args.frames):
                 prof.set_frame(f)
                 if f == 0:
@@ -155,7 +155,22 @@ def main():
                     task.run_one(mode)
             logger.info(f"  mode {mode}: {args.frames} iterations done")
 
-        sampler.marker("idle")
+        # ABAB global baseline, slice B (2 s); the run baseline is mean(A, B)
+        sampler.marker("baseline_B")
+        tB0 = sampler.now_ms()
+        time.sleep(2.0)
+        baseB = sampler.window(tB0, sampler.now_ms())
+        aP, bP = baseA["mean_P"], baseB["mean_P"]
+        baseline_W = (aP + bP) / 2 if aP is not None and bP is not None else None
+        baseline_drift_W = abs(aP - bP) if aP is not None and bP is not None else None
+        if baseline_W is None or not (BASELINE_W_MIN <= baseline_W <= BASELINE_W_MAX):
+            raise SystemExit(f"baseline_W={baseline_W} outside "
+                             f"[{BASELINE_W_MIN}, {BASELINE_W_MAX}] - aborting")
+        aS = f"{aP:.4f}" if aP is not None else "None"
+        bS = f"{bP:.4f}" if bP is not None else "None"
+        mS = f"{baseline_W:.4f}" if baseline_W is not None else "None"
+        dS = f"{baseline_drift_W:.4f}" if baseline_drift_W is not None else "None"
+        logger.info(f"ABAB baseline: A={aS}W B={bS}W mean={mS}W drift={dS}W")
 
         # ---- outputs ---------------------------------------------------------
         layer_rows = prof.aggregated(exclude_frame=0)
@@ -163,6 +178,7 @@ def main():
                    ["path", "config_id", "class", "config_json",
                     "input_shapes", "input_dtypes", "out_shapes", "callsite", "mode",
                     "leaf", "params", "macs", "bytes_moved", "arith_intensity",
+                    "t_eff", "seq_len",
                     "count", "lat_mean_ms", "lat_median_ms", "lat_std_ms"], layer_rows)
         logger.info(f"layer profile: {len(layer_rows)} sites; "
                     f"{sum(1 for r in layer_rows if r['leaf'])} leaf configs")
@@ -188,8 +204,10 @@ def main():
         _write_csv(os.path.join(outdir, "perop_power.csv"),
                    ["config_id", "class", "config_json", "input_kind",
                     "input_shapes", "input_dtypes", "macs", "bytes_moved",
+                    "t_eff", "seq_len",
                     "window_s", "N_calls", "t_per_call_ms", "P_mean_W",
-                    "P_delta_W", "E_per_call_mJ", "temp_start_C", "temp_end_C",
+                    "P_delta_W", "baseline_interp_W", "P_delta_ABAB_W",
+                    "E_per_call_mJ", "temp_start_C", "temp_end_C",
                     "freq_start_MHz", "freq_end_MHz", "samples_used", "SKIPPED",
                     "skip_reason", "error"], perop)
 
@@ -198,6 +216,11 @@ def main():
                    ["t_ms", "phase", "window_id", "I_A", "V_V", "P_W"], srows)
         ctx = sampler.context()
         flat = []
+        rail_keys: list[str] = []
+        for c in ctx:
+            for k in c.get("dump", {}):
+                if f"rail_{k}" not in rail_keys:
+                    rail_keys.append(f"rail_{k}")
         for c in ctx:
             row = {"t_ms": c.get("t_ms"), "temp_C": c.get("temp_C"),
                    "arm_MHz": c.get("arm_MHz"), "throttle_bits": c.get("throttle_bits")}
@@ -205,7 +228,7 @@ def main():
                 row[f"rail_{k}"] = v
             flat.append(row)
         _write_csv(os.path.join(outdir, "context.csv"),
-                   ["t_ms", "temp_C", "arm_MHz", "throttle_bits"], flat)
+                   ["t_ms", "temp_C", "arm_MHz", "throttle_bits"] + rail_keys, flat)
 
         # execution order (structural, per mode) -> run_meta
         op_seq: dict[str, list] = {}
@@ -225,7 +248,11 @@ def main():
             "threads": args.threads, "frames_per_mode": args.frames,
             "warmup_passes": args.warmup, "params_M": round(n_params / 1e6, 3),
             "mean_fps": None,
-            "baseline_W": round(baseline_W, 6),
+            "baseline_W": round(baseline_W, 6) if baseline_W is not None else None,
+            "baseline_A_W": round(aP, 6) if aP is not None else None,
+            "baseline_B_W": round(bP, 6) if bP is not None else None,
+            "baseline_drift_W": round(baseline_drift_W, 6) if baseline_drift_W is not None else None,
+            "schema_version": 3,
             "achieved_sample_hz": round(achieved_hz, 1),
             "throttle_bits": ctx[-1].get("throttle_bits") if ctx else None,
             "arch_fingerprint": arch,
@@ -274,6 +301,13 @@ def main():
             errors.append(f"achieved sample Hz={achieved_hz:.1f} < 50")
         if baseline_W is None or not (BASELINE_W_MIN <= baseline_W <= BASELINE_W_MAX):
             errors.append(f"baseline_W={baseline_W} out of range")
+        if baseline_drift_W is None:
+            errors.append("baseline drift unknown (empty A/B window)")
+        elif baseline_drift_W > 0.5:
+            errors.append(f"baseline drift {baseline_drift_W:.3f}W > 0.5W")
+        thr = ctx[-1].get("throttle_bits") if ctx else None
+        if thr is not None and (thr & 0x1) != 0:
+            errors.append(f"throttled during run (throttle_bits=0x{thr:x})")
         if not task.oracle():
             extra = getattr(task, "_checked", None)
             oracle_note = f" (best_conf={extra:.3f})" if extra is not None else ""
@@ -292,9 +326,12 @@ def main():
         logger.info(f"[ok] dataset written to {outdir}")
     finally:
         sampler.stop()
+        try:
+            task.stop_camera()
+        except AttributeError:
+            pass
         if args.pin_freq:
             os.system("sudo sh -c 'echo ondemand > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor' 2>/dev/null")
-
 
 if __name__ == "__main__":
     main()

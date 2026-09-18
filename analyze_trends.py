@@ -34,7 +34,7 @@ fig, axs = plt.subplots(2, 2, figsize=(13, 9))
 
 # 1) P over time colored by phase
 ax = axs[0][0]
-order = sorted(set(ph), key=lambda x: ["idle", "inference", "bench", "warmup"].index(x) if x in ("idle","inference","bench") else 99)
+order = sorted(set(ph), key=lambda x: ["idle", "warmup", "forward", "prefill", "decode", "bench", "inference"].index(x) if x in ("idle","warmup","forward","prefill","decode","bench","inference") else 99)
 for pcol in order:
     m = ph == pcol
     ax.scatter(t[m], P[m], s=4, alpha=0.35, label=pcol.split(":")[0])
@@ -68,7 +68,7 @@ ax.set_title("per-op power vs cost"); plt.colorbar(sc, ax=ax, label="E mJ")
 
 # 4) per-op power by op class
 ax = axs[1][1]
-classes = ["Conv2d", "SiLU", "Concat", "Identity", "Upsample"]
+classes = ["Conv2d", "BatchNorm2d", "SiLU", "Concat", "Identity", "Upsample", "ConvTranspose2d", "MaxPool2d", "Linear", "LayerNorm", "Embedding", "MultiheadAttention"]
 pp = {c: [float(r["P_delta_W"]) for r in perop if r["class"] == c] for c in classes}
 pp = {k: v for k, v in pp.items() if v}
 pos = np.arange(len(pp))
@@ -83,7 +83,7 @@ print("saved", png)
 
 # numeric digest
 print("\n== power phases (VDD_CORE) ==")
-for pcol in ("idle", "inference", "bench", "warmup"):
+for pcol in ("idle", "warmup", "forward", "prefill", "decode", "bench", "inference"):
     m = ph == pcol
     if m.any():
         print(f"  {pcol:10s} n={m.sum():6d} mean={P[m].mean():.3f}W  max={P[m].max():.3f}W")

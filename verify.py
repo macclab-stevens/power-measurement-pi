@@ -106,3 +106,30 @@ pk = perop[0]
 print("\nperop env bracket: temp", pk["temp_start_C"], "->", pk["temp_end_C"],
       " freq", pk["freq_start_MHz"], "->", pk["freq_end_MHz"])
 print("ALL FILES:", "GREEN" if ok_all else "FAIL (missing files)")
+
+# ---- v3 schema gate (Task 4) ----
+_schema_ok = meta.get("schema_version") == 3
+print(f"schema_version: {meta.get('schema_version')} "
+      f"{'GREEN' if _schema_ok else 'FAIL (want 3)'}")
+ok_all = ok_all and _schema_ok
+
+
+def _has_te_cols(p, want=("t_eff", "seq_len")):
+    with open(p, newline="") as f:
+        cols = csv.DictReader(f).fieldnames or []
+    missing = [c for c in want if c not in cols]
+    print(f"  {os.path.basename(p)} t_eff/seq_len cols: "
+          f"{'GREEN' if not missing else 'FAIL missing ' + ','.join(missing)}")
+    return not missing
+
+
+_te_ok = _has_te_cols(os.path.join(path, "layer_table.csv"))
+_te_ok = _has_te_cols(os.path.join(path, "perop_power.csv")) and _te_ok
+leaf_te = sum(1 for r in leaves if r.get("t_eff") not in ("", None))
+print(f"  leaves with t_eff set: {leaf_te}/{len(leaves)} "
+      f"{'GREEN' if leaves and leaf_te == len(leaves) else 'FAIL'}")
+ok_all = ok_all and _te_ok and bool(leaves) and leaf_te == len(leaves)
+print(f"SKIPPED 0: {'GREEN' if skipped == 0 else f'FAIL ({skipped})'}")
+ok_all = ok_all and skipped == 0
+print("OVERALL:", "GREEN" if ok_all else "FAIL")
+sys.exit(0 if ok_all else 1)

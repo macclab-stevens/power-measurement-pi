@@ -81,13 +81,25 @@ class ImageTask(TaskAdapter):
         self._conf = 0.25
         self._check_image = None
         self._checked = False
+        self._live = False
+        self._cam = None
+        self._frame_iter = None
 
     def load(self, model: str, opt):
         self._imgsz = opt.imgsz
         self._conf = opt.conf
         self._check_image = opt.check_image
+        self._live = getattr(opt, "live_camera", False)
+        # torchvision models (e.g. torchvision:efficientnet_b0)
+        if model.startswith(("torchvision:", "tv:")):
+            import torchvision.models as tvm
+            m_name = model.split(":", 1)[1]
+            if not hasattr(tvm, m_name):
+                raise ValueError(f"unknown torchvision model: {m_name}")
+            self._module = getattr(tvm, m_name)(weights=None).eval()
+            self._is_detection = False
         # ultralytics detection (yolo11n.pt / yolov8n.pt / .model)
-        if model.endswith(".pt") or model.startswith(("yolo", "yolov")):
+        elif model.endswith(".pt") or model.startswith(("yolo", "yolov")):
             import ultralytics  # noqa: WPS433
             yolo = ultralytics.YOLO(model)
             self._module = yolo.model            # the DetectionModel nn.Module
@@ -111,11 +123,28 @@ class ImageTask(TaskAdapter):
         return ["forward"]
 
     def _fixture(self):
+        if self._live:
+            if self._frame_iter is None:
+                from cam import Camera
+                self._cam = Camera(size=(640, 480))
+                meta = self._cam.start()
+                self._frame_iter = self._cam.frames()
+                self.cam_meta = meta
+            import numpy as np
+            frame = next(self._frame_iter)                     # HWC uint8 RGB888
+            t = torch.from_numpy(np.ascontiguousarray(frame)).permute(2, 0, 1)
+            return t.unsqueeze(0).float() / 255.0              # 1,3,H,W float32
         return torch.rand(1, 3, self._imgsz, self._imgsz)
 
     def run_one(self, mode: str):
         with torch.no_grad():
             return self._module(self._fixture())
+
+    def stop_camera(self):
+        if self._cam is not None:
+            self._cam.stop()
+            self._cam = None
+            self._frame_iter = None
 
     def oracle(self) -> bool:
         if self._is_detection and self._check_image:
@@ -167,6 +196,30 @@ class MiniGPT(nn.Module):
         return self.head(x)
 
 
+class MiniGPTExplicit(torch.nn.Module):
+    def __init__(self, d_model=64, nhead=4, nlayer=2, vocab=256):
+        super().__init__()
+        import math
+        self.d=d_model; self.nhead=nhead
+        self.tok=torch.nn.Embedding(vocab,d_model)
+        self.pos=torch.nn.Parameter(torch.zeros(1,256,d_model))
+        self.qkv=torch.nn.ModuleList([torch.nn.Linear(d_model,3*d_model) for _ in range(nlayer)])
+        self.proj=torch.nn.ModuleList([torch.nn.Linear(d_model,d_model) for _ in range(nlayer)])
+        self.n1=torch.nn.ModuleList([torch.nn.LayerNorm(d_model) for _ in range(nlayer)])
+        self.n2=torch.nn.ModuleList([torch.nn.LayerNorm(d_model) for _ in range(nlayer)])
+        self.head=torch.nn.Linear(d_model,vocab)
+    def forward(self, idx):
+        import math, torch.nn.functional as F
+        T=idx.shape[1]; x=self.tok(idx)*math.sqrt(self.d)+self.pos[:,:T]
+        B,T,C=x.shape; H=self.nhead; Dh=C//H
+        for qkv,proj,n1,n2 in zip(self.qkv,self.proj,self.n1,self.n2):
+            h=n1(x); q,k,v=qkv(h).chunk(3,dim=-1)
+            q=q.view(B,T,H,Dh).transpose(1,2); k=k.view(B,T,H,Dh).transpose(1,2); v=v.view(B,T,H,Dh).transpose(1,2)
+            a=F.scaled_dot_product_attention(q,k,v,is_causal=True)
+            a=a.transpose(1,2).reshape(B,T,C); x=x+proj(a); x=x+n2(x)
+        return self.head(x)
+
+
 class TokenLMTask(TaskAdapter):
     name = "lm"
 
@@ -180,6 +233,9 @@ class TokenLMTask(TaskAdapter):
         self._seq = opt.seq
         if model == "minigpt":
             self._module = MiniGPT(vocab=self._vocab)
+            self._vocab = 256
+        elif model == "minigpt-explicit":
+            self._module = MiniGPTExplicit()
             self._vocab = 256
         elif model.startswith("hf:"):
             # optional transformers-backed causal LM (needs: uv add transformers)

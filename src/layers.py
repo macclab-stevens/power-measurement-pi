@@ -31,17 +31,17 @@ import time
 import torch
 import torch.nn as nn
 
-# Structural attrs snapshot per op kind (generalized beyond conv). Captured when
-# present; absent attrs are simply omitted from the identity.
-_ATTRS = (
-    "in_channels", "out_channels", "kernel_size", "stride", "padding",
-    "dilation", "groups", "dim", "reg_max", "nc",
-    "in_features", "out_features", "bias",
-    "num_embeddings", "embedding_dim", "padding_idx",
-    "normalized_shape", "eps", "elementwise_affine",
-    "num_heads", "embed_dim", "batch_first", "add_bias_kv",
-    "max_len", "head_dim", "dropout",
-)
+SCHEMA_VERSION = 3
+_ALLOW = {
+    "Conv2d": ("in_channels","out_channels","kernel_size","stride","padding","dilation","groups"),
+    "Conv1d": ("in_channels","out_channels","kernel_size","stride","padding","dilation","groups"),
+    "ConvTranspose2d": ("in_channels","out_channels","kernel_size","stride","padding","groups"),
+    "Linear": ("in_features","out_features"),
+    "Embedding": ("num_embeddings","embedding_dim","padding_idx"),
+    "LayerNorm": ("normalized_shape","eps","elementwise_affine"),
+    "BatchNorm2d": ("eps","momentum"),
+    "MultiheadAttention": ("embed_dim","num_heads","batch_first","dropout"),
+}
 
 DTYPE_BYTES = {torch.float32: 4, torch.float16: 2, torch.bfloat16: 2,
                torch.float64: 8, torch.int8: 1, torch.uint8: 1,
@@ -61,15 +61,18 @@ def _ser(v):
     return str(v)
 
 
-def module_config(mod: nn.Module) -> dict:
-    """Structural attrs for an op (class + present attrs only)."""
-    cfg = {"class": type(mod).__name__}
-    for n in _ATTRS:
-        try:
-            if hasattr(mod, n):
-                cfg[n] = _ser(getattr(mod, n))
-        except Exception:  # noqa: BLE001 - some modules raise in getattr
-            pass
+def module_config(mod):
+    import torch.nn as nn
+    cls = type(mod).__name__
+    cfg = {"class": cls}
+    for k in _ALLOW.get(cls, ()):
+        if hasattr(mod, k):
+            v = getattr(mod, k)
+            cfg[k] = _ser(v)
+    # booleans only, never values:
+    if hasattr(mod, "bias"):
+        b = getattr(mod, "bias")
+        cfg["has_bias"] = b is not None
     return cfg
 
 
@@ -162,54 +165,80 @@ def _iter_inference_modules(model):
 # --------------------------------------------------------------------------
 # MACs / bytes
 # --------------------------------------------------------------------------
-def _macs(mod: nn.Module, in_shapes, out_shapes):
-    """MACs from recorded shapes, per op class. None when unknown (flagged)."""
+def _macs(mod, in_shapes, out_shapes):
+    import torch.nn as nn
     if not in_shapes or not out_shapes:
         return None
-    i0 = in_shapes[0]
-    o0 = out_shapes[0]
-    if isinstance(mod, (nn.Conv2d,)):
-        try:
-            _, oc, oh, ow = o0
-            k = mod.kernel_size[0]
-            g = mod.groups
-            return int(oh * ow * oc * k * k * mod.in_channels / g)
-        except Exception:  # noqa: BLE001
-            return None
-    if isinstance(mod, (nn.Conv1d,)):
-        try:
-            _, oc, ol = o0
-            k = mod.kernel_size[0]
-            g = mod.groups
-            return int(ol * oc * k * mod.in_channels / g)
-        except Exception:  # noqa: BLE001
-            return None
-    if isinstance(mod, (nn.ConvTranspose2d,)):
-        try:
-            _, oc, oh, ow = o0
-            k = mod.kernel_size[0]
-            g = mod.groups
-            return int(oh * ow * oc * k * k * mod.in_channels / g)
-        except Exception:  # noqa: BLE001
-            return None
-    if isinstance(mod, nn.Linear) or (hasattr(mod, "in_features") and hasattr(mod, "out_features")):
-        try:
-            in_f = mod.in_features
-            out_f = mod.out_features
-            # output numel drives cost; drop spatial dims
-            per = int(torch.tensor(o0, dtype=torch.int64).prod().item())
-            tok = per // out_f if out_f else per
-            return int(tok * in_f * out_f)
-        except Exception:  # noqa: BLE001
-            return None
-    return None  # Embedding, MultiheadAttention internals, norms, exotic
+    try:
+        if isinstance(mod, nn.Conv2d):
+            _, oc, oh, ow = out_shapes[0]
+            return int(oh*ow*oc*mod.kernel_size[0]*mod.kernel_size[1]*mod.in_channels/max(1,mod.groups))
+        # preserved pre-Task3 support (not in brief snippet): Conv1d/ConvTranspose2d
+        if isinstance(mod, nn.Conv1d):
+            _, oc, ol = out_shapes[0]
+            return int(ol*oc*mod.kernel_size[0]*mod.in_channels/max(1,mod.groups))
+        if isinstance(mod, nn.ConvTranspose2d):
+            _, oc, oh, ow = out_shapes[0]
+            return int(oh*ow*oc*mod.kernel_size[0]*mod.kernel_size[1]*mod.in_channels/max(1,mod.groups))
+        if isinstance(mod, nn.Linear):
+            import torch
+            per = int(torch.tensor(out_shapes[0]).prod().item())
+            return int(per*mod.in_features)
+        if isinstance(mod, (nn.LayerNorm, nn.BatchNorm2d)):
+            import torch
+            return int(2*torch.tensor(out_shapes[0]).prod().item())
+        if isinstance(mod, nn.Embedding):
+            return int(in_shapes[0][0]*in_shapes[0][1]*mod.embedding_dim)  # gather cost proxy
+        # SiLU/ReLU/GELU/Upsample/Concat/Pool: 1-2 FLOP per elem
+        if type(mod).__name__ in ("SiLU","ReLU","GELU","Upsample","Concat","MaxPool2d","Identity"):
+            import torch
+            return int(torch.tensor(out_shapes[0]).prod().item())
+    except Exception:
+        return None
+    return None
 
 
-def _bytes_moved(in_args, out_shapes):
-    b = sum(a.get("bytes", 0) for a in _arg_tensors(in_args))
+def _bytes_moved(in_args, out_shapes, out_dtype="torch.float32"):
+    import torch
+    b = sum(a.get("bytes",0) for a in _arg_tensors(in_args))
+    per_elem = {"torch.float32":4,"torch.float16":2,"torch.bfloat16":2,"torch.float64":8,
+                "torch.int8":1,"torch.uint8":1,"torch.int16":2,
+                "torch.int64":8,"torch.int32":4,"torch.bool":1}.get(str(out_dtype),4)
     for s in out_shapes or []:
-        b += int(torch.tensor(s, dtype=torch.int64).prod().item()) * (4 if len(s) else 0)
-    return b
+        n = 1
+        for d in s: n *= d
+        b += n*per_elem
+    # add weight reads (cold):
+    # caller adds params*4 for fp32
+    return int(b)
+
+
+def _out_dtype_for(rec, class_name):
+    """Output dtype for byte accounting.
+
+    The recorder only stores *input* dtypes, so the single-input-dtype case
+    uses that dtype for outputs; Embedding (int64 idx in -> float out) and
+    mixed-dtype leaves fall back to fp32.
+    """
+    if class_name == "Embedding":
+        return "torch.float32"
+    dtypes = sorted({a.get("dtype") for a in _arg_tensors(rec) if a.get("dtype")})
+    if len(dtypes) == 1:
+        return dtypes[0]
+    return "torch.float32"
+
+
+def _t_eff(class_name, in_shapes):
+    # effective sequence/spatial length for scaling laws
+    try:
+        s = in_shapes[0]
+        if class_name in ("Linear","LayerNorm","Embedding","MultiheadAttention"):
+            return int(s[-2]) if len(s) >= 2 else 1  # T for [B,T,C]
+        if class_name in ("Conv2d","BatchNorm2d","SiLU"):
+            return int(s[-2]*s[-1]) if len(s) >= 4 else 1  # HW for [B,C,H,W]
+    except Exception:
+        pass
+    return 1
 
 
 def _arg_tensors(rec):
@@ -324,9 +353,12 @@ class LayerProfiler:
                             "dtypes": sorted({a.get("dtype") for a in
                                               _arg_tensors(rec) if a.get("dtype")})}
                 mid = config_id(meas_cfg)
+                in_s = self.in_shapes(path, idx)
                 out_s = self.out_shapes(path, idx)
-                macs = _macs(self._modules[path], self.in_shapes(path, idx), out_s)
-                bm = _bytes_moved(rec, out_s)
+                macs = _macs(self._modules[path], in_s, out_s)
+                bm = _bytes_moved(rec, out_s,
+                                  out_dtype=_out_dtype_for(rec, cfg["class"])) + self.params(path) * 4
+                te = _t_eff(cfg["class"], in_s)
                 rows.append({
                     "path": path,
                     # structural columns (NOT part of measurement identity)
@@ -345,6 +377,8 @@ class LayerProfiler:
                     "macs": macs,
                     "bytes_moved": bm,
                     "arith_intensity": round(macs / bm, 4) if macs and bm else None,
+                    "t_eff": te,
+                    "seq_len": te,
                     "count": self.calls[path][idx],
                     "lat_mean_ms": round(statistics.mean(times), 4) if times else None,
                     "lat_median_ms": round(statistics.median(times), 4) if times else None,
@@ -365,6 +399,9 @@ class LayerProfiler:
                     continue
                 in_s = self.in_shapes(path, idx)
                 out_s = self.out_shapes(path, idx)
+                out_dtype = _out_dtype_for(rec, cfg["class"])
+                te = _t_eff(cfg["class"], in_s)
+                wbytes = sum(p.numel() for p in mod.parameters()) * 4
                 meas_cfg = {**cfg, "shapes": in_s,
                             "dtypes": sorted({a.get("dtype") for a in
                                               _arg_tensors(rec) if a.get("dtype")})}
@@ -381,7 +418,9 @@ class LayerProfiler:
                     "calls": 0,
                     "sites": [],
                     "macs": _macs(mod, in_s, out_s),
-                    "bytes_moved": _bytes_moved(rec, out_s),
+                    "bytes_moved": _bytes_moved(rec, out_s, out_dtype=out_dtype) + wbytes,
+                    "t_eff": te,
+                    "seq_len": te,
                 })
                 entry["calls"] += self.calls[path][idx]
                 entry["sites"].append(path)

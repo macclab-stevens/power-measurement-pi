@@ -8,6 +8,11 @@ shapes + dtypes) found by LayerProfiler:
 - loop it for ~bench_s, sampling VDD_CORE power the whole time,
 - P_delta = P_mean - idle baseline; E_per_call = P_delta * t_per_call.
 
+ABAB per-op baseline: a 0.5 s idle slice under the gap phase is taken
+immediately before AND after each bench; baseline_interp_W is their mean and
+P_delta_ABAB_W = P_mean - baseline_interp_W. Legacy P_delta_W (vs the global
+run baseline) is kept for compat.
+
 Windows below `require_samples` are retried (+1 s, up to 2 times). Any
 config that cannot be benchmarked is a SKIPPED row — run.py treats SKIPPED as
 fatal so a dataset is never silently missing its highest-value ops.
@@ -63,6 +68,12 @@ def _forward(mod, args: list):
     return mod(*args)
 
 
+def _assert_freq(env, where):
+    f = env[1] if env and env[1] else None
+    if f is None or not (500 <= f <= 3000):
+        raise RuntimeError(f"freq guard failed at {where}: {env}")
+
+
 def _skip(entry: dict, reason: str, err: Exception) -> dict:
     return {
         "config_id": entry["config_id"],
@@ -70,9 +81,13 @@ def _skip(entry: dict, reason: str, err: Exception) -> dict:
         "config_json": entry["config_json"],
         "input_kind": "multi",
         "input_shapes": entry["input_shapes"],
+        "input_dtypes": entry.get("input_dtypes", ""),
         "macs": entry.get("macs"), "bytes_moved": entry.get("bytes_moved"),
+        "t_eff": entry.get("t_eff"), "seq_len": entry.get("seq_len"),
         "window_s": None, "N_calls": 0, "t_per_call_ms": None,
-        "P_mean_W": None, "P_delta_W": None, "E_per_call_mJ": None,
+        "P_mean_W": None, "P_delta_W": None,
+        "baseline_interp_W": None, "P_delta_ABAB_W": None,
+        "E_per_call_mJ": None,
         "temp_start_C": None, "temp_end_C": None,
         "freq_start_MHz": None, "freq_end_MHz": None,
         "samples_used": 0, "SKIPPED": True, "skip_reason": reason,
@@ -97,7 +112,7 @@ def bench_configs(profiler, sampler, baseline_W, bench_s, require_samples=30,
 
 def _bench_one(entry, sampler, baseline_W, bench_s, require_samples, max_retries, log=None):
     try:
-        args = _replay_args(entry["input_kind"])
+        args = _replay_args(entry.get("input_kind") or {"args": []})
     except Exception as e:  # noqa: BLE001
         if log:
             log(f"    input alloc failed: {e}")
@@ -115,52 +130,83 @@ def _bench_one(entry, sampler, baseline_W, bench_s, require_samples, max_retries
 
     target_ms = bench_s * 1000.0
     msec, retries = bench_s * 1000.0, 0
+    env0 = sampler.snapshot_env()  # sync reads BEFORE the window marker: no self-contamination
+    _assert_freq(env0, "pre-bench")
+    # ABAB pre-baseline: 0.5 s idle slice under the gap phase
+    sampler.marker("gap")
+    a0 = sampler.now_ms()
+    time.sleep(0.5)
+    base_pre = sampler.window(a0, sampler.now_ms())
     sampler.marker(f"bench:{entry['config_id']}")
     w0 = sampler.now_ms()
-    env0 = sampler.snapshot_env()
     try:
-        while True:
-            t_start = time.perf_counter()
-            n = 0
-            while sampler.now_ms() - w0 < msec:
-                _forward(mod, args)
-                n += 1
-            t_end = time.perf_counter()
-            stats = sampler.window(w0, sampler.now_ms())
-            if stats["count"] >= require_samples or retries >= max_retries:
-                break
-            msec += 1000.0
-            retries += 1
+        with torch.no_grad():
+            while True:
+                t_start = time.perf_counter()
+                n = 0
+                while sampler.now_ms() - w0 < msec:
+                    _forward(mod, args)
+                    n += 1
+                t_end = time.perf_counter()
+                stats = sampler.window(w0, sampler.now_ms())
+                if stats["count"] >= require_samples or retries >= max_retries:
+                    break
+                msec += 1000.0
+                retries += 1
     except Exception as e:  # noqa: BLE001
         if log:
             log(f"    SKIPPED (forward): {type(e).__name__}: {e}")
         return _skip(entry, "forward", e)
     finally:
-        sampler.marker(None)
+        sampler.marker("gap")
+    # ABAB post-baseline: 0.5 s idle slice under the gap phase
+    b0 = sampler.now_ms()
+    time.sleep(0.5)
+    base_post = sampler.window(b0, sampler.now_ms())
     env1 = sampler.snapshot_env()
 
     t_per_call = (t_end - t_start) * 1000.0 / n if n else None
     p_mean = stats["mean_P"]
     p_delta = (p_mean - baseline_W) if p_mean is not None else None
+    pre_P = base_pre["mean_P"]
+    post_P = base_post["mean_P"]
+    if pre_P is not None and post_P is not None:
+        baseline_interp = (pre_P + post_P) / 2.0
+    elif pre_P is not None:
+        baseline_interp = pre_P
+    elif post_P is not None:
+        baseline_interp = post_P
+    else:
+        baseline_interp = None
+    p_delta_abab = (p_mean - baseline_interp) if p_mean is not None and baseline_interp is not None else None
     if log:
         t0c, f0 = (env0[0], env0[1]) if env0[0] else (None, None)
-        log(f"    done t={t_per_call:.3f}ms | P_delta={p_delta:.4f}W | "
-            f"E={p_delta * t_per_call:.4f}mJ | N={n} | samples={stats['count']} | "
+        pdS = f"{p_delta:.4f}" if p_delta is not None else "None"
+        paS = f"{p_delta_abab:.4f}" if p_delta_abab is not None else "None"
+        biS = f"{baseline_interp:.4f}" if baseline_interp is not None else "None"
+        eS = f"{p_delta * t_per_call:.4f}" if p_delta is not None and t_per_call else "None"
+        log(f"    done t={t_per_call:.3f}ms | P_delta={pdS}W | "
+            f"P_delta_ABAB={paS}W | base_interp={biS}W | "
+            f"E={eS}mJ | N={n} | samples={stats['count']} | "
             f"temp {t0c}->{env1[0]}C | freq {f0}->{env1[1]}MHz" if t_per_call else
             f"    done (no calls)")
     return {
         "config_id": entry["config_id"],
         "class": entry["class"],
         "config_json": entry["config_json"],
-        "input_kind": "multi",
-        "input_shapes": entry["input_shapes"],
+        "input_kind": entry.get("input_kind", "multi"),
+        "input_shapes": entry.get("input_shapes"),
+        "input_dtypes": entry.get("input_dtypes", ""),
         "macs": (entry.get("macs") if entry.get("macs") is not None else None),
         "bytes_moved": entry.get("bytes_moved"),
+        "t_eff": entry.get("t_eff"), "seq_len": entry.get("seq_len"),
         "window_s": round((sampler.now_ms() - w0) / 1000.0, 3),
         "N_calls": n,
         "t_per_call_ms": round(t_per_call, 4) if t_per_call else None,
         "P_mean_W": round(p_mean, 6) if p_mean is not None else None,
         "P_delta_W": round(p_delta, 6) if p_delta is not None else None,
+        "baseline_interp_W": round(baseline_interp, 6) if baseline_interp is not None else None,
+        "P_delta_ABAB_W": round(p_delta_abab, 6) if p_delta_abab is not None else None,
         "E_per_call_mJ": round(p_delta * t_per_call, 6) if p_delta is not None and t_per_call else None,
         "temp_start_C": env0[0], "temp_end_C": env1[0],
         "freq_start_MHz": env0[1], "freq_end_MHz": env1[1],
