@@ -131,16 +131,12 @@ def main():
             logger.info(f"warm-up: {args.warmup}x {modes} passes | "
                         f"temp {env0[0]}->{env1[0]}C | arm {env0[1]}->{env1[1]}MHz")
 
-        # idle baseline (2 s), sanity-bounded
-        sampler.marker("idle")
-        t0 = sampler.now_ms()
+        # ABAB global baseline, slice A (2 s) — slice B follows the forward loops
+        sampler.marker("baseline_A")
+        tA0 = sampler.now_ms()
         time.sleep(2.0)
-        base = sampler.window(t0, sampler.now_ms())
-        baseline_W = base["mean_P"]
-        if baseline_W is None or not (BASELINE_W_MIN <= baseline_W <= BASELINE_W_MAX):
-            raise SystemExit(f"baseline_W={baseline_W} outside "
-                             f"[{BASELINE_W_MIN}, {BASELINE_W_MAX}] - aborting")
-        logger.info(f"idle baseline = {baseline_W:.4f} W ({base['count']} samples)")
+        baseA = sampler.window(tA0, sampler.now_ms())
+        logger.info(f"baseline_A = {baseA['mean_P']} W ({baseA['count']} samples)")
 
         # ---- per-mode measurement -------------------------------------------
         op_rows = []
@@ -159,7 +155,20 @@ def main():
                     task.run_one(mode)
             logger.info(f"  mode {mode}: {args.frames} iterations done")
 
-        sampler.marker("idle")
+        # ABAB global baseline, slice B (2 s); the run baseline is mean(A, B)
+        sampler.marker("baseline_B")
+        tB0 = sampler.now_ms()
+        time.sleep(2.0)
+        baseB = sampler.window(tB0, sampler.now_ms())
+        envB = sampler.snapshot_env()
+        aP, bP = baseA["mean_P"], baseB["mean_P"]
+        baseline_W = (aP + bP) / 2 if aP is not None and bP is not None else None
+        baseline_drift_W = abs(aP - bP) if aP is not None and bP is not None else None
+        if baseline_W is None or not (BASELINE_W_MIN <= baseline_W <= BASELINE_W_MAX):
+            raise SystemExit(f"baseline_W={baseline_W} outside "
+                             f"[{BASELINE_W_MIN}, {BASELINE_W_MAX}] - aborting")
+        logger.info(f"ABAB baseline: A={aP:.4f}W B={bP:.4f}W mean={baseline_W:.4f}W "
+                    f"drift={baseline_drift_W:.4f}W")
 
         # ---- outputs ---------------------------------------------------------
         layer_rows = prof.aggregated(exclude_frame=0)
@@ -193,7 +202,8 @@ def main():
                    ["config_id", "class", "config_json", "input_kind",
                     "input_shapes", "input_dtypes", "macs", "bytes_moved",
                     "window_s", "N_calls", "t_per_call_ms", "P_mean_W",
-                    "P_delta_W", "E_per_call_mJ", "temp_start_C", "temp_end_C",
+                    "P_delta_W", "baseline_interp_W", "P_delta_ABAB_W",
+                    "E_per_call_mJ", "temp_start_C", "temp_end_C",
                     "freq_start_MHz", "freq_end_MHz", "samples_used", "SKIPPED",
                     "skip_reason", "error"], perop)
 
@@ -235,6 +245,10 @@ def main():
             "warmup_passes": args.warmup, "params_M": round(n_params / 1e6, 3),
             "mean_fps": None,
             "baseline_W": round(baseline_W, 6),
+            "baseline_A_W": round(aP, 6) if aP is not None else None,
+            "baseline_B_W": round(bP, 6) if bP is not None else None,
+            "baseline_drift_W": round(baseline_drift_W, 6) if baseline_drift_W is not None else None,
+            "schema_version": 3,
             "achieved_sample_hz": round(achieved_hz, 1),
             "throttle_bits": ctx[-1].get("throttle_bits") if ctx else None,
             "arch_fingerprint": arch,
@@ -283,6 +297,13 @@ def main():
             errors.append(f"achieved sample Hz={achieved_hz:.1f} < 50")
         if baseline_W is None or not (BASELINE_W_MIN <= baseline_W <= BASELINE_W_MAX):
             errors.append(f"baseline_W={baseline_W} out of range")
+        if baseline_drift_W is None:
+            errors.append("baseline drift unknown (empty A/B window)")
+        elif baseline_drift_W > 0.5:
+            errors.append(f"baseline drift {baseline_drift_W:.3f}W > 0.5W")
+        thr = envB[2] if envB else None
+        if thr is not None and (thr & 0x1) != 0:
+            errors.append(f"throttled during run (throttle_bits=0x{thr:x})")
         if not task.oracle():
             extra = getattr(task, "_checked", None)
             oracle_note = f" (best_conf={extra:.3f})" if extra is not None else ""
