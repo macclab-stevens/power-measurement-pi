@@ -36,6 +36,7 @@
 - `run.py --sampler pmic` (the default) must behave exactly as before, with `schema_version` 3. `--sampler monsoon` writes `schema_version: 4`.
 - The pulse pattern is ON 150 / OFF 100 / ON 300 / OFF 100 / ON 50 ms, with ≥ 500 ms idle guard before and after.
 - Passwords never appear in code, docs, or commits.
+- Monsoon-mode runs use a pinned clock (`--cpu-mhz`; main = 2400, sweep = 1500/2000) and `--fan-full` (spec Revision 2). The clock gate is `|arm_MHz − pinned| ≤ 25` and `throttle_bits & 0xF == 0`.
 - `~/monsoon/monsoon_monitor.py` on the EliteBook is left unmodified. Our recorder is a separate file in this repo.
 
 ## Review Focus
@@ -57,6 +58,8 @@
 | `src/powersampler.py` (modify) | Add `MonsoonSampler` (HTTP `window`, event log, context-only thread) and `make_sampler()`. |
 | `src/layers.py` (modify) | Optional `events` sink: begin/end per hooked module call; mode/iter labels. |
 | `src/run.py` (modify) | `--sampler/--recorder-url`; sync pulses; `events.csv`; schema v4 meta. |
+| `src/pinning.py` (new) | Call the root helper (`sudo -n`), wait for full fan, pinned-clock acceptance check. Torch-free. |
+| `tools/pi-power-pin` (committed) | Root-owned helper: `pin <MHz>`, `fan full`, `restore`, `status`. |
 | `src/sync_check.py` (new) | N pulse trains only, for alignment validation. |
 | `host/pyproject.toml` (new) | Separate uv project for the EliteBook (no torch). |
 | `host/store.py` (new) | `SampleStore`: append samples + block table, NaN gap insertion, `read(i0, i1)`. |
@@ -831,6 +834,218 @@ Expected: both flags listed.
 ```bash
 git add src/layers.py src/run.py src/sync_check.py tests/test_layer_events.py
 git commit -m "feat: layer begin/end events, --sampler monsoon, sync pulses, events.csv (schema v4)"
+```
+
+---
+
+### Task 4b: Pinned CPU clock + fan (run.py `--cpu-mhz`, `--fan-full`)
+
+**Files:**
+- Create: `src/pinning.py`
+- Modify: `src/run.py`. Remove `--pin-freq` (lines 82–83, 105–107, 333–334) and add the new flags and gate.
+- Already committed: `tools/pi-power-pin` (root helper; installed in Task 7 Step 2b)
+- Test: `tests/test_pinning.py` (torch-free; run on the NUC)
+
+**Interfaces:**
+- Consumes: the root helper CLI `sudo -n /usr/local/sbin/pi-power-pin {pin <MHz>|fan full|status}`. Its stdout is one `key=value ...` status line. Context rows from `PowerSampler.context()` (`t_ms`, `arm_MHz`, `throttle_bits`).
+- Produces:
+  - `ALLOWED_MHZ`
+  - `apply(cpu_mhz: int | None, fan_full: bool, run=subprocess.run) -> str` (the last status line)
+  - `wait_fan_full(read=_read_fan, timeout_s=20.0, sleep=time.sleep) -> tuple[int, int]`
+  - `clock_errors(ctx_rows: list[dict], cpu_mhz: int, tol_mhz: int = 25) -> list[str]`
+  - `run_meta.json` gets `cpu_mhz_pinned`, `fan_full`, `pin_status`.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_pinning.py
+import os
+import sys
+from types import SimpleNamespace
+
+import pytest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+from pinning import ALLOWED_MHZ, apply, clock_errors, wait_fan_full
+
+
+def _runner(rc=0, out="governor=performance cur_kHz=2400000", err=""):
+    calls = []
+    def run(cmd, **kw):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=rc, stdout=out, stderr=err)
+    return run, calls
+
+
+def test_apply_calls_whitelisted_helper_non_interactively():
+    run, calls = _runner()
+    status = apply(2400, True, run=run)
+    assert calls == [["sudo", "-n", "/usr/local/sbin/pi-power-pin", "fan", "full"],
+                     ["sudo", "-n", "/usr/local/sbin/pi-power-pin", "pin", "2400"]]
+    assert "performance" in status
+
+
+def test_apply_rejects_unsupported_clock_before_calling_sudo():
+    run, calls = _runner()
+    with pytest.raises(ValueError):
+        apply(2450, False, run=run)
+    assert calls == [] and 1500 in ALLOWED_MHZ and 2400 in ALLOWED_MHZ
+
+
+def test_apply_surfaces_missing_sudoers_rule():
+    run, _ = _runner(rc=1, err="sudo: a password is required")
+    with pytest.raises(RuntimeError, match="sudoers"):
+        apply(2400, False, run=run)
+
+
+def test_apply_noop_when_nothing_requested():
+    run, calls = _runner()
+    assert apply(None, False, run=run) == "" and calls == []
+
+
+def test_wait_fan_full_polls_until_max_state():
+    states = iter([(1, 4), (3, 4), (4, 4)])
+    assert wait_fan_full(read=lambda: next(states), sleep=lambda s: None) == (4, 4)
+
+
+def test_wait_fan_full_times_out():
+    with pytest.raises(RuntimeError, match="fan"):
+        wait_fan_full(read=lambda: (2, 4), timeout_s=0.0, sleep=lambda s: None)
+
+
+def test_clock_errors_flags_drift_throttle_and_missing_readings():
+    ok = [{"t_ms": 0, "arm_MHz": 2400, "throttle_bits": 0},
+          {"t_ms": 5000, "arm_MHz": 2399, "throttle_bits": 0x50000}]
+    assert clock_errors(ok, 2400) == []        # latched-only bits (0x50000) are not current
+    bad = [{"t_ms": 0, "arm_MHz": 1800, "throttle_bits": 0x4}]
+    errs = clock_errors(bad, 2400)
+    assert any("1800" in e for e in errs) and any("0x4" in e for e in errs)
+    assert clock_errors([{"t_ms": 0, "error": "x"}], 2400) == ["no arm clock readings in context"]
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `python3 -m pytest tests/test_pinning.py -q`
+Expected: FAIL with `ModuleNotFoundError: No module named 'pinning'`
+
+- [ ] **Step 3: Write `src/pinning.py`**
+
+```python
+"""Pin the Pi 5 CPU clock and fan through the whitelisted root helper, then verify.
+
+The helper (tools/pi-power-pin -> /usr/local/sbin/pi-power-pin) is the only thing
+maccpi may run via passwordless sudo. A pinned clock removes DVFS voltage/frequency
+variation from the power data. A full-speed fan turns its 5 V draw into a constant
+offset instead of temperature-triggered power steps.
+"""
+from __future__ import annotations
+
+import glob
+import subprocess
+import time
+
+HELPER = "/usr/local/sbin/pi-power-pin"
+ALLOWED_MHZ = tuple(range(1500, 2401, 100))
+FAN = "/sys/class/thermal/cooling_device0"
+CURRENT_THROTTLE_MASK = 0xF   # under-voltage / capped / throttled / soft-limit *now*
+
+
+def apply(cpu_mhz: int | None, fan_full: bool, run=subprocess.run) -> str:
+    if cpu_mhz is not None and cpu_mhz not in ALLOWED_MHZ:
+        raise ValueError(f"--cpu-mhz {cpu_mhz} not in {ALLOWED_MHZ[0]}..{ALLOWED_MHZ[-1]} step 100")
+    cmds = ([["fan", "full"]] if fan_full else []) + \
+           ([["pin", str(cpu_mhz)]] if cpu_mhz is not None else [])
+    status = ""
+    for c in cmds:
+        p = run(["sudo", "-n", HELPER, *c], capture_output=True, text=True)
+        if p.returncode != 0:
+            raise RuntimeError(f"pi-power-pin {' '.join(c)} failed (rc={p.returncode}): "
+                               f"{p.stderr.strip()} - is /etc/sudoers.d/pi-power-pin installed?")
+        status = p.stdout.strip()
+    return status
+
+
+def _read_fan() -> tuple[int, int]:
+    with open(f"{FAN}/cur_state") as a, open(f"{FAN}/max_state") as b:
+        return int(a.read()), int(b.read())
+
+
+def wait_fan_full(read=_read_fan, timeout_s: float = 20.0, sleep=time.sleep) -> tuple[int, int]:
+    """step_wise raises the fan one state per thermal poll; wait until it reaches max."""
+    deadline = time.monotonic() + timeout_s
+    while True:
+        cur, mx = read()
+        if cur >= mx:
+            return cur, mx
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"fan stuck at state {cur}/{mx} after {timeout_s}s")
+        sleep(0.5)
+
+
+def clock_errors(ctx_rows: list[dict], cpu_mhz: int, tol_mhz: int = 25) -> list[str]:
+    errs = []
+    seen = False
+    for r in ctx_rows:
+        f = r.get("arm_MHz")
+        if f is None:
+            continue
+        seen = True
+        if abs(f - cpu_mhz) > tol_mhz:
+            errs.append(f"arm clock {f} MHz != pinned {cpu_mhz} MHz at t={r.get('t_ms', 0):.0f} ms")
+        thr = r.get("throttle_bits")
+        if thr is not None and thr & CURRENT_THROTTLE_MASK:
+            errs.append(f"throttle bits 0x{thr:x} at t={r.get('t_ms', 0):.0f} ms")
+    if not seen:
+        errs.append("no arm clock readings in context")
+    return errs
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `python3 -m pytest tests/test_pinning.py -q`
+Expected: `7 passed`
+
+- [ ] **Step 5: Wire it into run.py**
+
+Replace the `--pin-freq` argument with:
+
+```python
+    ap.add_argument("--cpu-mhz", type=int, default=None,
+                    help="pin all cores to this clock via pi-power-pin (1500..2400 step 100)")
+    ap.add_argument("--fan-full", action="store_true",
+                    help="force the fan to max state (constant fan power) via pi-power-pin")
+```
+
+Add `import pinning` to the imports. Replace the `if args.pin_freq: os.system(...)` block with:
+
+```python
+    pin_status = pinning.apply(args.cpu_mhz, args.fan_full)
+    if args.fan_full:
+        pinning.wait_fan_full()
+    if pin_status:
+        logger.info(f"pinned: {pin_status}")
+```
+
+Delete the `if args.pin_freq:` restore in `finally`. The orchestrator decides when to run `restore`, so back-to-back cells stay at the same operating point.
+
+In `meta`, add:
+
+```python
+            "cpu_mhz_pinned": args.cpu_mhz, "fan_full": args.fan_full, "pin_status": pin_status,
+```
+
+In acceptance, after the throttle check, add:
+
+```python
+        if args.cpu_mhz is not None:
+            errors += pinning.clock_errors(ctx, args.cpu_mhz)
+```
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/pinning.py src/run.py tests/test_pinning.py
+git commit -m "feat: --cpu-mhz/--fan-full via whitelisted pi-power-pin, pinned-clock acceptance gate"
 ```
 
 ---
@@ -1812,6 +2027,20 @@ ssh macc2026@192.168.0.11 'ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-
 
 Expected: `pimacc`.
 
+- [ ] **Step 2b (USER, one sudo prompt): Install the pin helper and its sudoers rule**
+
+```
+! ssh -t maccpi@192.168.0.243 'sudo install -o root -g root -m 0755 ~/Desktop/power-measurement-pi/tools/pi-power-pin /usr/local/sbin/pi-power-pin && echo "maccpi ALL=(root) NOPASSWD: /usr/local/sbin/pi-power-pin" | sudo tee /etc/sudoers.d/pi-power-pin >/dev/null && sudo chmod 0440 /etc/sudoers.d/pi-power-pin && sudo visudo -cf /etc/sudoers.d/pi-power-pin'
+```
+
+Verify from the NUC, which now needs no password:
+
+```bash
+ssh maccpi@192.168.0.243 'sudo -n /usr/local/sbin/pi-power-pin fan full; sudo -n /usr/local/sbin/pi-power-pin pin 2400; sleep 10; sudo -n /usr/local/sbin/pi-power-pin status; vcgencmd measure_clock arm; sudo -n /usr/local/sbin/pi-power-pin restore'
+```
+
+Expected: `governor=performance min_kHz=2400000 max_kHz=2400000`, `fan_state=4/4` with non-zero `fan_rpm`, and `measure_clock arm` ≈ `2400000000`.
+
 - [ ] **Step 3 (USER): Shut down the Pi cleanly**
 
 `! ssh -t maccpi@192.168.0.243 sudo poweroff`. Then confirm on the EliteBook that the current has fallen to the halted level:
@@ -1847,9 +2076,10 @@ Expected:
 - [ ] **Step 7: Characterize the lead resistance and choose the final Vout** (on the Pi)
 
 ```bash
-ssh maccpi@192.168.0.243 'vcgencmd pmic_read_adc EXT5V_V; vcgencmd get_throttled;
+ssh maccpi@192.168.0.243 'sudo -n /usr/local/sbin/pi-power-pin fan full; sudo -n /usr/local/sbin/pi-power-pin pin 2400; sleep 15;
+  vcgencmd pmic_read_adc EXT5V_V; vcgencmd get_throttled;
   for i in 1 2 3 4; do timeout 30 python3 -c "while 1: pass" & done; sleep 20;
-  vcgencmd pmic_read_adc EXT5V_V; vcgencmd get_throttled; wait'
+  vcgencmd pmic_read_adc EXT5V_V; vcgencmd get_throttled; vcgencmd measure_clock arm; vcgencmd measure_temp; wait'
 curl -s "http://192.168.0.11:8051/status"
 ```
 
@@ -1859,6 +2089,8 @@ Compute `R = (Vout − EXT5V_burn) / I_burn`, where `I_burn` is from the recorde
 Gate:
 - `EXT5V_V ≥ 4.85 V` during the burn.
 - `get_throttled` = `0x0` after the burn.
+- `measure_clock arm` ≈ 2.4 GHz during the burn.
+- Temperature < 75 °C with the fan at full speed. Also run a 5-min version of this burn and record the peak temperature. If it is ≥ 75 °C, tell the user before using 2400 MHz as the main clock.
 - Log Vout, R, idle and burn EXT5V, and idle and burn W in `sp1-bringup-log.md`.
 
 - [ ] **Step 8: Check the Pi clock offset** (lab time)
@@ -1883,7 +2115,7 @@ Gate: `[ok] edges≈120`, `max_residual < 1.0 ms`, `|drift| < 50 ppm`. Record th
 - [ ] **Step 10: Golden smoke run, monsoon backend**
 
 ```bash
-ssh maccpi@192.168.0.243 'cd ~/Desktop/power-measurement-pi && ~/.local/bin/uv run python src/run.py --sampler monsoon \
+ssh maccpi@192.168.0.243 'cd ~/Desktop/power-measurement-pi && ~/.local/bin/uv run python src/run.py --sampler monsoon --cpu-mhz 2400 --fan-full \
   --task image --model yolo11n.pt --check-image bus.jpg --frames 10 --bench 1 --out runs/m4_smoke_yolo11n'
 ssh macc2026@192.168.0.11 'cd ~/power-measurement-pi && rsync -a maccpi@192.168.0.243:Desktop/power-measurement-pi/runs/m4_smoke_yolo11n runs/ && \
   cd host && ~/.local/bin/uv run python align.py --recorder-dir $(ls -d data/*/ | tail -1) --pi-run ../runs/m4_smoke_yolo11n && \
