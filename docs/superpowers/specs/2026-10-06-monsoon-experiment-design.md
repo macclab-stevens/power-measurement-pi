@@ -214,3 +214,19 @@ Across runs:
    - Raise Vout to **5.25 V**. Gate: `EXT5V_V ≥ 4.85 V` under a 4-core burn and `throttled & 0xF == 0`, otherwise shorten or thicken the leads.
    - Changing Vout needs a recorder restart, which power-cycles the Pi, so the Pi is shut down cleanly first.
 6. **The Pi has no Python environment.** The Desktop copy is clean at `7e83d0e`, but there is no `uv` or `.venv`. SP0 installs `uv` (user-local) and syncs the locked environment. Torch on aarch64 is about 5.6 GB, or use the CPU index.
+
+## Revision 2: Pinned CPU clock and fan (2026-10-06, user decision)
+
+- **Every run uses a pinned CPU clock.** The main dataset runs at **2400 MHz**, which is the stock maximum. The Pi 5 has no boost above `arm_freq=2400`, and overclocking is out of scope. A subset of cells is repeated at **1500 and 2000 MHz**, so the predictor can learn how power scales with clock. This replaces the SP3 "governor" sweep dimension.
+- **The fan is pinned at full speed.** The `pwm-fan` is powered from the same 5 V input the Monsoon measures, and its automatic steps at about 50 / 60 / 67.5 / 75 °C would appear as power steps that are not caused by the ML work. Lowering the four fan trip points to 20–23 °C makes the kernel's `step_wise` governor hold the fan at max state 4. The fan then adds a constant offset, which the idle baseline absorbs, and the CPU keeps headroom below the 80 °C firmware throttle point.
+- **Mechanism:**
+  - `tools/pi-power-pin` is installed root-owned at `/usr/local/sbin/pi-power-pin`.
+  - `/etc/sudoers.d/pi-power-pin` allows `maccpi` to run only that file without a password.
+  - Commands: `pin <MHz>` (performance governor, min = max), `fan full`, `restore`, `status`.
+  - It replaces `run.py --pin-freq`, which called `sudo` interactively and could not work unattended.
+- **Gates for every run with `--cpu-mhz`:**
+  - every context sample has `|arm_MHz − pinned| ≤ 25`;
+  - `throttle_bits & 0xF == 0`;
+  - fan state == max before the measurement starts.
+
+  A failure on any of these fails the run.
