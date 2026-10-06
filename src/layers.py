@@ -265,6 +265,7 @@ class LayerProfiler:
         self.outputs: dict[str, list] = {}          # path -> [out_rec per rec_idx]
         self._modules: dict[str, nn.Module] = {}
         self.exec_order: list[tuple] = []           # (mode, path) first-execution order
+        self.events = None                          # optional EventLog sink (Monsoon backend)
         self._register()
 
     def _register(self) -> None:
@@ -293,9 +294,13 @@ class LayerProfiler:
 
     def set_frame(self, frame: int) -> None:
         self.frame = frame
+        if self.events is not None:
+            self.events.labels["iter"] = frame
 
     def set_mode(self, mode: str) -> None:
         self.mode = mode
+        if self.events is not None:
+            self.events.labels["mode"] = mode
 
     def _make_pre(self, path: str):
         def pre(mod, inp):  # noqa: ARG001
@@ -306,6 +311,8 @@ class LayerProfiler:
             if path not in self.config:
                 self.config[path] = module_config(mod)
             self.calls[path][idx] += 1
+            if self.events is not None:
+                self.events.begin("layer", layer_path=path)
             self._stack[path].append((time.perf_counter(), idx))
         return pre
 
@@ -315,6 +322,8 @@ class LayerProfiler:
                 return
             t0, idx = self._stack[path].pop()
             dt = (time.perf_counter() - t0) * 1000.0
+            if self.events is not None:
+                self.events.end("layer", layer_path=path)
             self.times[path].append((self.frame, self.mode, idx, dt))
             if self.outputs[path][idx] is None:
                 self.outputs[path][idx] = _out_shapes(out)

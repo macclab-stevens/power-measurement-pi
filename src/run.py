@@ -32,7 +32,8 @@ import torch.profiler as profiler
 
 from layers import LayerProfiler
 from microbench import bench_configs
-from powersampler import PowerSampler
+from powersampler import make_sampler
+from syncpulse import emit as sync_pulse
 from tasks import make_task
 
 BASELINE_W_MIN, BASELINE_W_MAX = 0.5, 8.0
@@ -81,7 +82,12 @@ def main():
                     help="feed real camera frames (cam.py) instead of synthetic fixtures")
     ap.add_argument("--pin-freq", action="store_true",
                     help="pin CPU to performance governor for consistent power measurements")
+    ap.add_argument("--sampler", default="pmic", choices=["pmic", "monsoon"],
+                    help="power source: on-board PMIC (legacy) or EliteBook Monsoon recorder")
+    ap.add_argument("--recorder-url", default="http://192.168.0.11:8051",
+                    help="Monsoon recorder HTTP base URL (used with --sampler monsoon)")
     args = ap.parse_args()
+    bmin, bmax = (1.5, 8.0) if args.sampler == "monsoon" else (BASELINE_W_MIN, BASELINE_W_MAX)
 
     torch.set_num_threads(args.threads)
     ts = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
@@ -114,7 +120,10 @@ def main():
                 f"torch={torch.__version__} | hooked={len(prof._modules)} modules | "
                 f"params={n_params/1e6:.2f}M")
 
-    sampler = PowerSampler()
+    sampler = make_sampler(args.sampler, args.recorder_url)
+    monsoon = args.sampler == "monsoon"
+    if monsoon:
+        prof.events = sampler.events
     sampler.start()
     try:
         # ---- warm-up: sustained inference over ALL modes so temp/DVFS settle
@@ -132,6 +141,8 @@ def main():
                         f"temp {env0[0]}->{env1[0]}C | arm {env0[1]}->{env1[1]}MHz")
 
         # ABAB global baseline, slice A (2 s) — slice B follows the forward loops
+        if monsoon:
+            sync_pulse(sampler.events, "start")
         sampler.marker("baseline_A")
         tA0 = sampler.now_ms()
         time.sleep(2.0)
@@ -163,9 +174,9 @@ def main():
         aP, bP = baseA["mean_P"], baseB["mean_P"]
         baseline_W = (aP + bP) / 2 if aP is not None and bP is not None else None
         baseline_drift_W = abs(aP - bP) if aP is not None and bP is not None else None
-        if baseline_W is None or not (BASELINE_W_MIN <= baseline_W <= BASELINE_W_MAX):
+        if baseline_W is None or not (bmin <= baseline_W <= bmax):
             raise SystemExit(f"baseline_W={baseline_W} outside "
-                             f"[{BASELINE_W_MIN}, {BASELINE_W_MAX}] - aborting")
+                             f"[{bmin}, {bmax}] - aborting")
         aS = f"{aP:.4f}" if aP is not None else "None"
         bS = f"{bP:.4f}" if bP is not None else "None"
         mS = f"{baseline_W:.4f}" if baseline_W is not None else "None"
@@ -210,10 +221,15 @@ def main():
                     "E_per_call_mJ", "temp_start_C", "temp_end_C",
                     "freq_start_MHz", "freq_end_MHz", "samples_used", "SKIPPED",
                     "skip_reason", "error"], perop)
+        if monsoon:
+            sync_pulse(sampler.events, "end")
+            sampler.marker("done")
+            sampler.events.write_csv(os.path.join(outdir, "events.csv"))
 
         srows = sampler.rows()
-        _write_csv(os.path.join(outdir, "samples.csv"),
-                   ["t_ms", "phase", "window_id", "I_A", "V_V", "P_W"], srows)
+        if not monsoon:
+            _write_csv(os.path.join(outdir, "samples.csv"),
+                       ["t_ms", "phase", "window_id", "I_A", "V_V", "P_W"], srows)
         ctx = sampler.context()
         flat = []
         rail_keys: list[str] = []
@@ -252,7 +268,12 @@ def main():
             "baseline_A_W": round(aP, 6) if aP is not None else None,
             "baseline_B_W": round(bP, 6) if bP is not None else None,
             "baseline_drift_W": round(baseline_drift_W, 6) if baseline_drift_W is not None else None,
-            "schema_version": 3,
+            "schema_version": 4 if monsoon else 3,
+            "sampler": args.sampler,
+            "recorder_url": args.recorder_url if monsoon else None,
+            "recorder_status": sampler.recorder_status() if monsoon else None,
+            "t0_real_ns": getattr(sampler, "_t0_ns", None),
+            "sync_tags": ["start", "end"] if monsoon else [],
             "achieved_sample_hz": round(achieved_hz, 1),
             "throttle_bits": ctx[-1].get("throttle_bits") if ctx else None,
             "arch_fingerprint": arch,
@@ -266,7 +287,9 @@ def main():
                              "E_mJ = P_W * t_ms; P_delta = P_mean - baseline_W",
             "methodology": "steady-state isolation microbench (deepcopy leaf, "
                            "dtype-aware cache-hot inputs, VDD_CORE PMIC rail); "
-                           "per-op power is attributed, not instantaneous",
+                           "per-op power is attributed, not instantaneous"
+                           + (" | monsoon: 5 V input power @5 kHz, events on lab PTP wall clock, "
+                              "aligned offline by sync pulses (host/align.py)" if monsoon else ""),
         }
         with open(os.path.join(outdir, "run_meta.json"), "w") as f:
             json.dump(meta, f, indent=2)
@@ -299,7 +322,7 @@ def main():
             errors.append("op_table empty")
         if achieved_hz < 50:
             errors.append(f"achieved sample Hz={achieved_hz:.1f} < 50")
-        if baseline_W is None or not (BASELINE_W_MIN <= baseline_W <= BASELINE_W_MAX):
+        if baseline_W is None or not (bmin <= baseline_W <= bmax):
             errors.append(f"baseline_W={baseline_W} out of range")
         if baseline_drift_W is None:
             errors.append("baseline drift unknown (empty A/B window)")
