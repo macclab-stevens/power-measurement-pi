@@ -30,6 +30,7 @@ import time
 import torch
 import torch.profiler as profiler
 
+import pinning
 from layers import LayerProfiler
 from microbench import bench_configs
 from powersampler import make_sampler
@@ -80,8 +81,10 @@ def main():
                     help="detection oracle: require object conf>=--conf on this image file")
     ap.add_argument("--live-camera", action="store_true",
                     help="feed real camera frames (cam.py) instead of synthetic fixtures")
-    ap.add_argument("--pin-freq", action="store_true",
-                    help="pin CPU to performance governor for consistent power measurements")
+    ap.add_argument("--cpu-mhz", type=int, default=None,
+                    help="pin all cores to this clock via pi-power-pin (1500..2400 step 100)")
+    ap.add_argument("--fan-full", action="store_true",
+                    help="force the fan to max state (constant fan power) via pi-power-pin")
     ap.add_argument("--sampler", default="pmic", choices=["pmic", "monsoon"],
                     help="power source: on-board PMIC (legacy) or EliteBook Monsoon recorder")
     ap.add_argument("--recorder-url", default="http://192.168.0.11:8051",
@@ -108,9 +111,11 @@ def main():
     logger.addHandler(_ch)
     logger.info(f"run {ts} -> {outdir}")
 
-    if args.pin_freq:
-        os.system("sudo cpupower frequency-set -g performance 2>/dev/null || "
-                  "sudo sh -c 'echo performance > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor'")
+    pin_status = pinning.apply(args.cpu_mhz, args.fan_full)
+    if args.fan_full:
+        pinning.wait_fan_full()
+    if pin_status:
+        logger.info(f"pinned: {pin_status}")
 
     task = make_task(args.task, args.model, args)
     prof = LayerProfiler(task.module)
@@ -274,6 +279,7 @@ def main():
             "recorder_status": sampler.recorder_status() if monsoon else None,
             "t0_real_ns": getattr(sampler, "_t0_ns", None),
             "sync_tags": ["start", "end"] if monsoon else [],
+            "cpu_mhz_pinned": args.cpu_mhz, "fan_full": args.fan_full, "pin_status": pin_status,
             "achieved_sample_hz": round(achieved_hz, 1),
             "throttle_bits": ctx[-1].get("throttle_bits") if ctx else None,
             "arch_fingerprint": arch,
@@ -331,6 +337,8 @@ def main():
         thr = ctx[-1].get("throttle_bits") if ctx else None
         if thr is not None and (thr & 0x1) != 0:
             errors.append(f"throttled during run (throttle_bits=0x{thr:x})")
+        if args.cpu_mhz is not None:
+            errors += pinning.clock_errors(ctx, args.cpu_mhz)
         if not task.oracle():
             extra = getattr(task, "_checked", None)
             oracle_note = f" (best_conf={extra:.3f})" if extra is not None else ""
@@ -353,8 +361,6 @@ def main():
             task.stop_camera()
         except AttributeError:
             pass
-        if args.pin_freq:
-            os.system("sudo sh -c 'echo ondemand > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor' 2>/dev/null")
 
 if __name__ == "__main__":
     main()
