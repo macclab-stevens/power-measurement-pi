@@ -192,3 +192,25 @@ Across runs:
 - Fused backends (ONNX/TFLite) and GPU/NPU.
 - Per-rail power. The Monsoon measures whole-board 5 V input; the PMIC context gives rail snapshots only.
 - Mixing v3 (PMIC) and v4 (Monsoon) power targets in one training set.
+
+## Revision 1: SP0 findings (2026-10-06). These override the earlier sections where they conflict.
+
+1. **The Monsoon must stay on continuously.** The HVPM powers the Pi, and `monsoon_monitor.py` switches Vout to 0 on exit unless `--keep-on` is set. So there is no per-cell start/stop. One **always-on recorder** runs on the EliteBook, and each cell is cut out of the continuous recording by wall-clock range. `host/experiment.py` only asks the recorder for `status` and `window`; it never stops it.
+2. **The lab already has GPS/PTP time.** A TM2500C GPS time server at 192.168.0.20 is in use (`~/Desktop/lab_time_sync` on the EliteBook).
+   - The EliteBook is PTP-synced to within about 0.1 µs.
+   - The Pi runs `timemaster`; `check_sync.py` measured it at +0.013 ms from GPS.
+   - So Pi events are timestamped with **`time.time_ns()` (lab-synced wall clock)** as the primary time base. `monotonic_ns` is kept as a secondary column.
+   - The weak link is now the Monsoon sample clock. Timestamps come from sample index / 5000, with no host anchor per block, USB latency of about ms, and dropped samples (996 in 72 min) that silently shift the index-based time.
+3. **Recorder:** `host/monsoon_recorder.py` is derived from the existing `~/monsoon/monsoon_monitor.py` (reusing its `StreamingEngine` `__vectorProcess` hook; the original file is left unchanged). Changes:
+   - Record a host `time.time_ns()` arrival stamp and the cumulative `dropped` count for every USB block.
+   - Store float32 `.npy` chunks, rolled over hourly, plus a block table, instead of a ~1 GB/h CSV.
+   - Insert NaN gaps where `dropped` increments.
+   - Add an HTTP `status` / `window?t0_ns&t1_ns` API on localhost:8051.
+   - Always use `keep_on`.
+4. **Alignment** fits `monsoon_time(sample_idx) = a + b·idx` per cell, using the block arrival stamps (coarse, about ms) and refined by the start/end sync pulses (sub-ms). It corrects for USB latency and Monsoon oscillator drift. The Pi↔lab clock offset is taken as 0 ± 0.1 ms (checked with `check_sync.py` before each matrix).
+5. **Supply voltage.**
+   - At Vout = 5.0 V and an idle draw of 0.64 A, the Pi reads `EXT5V_V = 4.83 V`. That is about 0.25 Ω of lead/connector resistance.
+   - `get_throttled = 0x50000` means under-voltage has already occurred since boot.
+   - Raise Vout to **5.25 V**. Gate: `EXT5V_V ≥ 4.85 V` under a 4-core burn and `throttled & 0xF == 0`, otherwise shorten or thicken the leads.
+   - Changing Vout needs a recorder restart, which power-cycles the Pi, so the Pi is shut down cleanly first.
+6. **The Pi has no Python environment.** The Desktop copy is clean at `7e83d0e`, but there is no `uv` or `.venv`. SP0 installs `uv` (user-local) and syncs the locked environment. Torch on aarch64 is about 5.6 GB, or use the CPU index.
