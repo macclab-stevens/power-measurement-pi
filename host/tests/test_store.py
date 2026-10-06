@@ -16,18 +16,6 @@ def test_append_and_read_roundtrip(tmp_path):
     s.close()
 
 
-def test_dropped_samples_insert_nan_gap(tmp_path):
-    s = SampleStore(tmp_path)
-    s.append(np.ones(2), np.ones(2), host_ns=1, dropped_raw=0)
-    s.append(np.ones(2), np.ones(2), host_ns=2, dropped_raw=3)
-    i, _ = s.read(0, s.n_total)
-    assert s.n_total == 7 and s.dropped == 3
-    assert np.isnan(i[2:5]).all() and np.isfinite(i[[0, 1, 5, 6]]).all()
-    b = load_blocks(tmp_path)
-    assert list(b["first_idx"]) == [0, 5] and list(b["gap_inserted"]) == [0, 3]
-    s.close()
-
-
 def test_reopen_appends_not_truncates(tmp_path):
     s1 = SampleStore(tmp_path)
     s1.append(np.ones(2), np.ones(2), host_ns=1, dropped_raw=0)
@@ -39,32 +27,29 @@ def test_reopen_appends_not_truncates(tmp_path):
     s2.close()
 
 
-def test_dropped_counter_wraps_uint16(tmp_path):
+def test_dropped_raw_is_recorded_not_interpreted(tmp_path):
     s = SampleStore(tmp_path)
-    s.append(np.ones(2), np.ones(2), host_ns=1, dropped_raw=65530)  # implausible first: reset
-    s.append(np.ones(2), np.ones(2), host_ns=2, dropped_raw=4)      # (4-65530)&0xFFFF = 10
+    sizes = [127, 129, 128, 127]
+    for n, raw in zip(sizes, [0, 14, 0, 14]):
+        s.append(np.ones(n), np.ones(n), host_ns=n * 1000 + raw, dropped_raw=raw)
     i, _ = s.read(0, s.n_total)
-    assert s.dropped == 10 and s.n_total == 14
-    assert np.isnan(i).sum() == 10
+    assert not np.isnan(i).any()
+    assert s.n_total == sum(sizes) and s.dropped == 0
+    b = load_blocks(tmp_path)
+    assert list(b["dropped_raw"]) == [0, 14, 0, 14]
+    assert not b["dropped_cum"].any() and not b["gap_inserted"].any()
+    assert not b["counter_reset"].any()
+    assert s.raw_dropped_nonzero_blocks == 2
     s.close()
 
 
-def test_dropped_counter_reset_is_flagged_not_gapped(tmp_path):
+def test_reopen_restores_raw_dropped_count(tmp_path):
     s = SampleStore(tmp_path)
-    s.append(np.ones(2), np.ones(2), host_ns=1, dropped_raw=100)
-    assert s.dropped == 100 and s.n_total == 102
-    s.append(np.ones(2), np.ones(2), host_ns=2, dropped_raw=2)
-    assert s.n_total == 104 and s.dropped == 100 and s.resets == 1
-    assert load_blocks(tmp_path)["counter_reset"][-1] == 1
-    s.close()
-
-
-def test_reopen_restores_last_raw(tmp_path):
-    s = SampleStore(tmp_path)
-    s.append(np.ones(2), np.ones(2), host_ns=1, dropped_raw=7)
+    for k, raw in enumerate([0, 14, 14, 0]):
+        s.append(np.ones(2), np.ones(2), host_ns=k, dropped_raw=raw)
     s.close()
     s2 = SampleStore(tmp_path)
-    s2.append(np.ones(2), np.ones(2), host_ns=2, dropped_raw=9)
-    b = load_blocks(tmp_path)
-    assert b["gap_inserted"][-1] == 2 and s2.dropped == 9
+    assert s2.raw_dropped_nonzero_blocks == 2 and s2.dropped == 0
+    s2.append(np.ones(2), np.ones(2), host_ns=9, dropped_raw=14)
+    assert s2.raw_dropped_nonzero_blocks == 3
     s2.close()

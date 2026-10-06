@@ -162,10 +162,7 @@ def align(recorder_dir, pi_run_dir, out_dir) -> dict:
         "coarse_clock": {"a_ns": clock.a_ns, "b_ns": clock.b_ns},
     }
     fail_reasons = []
-    resets = int(b["counter_reset"][sel].sum())
-    res["counter_resets_in_run"] = resets
-    if resets > 0:
-        fail_reasons.append("counter_reset in run")
+    res["raw_dropped_nonzero_blocks_in_run"] = int((b["dropped_raw"][sel] != 0).sum())  # diagnostic
     env = _envelope_max_dev_ms(last_idx[sel].astype(np.float64),
                                b["host_ns"][sel].astype(np.float64), clock)
     res["envelope_max_dev_ms"] = env

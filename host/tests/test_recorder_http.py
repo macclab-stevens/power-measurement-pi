@@ -5,8 +5,9 @@ import urllib.error
 import urllib.request
 
 import numpy as np
+import pytest
 
-from recorder import make_server, window_stats
+from recorder import make_server, validate_args, window_stats
 from store import SampleStore
 
 
@@ -32,11 +33,24 @@ def test_window_stats_by_wall_clock(tmp_path):
 def test_window_ignores_nan(tmp_path):
     t0 = 1_800_000_000_000_000_000
     s = SampleStore(tmp_path)
-    s.append(np.full(100, 0.4), np.full(100, 5.0), host_ns=t0 + 99 * 200_000, dropped_raw=0)
-    s.append(np.full(100, 0.4), np.full(100, 5.0), host_ns=t0 + 299 * 200_000, dropped_raw=100)
-    w = window_stats(s, t0, t0 + 300 * 200_000)
-    assert w["count"] == 200 and abs(w["mean_P"] - 2.0) < 1e-6
+    I = np.full(100, 0.4)
+    s.append(I, np.full(100, 5.0), host_ns=t0 + 99 * 200_000, dropped_raw=0)
+    I2 = np.full(100, 0.4)
+    I2[10:20] = np.nan
+    s.append(I2, np.full(100, 5.0), host_ns=t0 + 199 * 200_000, dropped_raw=0)
+    w = window_stats(s, t0, t0 + 200 * 200_000)
+    assert w["count"] == 190 and abs(w["mean_P"] - 2.0) < 1e-6
     s.close()
+
+
+def test_current_limit_bounds():
+    validate_args(5.25, 6.0)
+    validate_args(5.25, 8.0)
+    for bad in (0, -1.0, 8.01):
+        with pytest.raises(SystemExit):
+            validate_args(5.25, bad)
+    with pytest.raises(SystemExit):
+        validate_args(9.0, 6.0)
 
 
 def test_http_status_and_window(tmp_path):

@@ -68,7 +68,7 @@ def _build(tmp_path, with_pulses=True, extra_events=(), it="0", nan_in_on=False,
         last = i0 + blk - 1
         host = true_ns[last] + USB_MIN_MS * 1e6 + rng.exponential(2e6)
         if reset_at is not None and i0 >= reset_at:
-            raw = 40_000
+            raw = 14
         s.append(P[i0:i0 + blk] / 5.0, np.full(blk, 5.0), int(host), raw)
     s.close()
     events.sort(key=lambda e: e[4])
@@ -90,7 +90,7 @@ def test_align_recovers_offset_and_passes(tmp_path):
     assert res["max_residual_ms"] < 0.5
     assert abs(res["drift_ppm"]) < 5
     assert abs(res["rise_minus_fall_ms"]) < 0.2
-    assert res["counter_resets_in_run"] == 0
+    assert res["raw_dropped_nonzero_blocks_in_run"] == 0
     assert res["envelope_max_dev_ms"] < 0.5
     assert 0 <= res["nan_fraction"] < 0.01
     saved = json.loads((pi / "alignment.json").read_text())
@@ -151,12 +151,11 @@ def test_align_rejects_mid_run_index_slip(tmp_path):
     assert saved["pass"] is False and saved["envelope_max_dev_ms"] > 1.0
 
 
-def test_align_rejects_counter_reset_in_run(tmp_path):
-    rec, pi, _ = _build(tmp_path, reset_at=50_000)
-    with pytest.raises(AlignError, match="counter_reset"):
-        align(rec, pi, pi)
-    saved = json.loads((pi / "alignment.json").read_text())
-    assert saved["pass"] is False and saved["counter_resets_in_run"] == 1
+def test_align_reports_raw_dropped_but_does_not_gate(tmp_path):
+    rec, pi, _ = _build(tmp_path, reset_at=50_000)   # blocks after 50k carry raw=14
+    res = align(rec, pi, pi)
+    assert res["pass"] is True
+    assert res["raw_dropped_nonzero_blocks_in_run"] > 0
 
 
 def test_ctx_read_flag_and_labels_unaffected(tmp_path):

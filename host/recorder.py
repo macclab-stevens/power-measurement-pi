@@ -3,12 +3,12 @@
 
 The HVPM main channel *powers the Pi*, so this process never switches Vout off
 (stopping it leaves the output at the last setting). Each USB block is stored with its
-host arrival time (PTP-disciplined time.time_ns) and the cumulative dropped count.
+host arrival time (PTP-disciplined time.time_ns) and the raw device dropped field (diagnostic only).
 HTTP on --port:
   GET /status                     -> recording, serial, vout_V, n_total, dropped, sample_hz, run_dir
   GET /window?t0_ns=&t1_ns=       -> count, mean_P (W), max_P (W), complete
 
-    uv run python recorder.py --vout 5.2 --current-limit 5
+    uv run python recorder.py --vout 5.25 --current-limit 6
 """
 from __future__ import annotations
 
@@ -32,8 +32,16 @@ from clockfit import fit_sample_clock
 from store import SampleStore
 
 VOUT_MIN, VOUT_MAX = 4.80, 5.40
+CURRENT_LIMIT_MAX = 8.0
 MAX_WINDOW_S = 600   # /window span cap: bounds memory per request
 log = logging.getLogger("recorder")
+
+
+def validate_args(vout: float, current_limit: float) -> None:
+    if not (VOUT_MIN <= vout <= VOUT_MAX):
+        raise SystemExit(f"--vout {vout} outside safe Pi 5 range [{VOUT_MIN}, {VOUT_MAX}]")
+    if not (0 < current_limit <= CURRENT_LIMIT_MAX):
+        raise SystemExit(f"--current-limit {current_limit} outside (0, {CURRENT_LIMIT_MAX}] A")
 
 
 # ---- live window stats -------------------------------------------------------
@@ -86,7 +94,7 @@ def make_server(store, status_fn, host: str, port: int) -> ThreadingHTTPServer:
                 if u.path == "/status":
                     self._send(200, {**status_fn(), "n_total": store.n_total,
                                      "dropped": store.dropped,
-                                     "counter_resets": store.resets, "run_dir": str(store.dir),
+                                     "raw_dropped_nonzero_blocks": store.raw_dropped_nonzero_blocks, "run_dir": str(store.dir),
                                      "disk_free_gb": round(
                                          shutil.disk_usage(store.dir).free / 1e9, 1)})
                 elif u.path == "/window":
@@ -173,14 +181,13 @@ def main():  # pragma: no cover - needs the HVPM
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--vout", type=float, required=True)
-    ap.add_argument("--current-limit", type=float, default=5.0)
+    ap.add_argument("--current-limit", type=float, default=6.0)
     ap.add_argument("--serial", default=None)
     ap.add_argument("--outdir", default=str(Path(__file__).resolve().parent / "data"))
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=8051)
     a = ap.parse_args()
-    if not (VOUT_MIN <= a.vout <= VOUT_MAX):
-        raise SystemExit(f"--vout {a.vout} outside safe Pi 5 range [{VOUT_MIN}, {VOUT_MAX}]")
+    validate_args(a.vout, a.current_limit)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     run_dir = Path(a.outdir) / datetime.now().strftime("%Y%m%dT%H%M%S")
@@ -217,10 +224,7 @@ def main():  # pragma: no cover - needs the HVPM
         kind = msg[0]
         if kind == "data":
             _, I_A, V_V, host_ns, dropped = msg
-            resets_before = store.resets
             store.append(I_A, V_V, host_ns, dropped)
-            if store.resets > resets_before:
-                log.warning("device dropped-counter reset detected (total %d)", store.resets)
             info["recording"] = True
             now = time.monotonic()
             rate["n"] += len(I_A)
