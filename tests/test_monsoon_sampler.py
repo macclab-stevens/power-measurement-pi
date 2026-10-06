@@ -107,3 +107,21 @@ def test_marker_goes_to_event_log_with_window_ids(fake_recorder):
     assert [r["name"] for r in rows] == ["forward", "gap"]
     assert s._window_id == 2 and s._phase == "gap"
     s.stop()
+
+
+def test_window_raises_when_never_complete(fake_recorder):
+    fake, url = fake_recorder
+    fake.incomplete_calls = 10**9
+    s = MonsoonSampler(url, timeout_s=0.3)
+    _no_ctx(s)
+    s.start()
+    with pytest.raises(RuntimeError, match="still incomplete"):
+        s.window(0.0, 10.0)
+    s.stop()
+
+
+def test_window_retries_transient_errors_then_raises():
+    s = MonsoonSampler("http://127.0.0.1:9", timeout_s=0.3)
+    s._t0_ns = 0
+    with pytest.raises(RuntimeError, match="recorder window query failed"):
+        s.window(0.0, 10.0)

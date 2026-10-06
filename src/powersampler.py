@@ -221,7 +221,7 @@ class MonsoonSampler(PowerSampler):
     def start(self) -> None:
         try:
             st = self.recorder_status()
-        except OSError as e:
+        except (OSError, ValueError) as e:
             raise RuntimeError(f"Monsoon recorder unreachable at {self.url}: {e}") from e
         if not st.get("recording"):
             raise RuntimeError(f"Monsoon recorder at {self.url} is not recording: {st}")
@@ -244,11 +244,26 @@ class MonsoonSampler(PowerSampler):
     def window(self, t0_ms: float, t1_ms: float) -> dict:
         t0 = self._t0_ns + int(t0_ms * 1e6)
         t1 = self._t0_ns + int(t1_ms * 1e6)
-        deadline = time.monotonic() + max(2.0, self._timeout)
+        deadline = time.monotonic() + self._timeout
+        last_err: Exception | None = None
         while True:
-            w = self._get(f"/window?t0_ns={t0}&t1_ns={t1}")
-            if w.get("complete") or time.monotonic() > deadline:
-                return {"count": w["count"], "mean_P": w["mean_P"], "max_P": w["max_P"]}
+            try:
+                w = self._get(f"/window?t0_ns={t0}&t1_ns={t1}")
+            except (OSError, ValueError) as e:
+                last_err = e
+                w = None
+            if w is not None:
+                if w.get("complete"):
+                    try:
+                        return {"count": w["count"], "mean_P": w["mean_P"], "max_P": w["max_P"]}
+                    except KeyError as e:
+                        raise RuntimeError(f"recorder window response missing {e}: {w}") from e
+                last_err = None
+            if time.monotonic() > deadline:
+                if last_err is not None:
+                    raise RuntimeError(f"recorder window query failed: {last_err}") from last_err
+                raise RuntimeError(f"recorder window [{t0}, {t1}) ns still incomplete "
+                                   f"after {self._timeout}s: {w}")
             time.sleep(0.05)
 
     def rows(self) -> list[dict]:

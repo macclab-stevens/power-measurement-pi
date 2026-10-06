@@ -31,9 +31,9 @@ def emit(events, tag: str, pattern=PATTERN_MS, guard_ms: int = GUARD_MS,
     go, quit_ = ctx.Event(), ctx.Event()
     workers = [ctx.Process(target=_spin, args=(go, quit_), daemon=True)
                for _ in range(ncores or os.cpu_count() or 4)]
-    for w in workers:
-        w.start()
     try:
+        for w in workers:
+            w.start()
         events.marker(f"sync:{tag}")
         time.sleep(guard_ms / 1000.0)
         for on, ms in pattern:
@@ -51,4 +51,5 @@ def emit(events, tag: str, pattern=PATTERN_MS, guard_ms: int = GUARD_MS,
         quit_.set()
         go.set()  # wake parked workers so they see quit_
         for w in workers:
-            w.join(timeout=2)
+            if w.pid is not None:
+                w.join(timeout=2)
