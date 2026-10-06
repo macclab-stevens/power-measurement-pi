@@ -34,7 +34,6 @@ import pinning
 from layers import LayerProfiler
 from microbench import bench_configs
 from powersampler import make_sampler
-from syncpulse import emit as sync_pulse
 from tasks import make_task
 
 BASELINE_W_MIN, BASELINE_W_MAX = 0.5, 8.0
@@ -152,7 +151,7 @@ def main():
 
         # ABAB global baseline, slice A (2 s) — slice B follows the forward loops
         if monsoon:
-            sync_pulse(sampler.events, "start")
+            sampler.sync_pulse("start")
         sampler.marker("baseline_A")
         tA0 = sampler.now_ms()
         time.sleep(2.0)
@@ -218,7 +217,6 @@ def main():
                     ", ".join(f"{o['op']}({o['mode']}) {o['count']}x {o['self_mean_us']}us"
                               for o in top_op))
 
-        thr1 = sampler.snapshot_env()[2]
         achieved_hz = sampler.achieved_hz()
         logger.info(f"per-op power benches ({achieved_hz:.0f} W-Hz sampling):")
         saved_events, prof.events = prof.events, None   # benches are labeled by bench:<cid> phase markers
@@ -227,6 +225,7 @@ def main():
                                   require_samples=MIN_SAMPLES, max_retries=2, log=logger.info)
         finally:
             prof.events = saved_events
+        thr1 = sampler.snapshot_env()[2]
         _write_csv(os.path.join(outdir, "perop_power.csv"),
                    ["config_id", "class", "config_json", "input_kind",
                     "input_shapes", "input_dtypes", "macs", "bytes_moved",
@@ -237,7 +236,7 @@ def main():
                     "freq_start_MHz", "freq_end_MHz", "samples_used", "SKIPPED",
                     "skip_reason", "error"], perop)
         if monsoon:
-            sync_pulse(sampler.events, "end")
+            sampler.sync_pulse("end")
             sampler.marker("done")
             sampler.events.write_csv(os.path.join(outdir, "events.csv"))
 
@@ -367,7 +366,7 @@ def main():
             if args.cpu_mhz is None:
                 errors += pinning.throttle_errors(ctx)   # clock_errors already covers pinned runs
             if thr0 is None or thr1 is None:
-                errors.append("throttle state unreadable (get_throttled failed)")
+                errors.append("throttle state unreadable at start/end (vcgencmd snapshot failed)")
             elif pinning.new_undervoltage(thr0, thr1):
                 errors.append(f"under-voltage occurred during run "
                               f"(throttled 0x{thr0:x} -> 0x{thr1:x})")

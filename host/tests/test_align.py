@@ -75,9 +75,10 @@ def _build(tmp_path, with_pulses=True, extra_events=(), it="0", nan_in_on=False,
     with open(pi / "events.csv", "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=FIELDS)
         w.writeheader()
-        for kind, name, depth, path, t in events:
+        for kind, name, depth, path, t, *lab in events:
             w.writerow({"t_real_ns": int(t), "t_mono_ns": int(t), "kind": kind, "name": name,
-                        "depth": depth, "mode": "forward", "iter": it, "layer_path": path,
+                        "depth": depth, "mode": lab[0] if lab else "forward",
+                        "iter": lab[1] if lab else it, "layer_path": path,
                         "config_id": "", "window_id": 0})
     return rec, pi, (L0, L1, C0, C1)
 
@@ -161,7 +162,7 @@ def test_align_rejects_counter_reset_in_run(tmp_path):
 def test_ctx_read_flag_and_labels_unaffected(tmp_path):
     c0, c1 = T0 + 5_200_000_000, T0 + 5_250_000_000
     rec, pi, _ = _build(tmp_path, it="3", extra_events=[
-        ("ctx_begin", "ctx", 0, "", c0), ("ctx_end", "ctx", 0, "", c1)])
+        ("ctx_begin", "ctx", 0, "", c0, "", "99"), ("ctx_end", "ctx", 0, "", c1, "", "99")])
     align(rec, pi, pi)
     df = pd.read_parquet(pi / "power_trace.parquet")
     inside = df[(df["t_pi_ns"] >= c0) & (df["t_pi_ns"] < c1)]

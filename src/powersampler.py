@@ -17,6 +17,7 @@ import time
 import urllib.request
 from collections import deque
 
+import syncpulse
 from eventlog import EventLog
 
 VCMD = "/usr/bin/vcgencmd"
@@ -211,6 +212,7 @@ class MonsoonSampler(PowerSampler):
         self._timeout = timeout_s
         self._t0_ns = time.time_ns()
         self._status: dict = {}
+        self.ctx_pause = threading.Event()
         self.status_start: dict = {}
         self.status_end: dict | None = None
 
@@ -266,6 +268,9 @@ class MonsoonSampler(PowerSampler):
         """Base loop, but each read is bracketed by ctx_begin/ctx_end edges so the vcgencmd
         subprocess power spikes can be masked offline (align.py ctx_read)."""
         while not self._stop.is_set():
+            if self.ctx_pause.is_set():       # sync-pulse train running: no vcgencmd bursts
+                self._stop.wait(0.05)
+                continue
             self.events.edge("ctx_begin", "ctx")
             try:
                 row = self._ctx_read()
@@ -274,6 +279,15 @@ class MonsoonSampler(PowerSampler):
             with self._lock:
                 self._ctx.append(row)
             self._stop.wait(CONTEXT_PERIOD_S)
+
+    def sync_pulse(self, tag: str) -> None:
+        """Emit a sync-pulse train with context-thread reads paused."""
+        self.ctx_pause.set()
+        try:
+            time.sleep(0.1)                   # let an in-flight ctx read finish
+            syncpulse.emit(self.events, tag)
+        finally:
+            self.ctx_pause.clear()
 
     def marker(self, name: str | None) -> None:
         self.events.marker(name or "idle")

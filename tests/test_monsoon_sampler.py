@@ -192,3 +192,15 @@ def test_ctx_reads_are_bracketed_by_events(fake_recorder):
     kinds = [(r["kind"], r["name"], r["depth"]) for r in s.events.rows()]
     assert kinds == [("ctx_begin", "ctx", 0), ("ctx_end", "ctx", 0)]
     assert s.context() == [{"t_ms": 1.0, "temp_C": 40.0}]
+
+
+def test_sync_pulse_pauses_ctx_reads(fake_recorder, monkeypatch):
+    import powersampler
+    _, url = fake_recorder
+    s = MonsoonSampler(url)
+    seen = []
+    monkeypatch.setattr(powersampler.syncpulse, "emit",
+                        lambda ev, tag: seen.append((tag, s.ctx_pause.is_set())))
+    s.sync_pulse("start")
+    assert seen == [("start", True)]
+    assert not s.ctx_pause.is_set()
