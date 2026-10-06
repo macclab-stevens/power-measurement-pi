@@ -10,10 +10,14 @@ snapshot_env contract is the drop-in boundary for a future Monsoon backend.
 """
 from __future__ import annotations
 
+import json
 import subprocess
 import threading
 import time
+import urllib.request
 from collections import deque
+
+from eventlog import EventLog
 
 VCMD = "/usr/bin/vcgencmd"
 CONTEXT_PERIOD_S = 5.0
@@ -184,3 +188,84 @@ class PowerSampler:
             with self._lock:
                 self._ctx.append(row)
             self._stop.wait(CONTEXT_PERIOD_S)
+
+
+class MonsoonSampler(PowerSampler):
+    """Monsoon HVPM backend (EliteBook recorder). Same public contract as PowerSampler.
+
+    No PMIC fast loop (it burned CPU and polluted the trace); the 5 s context
+    thread stays. Markers go to an EventLog on the lab-synced wall clock.
+    window() asks the recorder for stats over the same wall-clock range.
+    """
+
+    def __init__(self, recorder_url: str, events: EventLog | None = None,
+                 timeout_s: float = 5.0) -> None:
+        super().__init__()
+        self.url = recorder_url.rstrip("/")
+        self.events = events or EventLog()
+        self._timeout = timeout_s
+        self._t0_ns = time.time_ns()
+        self._status: dict = {}
+
+    def _get(self, path: str) -> dict:
+        with urllib.request.urlopen(self.url + path, timeout=self._timeout) as r:
+            return json.loads(r.read())
+
+    def recorder_status(self) -> dict:
+        self._status = self._get("/status")
+        return self._status
+
+    def _now(self) -> float:
+        return (time.time_ns() - self._t0_ns) / 1e6
+
+    def start(self) -> None:
+        try:
+            st = self.recorder_status()
+        except OSError as e:
+            raise RuntimeError(f"Monsoon recorder unreachable at {self.url}: {e}") from e
+        if not st.get("recording"):
+            raise RuntimeError(f"Monsoon recorder at {self.url} is not recording: {st}")
+        self._t0 = time.monotonic()
+        self._t0_ns = time.time_ns()
+        self._stop.clear()
+        self._ctx_thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._ctx_thread.is_alive():
+            self._ctx_thread.join(timeout=10)
+
+    def marker(self, name: str | None) -> None:
+        self.events.marker(name or "idle")
+        with self._lock:
+            self._phase = self.events.phase
+            self._window_id = self.events.window_id
+
+    def window(self, t0_ms: float, t1_ms: float) -> dict:
+        t0 = self._t0_ns + int(t0_ms * 1e6)
+        t1 = self._t0_ns + int(t1_ms * 1e6)
+        deadline = time.monotonic() + max(2.0, self._timeout)
+        while True:
+            w = self._get(f"/window?t0_ns={t0}&t1_ns={t1}")
+            if w.get("complete") or time.monotonic() > deadline:
+                return {"count": w["count"], "mean_P": w["mean_P"], "max_P": w["max_P"]}
+            time.sleep(0.05)
+
+    def rows(self) -> list[dict]:
+        return []
+
+    def achieved_hz(self) -> float:
+        try:
+            return float(self.recorder_status().get("sample_hz", 0.0))
+        except OSError:
+            return 0.0
+
+
+def make_sampler(kind: str, recorder_url: str | None):
+    if kind == "pmic":
+        return PowerSampler()
+    if kind == "monsoon":
+        if not recorder_url:
+            raise ValueError("--sampler monsoon needs --recorder-url")
+        return MonsoonSampler(recorder_url)
+    raise ValueError(f"unknown sampler '{kind}' (pmic | monsoon)")
