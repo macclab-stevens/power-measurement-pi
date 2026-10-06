@@ -17,6 +17,7 @@ import json
 import logging
 import multiprocessing as mp
 import queue
+import shutil
 import signal
 import threading
 import time
@@ -31,6 +32,7 @@ from clockfit import fit_sample_clock
 from store import SampleStore
 
 VOUT_MIN, VOUT_MAX = 4.80, 5.40
+MAX_WINDOW_S = 600   # /window span cap: bounds memory per request
 log = logging.getLogger("recorder")
 
 
@@ -84,10 +86,17 @@ def make_server(store, status_fn, host: str, port: int) -> ThreadingHTTPServer:
                 if u.path == "/status":
                     self._send(200, {**status_fn(), "n_total": store.n_total,
                                      "dropped": store.dropped,
-                                     "counter_resets": store.resets, "run_dir": str(store.dir)})
+                                     "counter_resets": store.resets, "run_dir": str(store.dir),
+                                     "disk_free_gb": round(
+                                         shutil.disk_usage(store.dir).free / 1e9, 1)})
                 elif u.path == "/window":
                     q = parse_qs(u.query)
-                    self._send(200, window_stats(store, int(q["t0_ns"][0]), int(q["t1_ns"][0])))
+                    t0, t1 = int(q["t0_ns"][0]), int(q["t1_ns"][0])
+                    if t1 <= t0 or t1 - t0 > MAX_WINDOW_S * 1e9:
+                        self._send(400, {"error": f"window must satisfy 0 < t1-t0 <= "
+                                                  f"{MAX_WINDOW_S} s"})
+                        return
+                    self._send(200, window_stats(store, t0, t1))
                 else:
                     self._send(404, {"error": "unknown path"})
             except Exception as e:  # noqa: BLE001 - report, never kill the server

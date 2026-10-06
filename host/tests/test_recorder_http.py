@@ -1,6 +1,7 @@
 import json
 import threading
 import time
+import urllib.error
 import urllib.request
 
 import numpy as np
@@ -47,9 +48,32 @@ def test_http_status_and_window(tmp_path):
     try:
         st = json.loads(urllib.request.urlopen(base + "/status").read())
         assert st["recording"] is True and st["n_total"] == 5000
+        assert "disk_free_gb" in st and st["disk_free_gb"] > 0
         w = json.loads(urllib.request.urlopen(
             f"{base}/window?t0_ns={t0}&t1_ns={t0 + 200_000_000}").read())
         assert abs(w["mean_P"] - 2.0) < 1e-6
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        s.close()
+
+
+def test_window_rejects_huge_or_inverted_span(tmp_path):
+    t0 = 1_800_000_000_000_000_000
+    s = _store_with_known_power(tmp_path, t0)
+    srv = make_server(s, lambda: {"recording": True}, "127.0.0.1", 0)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    try:
+        for a, b in ((t0, t0 + 601 * 10**9), (t0 + 10**9, t0), (t0, t0)):
+            try:
+                urllib.request.urlopen(f"{base}/window?t0_ns={a}&t1_ns={b}")
+                raise AssertionError("expected HTTP 400")
+            except urllib.error.HTTPError as e:
+                assert e.code == 400 and "error" in json.loads(e.read())
+        ok = json.loads(urllib.request.urlopen(
+            f"{base}/window?t0_ns={t0}&t1_ns={t0 + 600 * 10**9}").read())
+        assert "count" in ok
     finally:
         srv.shutdown()
         srv.server_close()
