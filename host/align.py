@@ -33,7 +33,15 @@ class AlignError(RuntimeError):
 
 def _smooth(p):
     k = np.ones(SMOOTH) / SMOOTH
-    return np.convolve(np.nan_to_num(p, nan=np.nanmedian(p)), k, mode="same")
+    p = np.asarray(p, dtype=np.float64)
+    bad = ~np.isfinite(p)
+    if bad.any():
+        good = np.flatnonzero(~bad)
+        if good.size == 0:
+            raise AlignError("sync pulses not found (no finite power samples)")
+        p = p.copy()
+        p[bad] = np.interp(np.flatnonzero(bad), good, p[good])
+    return np.convolve(p, k, mode="same")
 
 
 def _find_edge(t_ns, p, t_guess, rising, lo, hi):
@@ -82,7 +90,7 @@ def align(recorder_dir, pi_run_dir, out_dir) -> dict:
     P = IV[:, 0] * IV[:, 1]
     ps = _smooth(P)
 
-    pi_t, mon_t = [], []
+    pi_t, mon_t, rising_ = [], [], []
     trains = []
     for name, grp in _edges(ev):
         ts = grp["t_real_ns"].to_numpy(dtype=np.float64)
@@ -105,13 +113,14 @@ def align(recorder_dir, pi_run_dir, out_dir) -> dict:
             if got is not None:
                 pi_t.append(t)
                 mon_t.append(got)
+                rising_.append(kind == "pulse_on")
                 found += 1
         trains.append({"name": name, "edges_found": found, "edges_logged": len(ts)})
         if found < len(ts) - 1:
             raise AlignError(f"sync pulses not found for train '{name}' "
                              f"({found}/{len(ts)} edges)")
 
-    pi_t, mon_t = np.array(pi_t), np.array(mon_t)
+    pi_t, mon_t, rising_ = np.array(pi_t), np.array(mon_t), np.array(rising_, dtype=bool)
     ref = pi_t[0]
     offs = mon_t - pi_t
     if len(trains) >= 2:
@@ -119,7 +128,13 @@ def align(recorder_dir, pi_run_dir, out_dir) -> dict:
     else:
         c1, c0 = 0.0, float(np.median(offs))
     resid_ms = (offs - (c0 + c1 * (pi_t - ref))) / 1e6
+    rise_bias = float(resid_ms[rising_].mean()) if rising_.any() else 0.0
+    fall_bias = float(resid_ms[~rising_].mean()) if (~rising_).any() else 0.0
     res = {
+        "rise_bias_ms": rise_bias, "fall_bias_ms": fall_bias,
+        "rise_minus_fall_ms": rise_bias - fall_bias,
+        "lag_note": "c0 includes USB latency + any common Pi-timestamp-to-power lag; "
+                    "not separable from pulses alone",
         "c0_ns": float(c0), "c1": float(c1), "drift_ppm": float(c1 * 1e6), "ref_ns": float(ref),
         "max_residual_ms": float(np.abs(resid_ms).max()),
         "rms_residual_ms": float(np.sqrt(np.mean(resid_ms ** 2))),
@@ -139,12 +154,17 @@ def align(recorder_dir, pi_run_dir, out_dir) -> dict:
 
     et = ev["t_real_ns"].to_numpy(dtype=np.float64)
     k = np.searchsorted(et, t_pi, side="right") - 1
-    mode = ev["mode"].astype(str).to_numpy()[k]
-    it = ev["iter"].astype(str).to_numpy()[k]
+    mode = ev["mode"].astype(str).to_numpy()[k].astype(object)
+    it = ev["iter"].astype(str).to_numpy()[k].astype(object)
     mk = ev[ev["kind"] == "marker"]
     mt = mk["t_real_ns"].to_numpy(dtype=np.float64)
     km = np.searchsorted(mt, t_pi, side="right") - 1
     phase = np.where(km >= 0, mk["name"].to_numpy()[np.clip(km, 0, None)], "idle")
+    # labels persist on the Pi between phases; only a mode's own phase marker (== mode name)
+    # makes mode/iter meaningful
+    outside = phase != mode
+    mode[outside] = ""
+    it[outside] = ""
 
     layer = np.full(t_pi.size, "", dtype=object)
     depth = np.zeros(t_pi.size, dtype=np.int16)
@@ -161,7 +181,7 @@ def align(recorder_dir, pi_run_dir, out_dir) -> dict:
         "t_s": (t_pi - t_first) / 1e9, "t_pi_ns": t_pi.astype(np.int64),
         "I_A": IV[:, 0].astype(np.float32), "V_V": IV[:, 1].astype(np.float32),
         "P_W": P.astype(np.float32), "phase": phase, "mode": mode, "iter": it,
-        "layer_path": layer.astype(str), "depth": depth,
+        "layer_path": layer, "depth": depth,
     })
     df.to_parquet(out_dir / "power_trace.parquet", index=False)
     return res

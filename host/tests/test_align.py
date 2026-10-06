@@ -26,13 +26,15 @@ def _train_edges(start_ns):
     return out
 
 
-def _build(tmp_path, with_pulses=True):
+def _build(tmp_path, with_pulses=True, extra_events=(), it="0", nan_in_on=False,
+           train_tags=("start", "end")):
     rec, pi = tmp_path / "rec", tmp_path / "pi"
     pi.mkdir()
     n = int(20 * 5000)
     true_ns = T0 + B * np.arange(n)
     P = np.full(n, 3.2)
-    trains = {"start": T0 + 2_000_000_000, "end": T0 + 15_000_000_000}
+    trains = {k: v for k, v in {"start": T0 + 2_000_000_000,
+                                "end": T0 + 15_000_000_000}.items() if k in train_tags}
     events = [("marker", "warmup", 0, "", T0 + 1_000_000_000)]
     for tag, s in trains.items():
         events.append(("marker", f"sync:{tag}", 0, "", s - 500_000_000))
@@ -44,12 +46,16 @@ def _build(tmp_path, with_pulses=True):
     events += [("begin", "layer", 1, "0", L0), ("begin", "layer", 2, "0.0", C0),
                ("end", "layer", 2, "0.0", C1), ("end", "layer", 1, "0", L1)]
     events.append(("marker", "done", 0, "", T0 + 17_000_000_000))
+    events += list(extra_events)
     if with_pulses:
         for tag, s in trains.items():
             e = _train_edges(s)
             for (k0, t0), (_, t1) in zip(e, e[1:]):
                 if k0 == "pulse_on":
                     P[(true_ns >= t0) & (true_ns < t1)] = 6.0
+    if nan_in_on:
+        a = int((2.35e9) / B)
+        P[a:a + 15] = np.nan                                  # 3 ms dropout in 300 ms ON slot
     P += np.random.default_rng(1).normal(0, 0.05, n)
     s = SampleStore(rec)
     blk, rng = 50, np.random.default_rng(2)
@@ -64,7 +70,7 @@ def _build(tmp_path, with_pulses=True):
         w.writeheader()
         for kind, name, depth, path, t in events:
             w.writerow({"t_real_ns": int(t), "t_mono_ns": int(t), "kind": kind, "name": name,
-                        "depth": depth, "mode": "forward", "iter": 0, "layer_path": path,
+                        "depth": depth, "mode": "forward", "iter": it, "layer_path": path,
                         "config_id": "", "window_id": 0})
     return rec, pi, (L0, L1, C0, C1)
 
@@ -75,6 +81,7 @@ def test_align_recovers_offset_and_passes(tmp_path):
     assert res["pass"] is True and res["n_edges"] == 12
     assert res["max_residual_ms"] < 0.5
     assert abs(res["drift_ppm"]) < 5
+    assert abs(res["rise_minus_fall_ms"]) < 0.2
     saved = json.loads((pi / "alignment.json").read_text())
     assert saved["pass"] is True
 
@@ -98,3 +105,28 @@ def test_align_raises_when_no_pulses(tmp_path):
     with pytest.raises(AlignError, match="sync pulses not found"):
         align(rec, pi, pi)
     assert not (pi / "power_trace.parquet").exists()
+
+
+def test_mode_iter_blank_outside_mode_phases(tmp_path):
+    rec, pi, _ = _build(tmp_path, it="3",
+                        extra_events=[("marker", "bench:abc", 0, "", T0 + 8_000_000_000)])
+    align(rec, pi, pi)
+    df = pd.read_parquet(pi / "power_trace.parquet")
+    def at(t):
+        return df.iloc[int(np.argmin(np.abs(df["t_pi_ns"].to_numpy() - t)))]
+    r = at(T0 + 9_000_000_000)
+    assert r["phase"] == "bench:abc" and r["mode"] == "" and r["iter"] == ""
+    r = at(T0 + 5_500_000_000)
+    assert r["phase"] == "forward" and r["mode"] == "forward" and r["iter"] == "3"
+
+
+def test_align_tolerates_dropped_samples(tmp_path):
+    rec, pi, _ = _build(tmp_path, nan_in_on=True)
+    res = align(rec, pi, pi)
+    assert res["pass"] is True and res["max_residual_ms"] < 0.5
+
+
+def test_single_train_path(tmp_path):
+    rec, pi, _ = _build(tmp_path, train_tags=("start",))
+    res = align(rec, pi, pi)
+    assert res["pass"] is True and res["drift_ppm"] == 0.0 and res["n_edges"] == 6
