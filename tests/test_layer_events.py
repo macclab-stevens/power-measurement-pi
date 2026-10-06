@@ -1,4 +1,5 @@
 # tests/test_layer_events.py
+import copy
 import os
 import sys
 
@@ -31,3 +32,19 @@ def test_no_events_when_sink_absent():
     with torch.no_grad():
         model(torch.zeros(2))
     assert prof.events is None
+
+
+def test_deepcopied_module_logs_only_while_sink_set():
+    model = nn.Sequential(nn.ReLU())
+    prof = LayerProfiler(model)
+    log = EventLog()
+    prof.events = log
+    clone = copy.deepcopy(model[0])
+    with torch.no_grad():
+        clone(torch.zeros(2))
+    n = len(log.rows())
+    assert n > 0                       # hooks survive deepcopy and still point at prof
+    prof.events = None
+    with torch.no_grad():
+        clone(torch.zeros(2))
+    assert len(log.rows()) == n

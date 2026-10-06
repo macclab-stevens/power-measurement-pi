@@ -215,8 +215,12 @@ def main():
 
         achieved_hz = sampler.achieved_hz()
         logger.info(f"per-op power benches ({achieved_hz:.0f} W-Hz sampling):")
-        perop = bench_configs(prof, sampler, baseline_W, args.bench,
-                              require_samples=MIN_SAMPLES, max_retries=2, log=logger.info)
+        saved_events, prof.events = prof.events, None   # benches are labeled by bench:<cid> phase markers
+        try:
+            perop = bench_configs(prof, sampler, baseline_W, args.bench,
+                                  require_samples=MIN_SAMPLES, max_retries=2, log=logger.info)
+        finally:
+            prof.events = saved_events
         _write_csv(os.path.join(outdir, "perop_power.csv"),
                    ["config_id", "class", "config_json", "input_kind",
                     "input_shapes", "input_dtypes", "macs", "bytes_moved",
