@@ -25,6 +25,10 @@ PASS_MS = 1.0
 SEARCH_MS = 60.0          # edge search half-window around the coarse prediction
 SMOOTH = 5                # centered moving average (1 ms), symmetric -> no edge shift
 PAD_S = 5.0
+ENVELOPE_MAX_DEV_MS = 1.0  # coarse-clock lower envelope must be linear to this (index-slip check)
+MAX_DRIFT_PPM = 50.0
+ENVELOPE_SEGMENTS = 20     # same rule as fit_sample_clock
+MIN_ENVELOPE_BLOCKS = 40
 
 
 class AlignError(RuntimeError):
@@ -65,6 +69,21 @@ def _find_edge(t_ns, p, t_guess, rising, lo, hi):
 def _edges(ev):
     e = ev[ev["kind"].isin(["pulse_on", "pulse_off"])]
     return list(e.groupby("name", sort=False))
+
+
+def _envelope_max_dev_ms(x, y, clock):
+    """Max deviation of the per-segment minimum coarse-clock residual from its median (ms)."""
+    if x.size < MIN_ENVELOPE_BLOCKS:
+        return None
+    r = y - clock.to_ns(x)
+    edges = np.linspace(x.min(), x.max() + 1, ENVELOPE_SEGMENTS + 1)
+    mins = []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        m = (x >= lo) & (x < hi)
+        if m.any():
+            mins.append(r[m].min())
+    mins = np.array(mins)
+    return float(np.abs(mins - np.median(mins)).max() / 1e6)
 
 
 def align(recorder_dir, pi_run_dir, out_dir) -> dict:
@@ -141,11 +160,30 @@ def align(recorder_dir, pi_run_dir, out_dir) -> dict:
         "n_edges": int(len(pi_t)), "trains": trains,
         "coarse_clock": {"a_ns": clock.a_ns, "b_ns": clock.b_ns},
     }
-    res["pass"] = bool(res["max_residual_ms"] < PASS_MS)
+    fail_reasons = []
+    resets = int(b["counter_reset"][sel].sum())
+    res["counter_resets_in_run"] = resets
+    if resets > 0:
+        fail_reasons.append("counter_reset in run")
+    env = _envelope_max_dev_ms(last_idx[sel].astype(np.float64),
+                               b["host_ns"][sel].astype(np.float64), clock)
+    res["envelope_max_dev_ms"] = env
+    if env is not None and env > ENVELOPE_MAX_DEV_MS:
+        fail_reasons.append("coarse clock envelope nonlinear (sample-index slip?)")
+    if len(trains) >= 2 and abs(res["drift_ppm"]) > MAX_DRIFT_PPM:
+        fail_reasons.append("drift > 50 ppm")
+    if res["max_residual_ms"] >= PASS_MS:
+        fail_reasons.append("residual >= 1.0 ms")
+    res["nan_fraction"] = float(np.isnan(IV).any(axis=1).mean()) if len(IV) else 0.0
+    hs = b["host_ns"][sel]
+    res["max_block_gap_ms"] = float(np.diff(hs).max() / 1e6)
+    res["fail_reasons"] = fail_reasons
+    res["pass"] = bool(res["max_residual_ms"] < PASS_MS and not fail_reasons)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "alignment.json").write_text(json.dumps(res, indent=2))
     if not res["pass"]:
-        raise AlignError(f"alignment residual {res['max_residual_ms']:.3f} ms >= {PASS_MS} ms")
+        raise AlignError(f"alignment failed: {'; '.join(fail_reasons)} "
+                         f"(max residual {res['max_residual_ms']:.3f} ms)")
 
     # ---- label samples on the Pi clock ------------------------------------------
     t_pi = (t_m - c0 + c1 * ref) / (1.0 + c1)

@@ -27,7 +27,7 @@ def _train_edges(start_ns):
 
 
 def _build(tmp_path, with_pulses=True, extra_events=(), it="0", nan_in_on=False,
-           train_tags=("start", "end")):
+           train_tags=("start", "end"), slip=False, reset_at=None):
     rec, pi = tmp_path / "rec", tmp_path / "pi"
     pi.mkdir()
     n = int(20 * 5000)
@@ -57,12 +57,19 @@ def _build(tmp_path, with_pulses=True, extra_events=(), it="0", nan_in_on=False,
         a = int((2.35e9) / B)
         P[a:a + 15] = np.nan                                  # 3 ms dropout in 300 ms ON slot
     P += np.random.default_rng(1).normal(0, 0.05, n)
+    if slip:                                  # 50 samples (10 ms) vanish mid-run, no NaN gap
+        P = np.delete(P, np.s_[50_000:50_050])
+        true_ns = np.delete(true_ns, np.s_[50_000:50_050])
+        n = len(P)
     s = SampleStore(rec)
     blk, rng = 50, np.random.default_rng(2)
+    raw = 0
     for i0 in range(0, n, blk):
         last = i0 + blk - 1
-        host = T0 + B * last + USB_MIN_MS * 1e6 + rng.exponential(2e6)
-        s.append(P[i0:i0 + blk] / 5.0, np.full(blk, 5.0), int(host), 0)
+        host = true_ns[last] + USB_MIN_MS * 1e6 + rng.exponential(2e6)
+        if reset_at is not None and i0 >= reset_at:
+            raw = 40_000
+        s.append(P[i0:i0 + blk] / 5.0, np.full(blk, 5.0), int(host), raw)
     s.close()
     events.sort(key=lambda e: e[4])
     with open(pi / "events.csv", "w", newline="") as f:
@@ -82,6 +89,9 @@ def test_align_recovers_offset_and_passes(tmp_path):
     assert res["max_residual_ms"] < 0.5
     assert abs(res["drift_ppm"]) < 5
     assert abs(res["rise_minus_fall_ms"]) < 0.2
+    assert res["counter_resets_in_run"] == 0
+    assert res["envelope_max_dev_ms"] < 0.5
+    assert 0 <= res["nan_fraction"] < 0.01
     saved = json.loads((pi / "alignment.json").read_text())
     assert saved["pass"] is True
 
@@ -130,3 +140,19 @@ def test_single_train_path(tmp_path):
     rec, pi, _ = _build(tmp_path, train_tags=("start",))
     res = align(rec, pi, pi)
     assert res["pass"] is True and res["drift_ppm"] == 0.0 and res["n_edges"] == 6
+
+
+def test_align_rejects_mid_run_index_slip(tmp_path):
+    rec, pi, _ = _build(tmp_path, slip=True)
+    with pytest.raises(AlignError, match="nonlinear"):
+        align(rec, pi, pi)
+    saved = json.loads((pi / "alignment.json").read_text())
+    assert saved["pass"] is False and saved["envelope_max_dev_ms"] > 1.0
+
+
+def test_align_rejects_counter_reset_in_run(tmp_path):
+    rec, pi, _ = _build(tmp_path, reset_at=50_000)
+    with pytest.raises(AlignError, match="counter_reset"):
+        align(rec, pi, pi)
+    saved = json.loads((pi / "alignment.json").read_text())
+    assert saved["pass"] is False and saved["counter_resets_in_run"] == 1
