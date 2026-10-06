@@ -29,6 +29,7 @@ ENVELOPE_MAX_DEV_MS = 1.0  # coarse-clock lower envelope must be linear to this 
 MAX_DRIFT_PPM = 50.0
 ENVELOPE_SEGMENTS = 20     # same rule as fit_sample_clock
 MIN_ENVELOPE_BLOCKS = 40
+LABEL_KINDS = ("marker", "begin", "end", "pulse_on", "pulse_off")
 
 
 class AlignError(RuntimeError):
@@ -190,10 +191,13 @@ def align(recorder_dir, pi_run_dir, out_dir) -> dict:
     keep = (t_pi >= t_first) & (t_pi <= t_last)
     t_pi, IV, P = t_pi[keep], IV[keep], P[keep]
 
-    et = ev["t_real_ns"].to_numpy(dtype=np.float64)
-    k = np.searchsorted(et, t_pi, side="right") - 1
-    mode = ev["mode"].astype(str).to_numpy()[k].astype(object)
-    it = ev["iter"].astype(str).to_numpy()[k].astype(object)
+    # mode/iter come from the latest *workload* event; ctx_begin/ctx_end are written by the
+    # sampler's context thread, so their labels are arbitrary
+    evw = ev[ev["kind"].isin(LABEL_KINDS)]
+    et = evw["t_real_ns"].to_numpy(dtype=np.float64)
+    k = np.clip(np.searchsorted(et, t_pi, side="right") - 1, 0, None)
+    mode = evw["mode"].astype(str).to_numpy()[k].astype(object)
+    it = evw["iter"].astype(str).to_numpy()[k].astype(object)
     mk = ev[ev["kind"] == "marker"]
     mt = mk["t_real_ns"].to_numpy(dtype=np.float64)
     km = np.searchsorted(mt, t_pi, side="right") - 1
@@ -215,11 +219,20 @@ def align(recorder_dir, pi_run_dir, out_dir) -> dict:
         layer[ok] = paths[j[ok]]
         depth[ok] = d
 
+    cb = np.sort(ev[ev["kind"] == "ctx_begin"]["t_real_ns"].to_numpy(dtype=np.float64))
+    ce = np.sort(ev[ev["kind"] == "ctx_end"]["t_real_ns"].to_numpy(dtype=np.float64))
+    n_ctx = min(len(cb), len(ce))
+    cb, ce = cb[:n_ctx], ce[:n_ctx]
+    ctx_read = np.zeros(t_pi.size, dtype=bool)
+    if n_ctx:
+        j = np.searchsorted(cb, t_pi, side="right") - 1
+        ctx_read = (j >= 0) & (t_pi < ce[np.clip(j, 0, None)])
+
     df = pd.DataFrame({
         "t_s": (t_pi - t_first) / 1e9, "t_pi_ns": t_pi.astype(np.int64),
         "I_A": IV[:, 0].astype(np.float32), "V_V": IV[:, 1].astype(np.float32),
         "P_W": P.astype(np.float32), "phase": phase, "mode": mode, "iter": it,
-        "layer_path": layer, "depth": depth,
+        "layer_path": layer, "depth": depth, "ctx_read": ctx_read,
     })
     df.to_parquet(out_dir / "power_trace.parquet", index=False)
     return res

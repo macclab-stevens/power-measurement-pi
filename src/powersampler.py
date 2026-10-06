@@ -177,16 +177,19 @@ class PowerSampler:
                 self._stop.set()
                 return
 
+    def _ctx_read(self) -> dict:
+        try:
+            return {
+                "t_ms": self._now(), "temp_C": _measure_temp(),
+                "arm_MHz": _measure_clock_arm() // 1_000_000,
+                "throttle_bits": _get_throttled(), "dump": _full_dump(),
+            }
+        except Exception as e:  # noqa: BLE001
+            return {"t_ms": self._now(), "error": f"{type(e).__name__}: {e}"}
+
     def _ctx_loop(self) -> None:  # pragma: no cover - thread body
         while not self._stop.is_set():
-            try:
-                row = {
-                    "t_ms": self._now(), "temp_C": _measure_temp(),
-                    "arm_MHz": _measure_clock_arm() // 1_000_000,
-                    "throttle_bits": _get_throttled(), "dump": _full_dump(),
-                }
-            except Exception as e:  # noqa: BLE001
-                row = {"t_ms": self._now(), "error": f"{type(e).__name__}: {e}"}
+            row = self._ctx_read()
             with self._lock:
                 self._ctx.append(row)
             self._stop.wait(CONTEXT_PERIOD_S)
@@ -258,6 +261,19 @@ class MonsoonSampler(PowerSampler):
         self._stop.set()
         if self._ctx_thread.is_alive():
             self._ctx_thread.join(timeout=10)
+
+    def _ctx_loop(self) -> None:
+        """Base loop, but each read is bracketed by ctx_begin/ctx_end edges so the vcgencmd
+        subprocess power spikes can be masked offline (align.py ctx_read)."""
+        while not self._stop.is_set():
+            self.events.edge("ctx_begin", "ctx")
+            try:
+                row = self._ctx_read()
+            finally:
+                self.events.edge("ctx_end", "ctx")
+            with self._lock:
+                self._ctx.append(row)
+            self._stop.wait(CONTEXT_PERIOD_S)
 
     def marker(self, name: str | None) -> None:
         self.events.marker(name or "idle")

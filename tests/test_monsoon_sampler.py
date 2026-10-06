@@ -179,3 +179,16 @@ def test_continuity_fetch_failure_is_error_not_raise(fake_recorder):
     errs = s.check_recorder_continuity()
     assert len(errs) == 1 and "unreachable" in errs[0] and s.status_end is None
     s.stop()
+
+
+def test_ctx_reads_are_bracketed_by_events(fake_recorder):
+    _, url = fake_recorder
+    s = MonsoonSampler(url)
+    def fake_read():
+        s._stop.set()                     # one iteration only
+        return {"t_ms": 1.0, "temp_C": 40.0}
+    s._ctx_read = fake_read
+    s._ctx_loop()
+    kinds = [(r["kind"], r["name"], r["depth"]) for r in s.events.rows()]
+    assert kinds == [("ctx_begin", "ctx", 0), ("ctx_end", "ctx", 0)]
+    assert s.context() == [{"t_ms": 1.0, "temp_C": 40.0}]

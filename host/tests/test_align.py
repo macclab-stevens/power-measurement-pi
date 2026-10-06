@@ -156,3 +156,18 @@ def test_align_rejects_counter_reset_in_run(tmp_path):
         align(rec, pi, pi)
     saved = json.loads((pi / "alignment.json").read_text())
     assert saved["pass"] is False and saved["counter_resets_in_run"] == 1
+
+
+def test_ctx_read_flag_and_labels_unaffected(tmp_path):
+    c0, c1 = T0 + 5_200_000_000, T0 + 5_250_000_000
+    rec, pi, _ = _build(tmp_path, it="3", extra_events=[
+        ("ctx_begin", "ctx", 0, "", c0), ("ctx_end", "ctx", 0, "", c1)])
+    align(rec, pi, pi)
+    df = pd.read_parquet(pi / "power_trace.parquet")
+    inside = df[(df["t_pi_ns"] >= c0) & (df["t_pi_ns"] < c1)]
+    assert len(inside) > 100 and inside["ctx_read"].all()
+    assert df["ctx_read"].sum() == len(inside)
+    assert df["ctx_read"].dtype == bool
+    for t in (c0 + 25_000_000, c1 + 100_000_000):
+        r = df.iloc[int(np.argmin(np.abs(df["t_pi_ns"].to_numpy() - t)))]
+        assert r["mode"] == "forward" and r["iter"] == "3" and r["phase"] == "forward"
