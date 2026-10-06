@@ -15,7 +15,9 @@ from pathlib import Path
 
 import numpy as np
 
-HEADER = ["block_seq", "first_idx", "n", "host_ns", "dropped_cum", "gap_inserted"]
+HEADER = ["block_seq", "first_idx", "n", "host_ns", "dropped_cum", "gap_inserted",
+          "dropped_raw", "counter_reset"]
+MAX_PLAUSIBLE_GAP = 25_000   # 5 s at 5 kHz; a larger raw delta is a counter reset, not drops
 RECENT_BLOCKS = 20_000   # ~10 min of blocks kept in RAM for live clock fits
 
 
@@ -33,7 +35,9 @@ class SampleStore:
             self._w.writerow(HEADER)
         self.lock = threading.Lock()
         self.n_total = os.path.getsize(self._samples_path) // 8
-        self.dropped = 0
+        self.dropped = 0      # cumulative true dropped count
+        self.resets = 0       # detected device counter resets
+        self._last_raw = None  # last raw uint16 device counter
         self.seq = 0
         self._recent = collections.deque(maxlen=RECENT_BLOCKS)
         if not new:
@@ -41,21 +45,35 @@ class SampleStore:
             if len(b["block_seq"]):
                 self.seq = int(b["block_seq"][-1]) + 1
                 self.dropped = int(b["dropped_cum"][-1])
+                self._last_raw = int(b["dropped_raw"][-1])
+                self.resets = int(b["counter_reset"].sum())
 
-    def append(self, I_A, V_V, host_ns: int, dropped_cum: int) -> None:
+    def append(self, I_A, V_V, host_ns: int, dropped_raw: int) -> None:
+        """dropped_raw is the device's raw uint16 dropped counter (wraps at 65536, may reset)."""
         I_A = np.asarray(I_A, dtype=np.float32)
         V_V = np.asarray(V_V, dtype=np.float32)
+        raw = int(dropped_raw) & 0xFFFF
         with self.lock:
-            gap = max(0, int(dropped_cum) - self.dropped)
+            if self._last_raw is None:
+                delta = raw          # fresh store: device presumed to start counting at 0
+            else:
+                delta = (raw - self._last_raw) & 0xFFFF
+            reset = 0
+            if delta > MAX_PLAUSIBLE_GAP:
+                reset, delta = 1, 0
+                self.resets += 1
+            self._last_raw = raw
+            gap = delta
             if gap:
                 np.full((gap, 2), np.nan, dtype=np.float32).tofile(self._f)
                 self.n_total += gap
-                self.dropped = int(dropped_cum)
+                self.dropped += gap
             first = self.n_total
             np.column_stack([I_A, V_V]).astype(np.float32).tofile(self._f)
             self._f.flush()
             self.n_total += len(I_A)
-            self._w.writerow([self.seq, first, len(I_A), int(host_ns), self.dropped, gap])
+            self._w.writerow([self.seq, first, len(I_A), int(host_ns), self.dropped, gap,
+                              raw, reset])
             self._recent.append((first + len(I_A) - 1, int(host_ns)))
             self.seq += 1
 

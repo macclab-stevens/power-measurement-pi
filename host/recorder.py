@@ -83,7 +83,8 @@ def make_server(store, status_fn, host: str, port: int) -> ThreadingHTTPServer:
             try:
                 if u.path == "/status":
                     self._send(200, {**status_fn(), "n_total": store.n_total,
-                                     "dropped": store.dropped, "run_dir": str(store.dir)})
+                                     "dropped": store.dropped,
+                                     "counter_resets": store.resets, "run_dir": str(store.dir)})
                 elif u.path == "/window":
                     q = parse_qs(u.query)
                     self._send(200, window_stats(store, int(q["t0_ns"][0]), int(q["t1_ns"][0])))
@@ -207,7 +208,10 @@ def main():  # pragma: no cover - needs the HVPM
         kind = msg[0]
         if kind == "data":
             _, I_A, V_V, host_ns, dropped = msg
+            resets_before = store.resets
             store.append(I_A, V_V, host_ns, dropped)
+            if store.resets > resets_before:
+                log.warning("device dropped-counter reset detected (total %d)", store.resets)
             info["recording"] = True
             now = time.monotonic()
             rate["n"] += len(I_A)
