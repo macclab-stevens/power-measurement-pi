@@ -22,6 +22,8 @@ from eventlog import EventLog
 VCMD = "/usr/bin/vcgencmd"
 CONTEXT_PERIOD_S = 5.0
 MAX_SAMPLES = 2_000_000
+NOMINAL_HZ = 5000            # Monsoon HVPM sample rate
+MIN_WINDOW_FRACTION = 0.95   # a live window with fewer samples than this is not trusted
 
 
 def _read_core() -> tuple[float, float]:
@@ -206,6 +208,8 @@ class MonsoonSampler(PowerSampler):
         self._timeout = timeout_s
         self._t0_ns = time.time_ns()
         self._status: dict = {}
+        self.status_start: dict = {}
+        self.status_end: dict | None = None
 
     def _get(self, path: str) -> dict:
         with urllib.request.urlopen(self.url + path, timeout=self._timeout) as r:
@@ -225,10 +229,30 @@ class MonsoonSampler(PowerSampler):
             raise RuntimeError(f"Monsoon recorder unreachable at {self.url}: {e}") from e
         if not st.get("recording"):
             raise RuntimeError(f"Monsoon recorder at {self.url} is not recording: {st}")
+        self.status_start = dict(st)
         self._t0 = time.monotonic()
         self._t0_ns = time.time_ns()
         self._stop.clear()
         self._ctx_thread.start()
+
+    def check_recorder_continuity(self) -> list[str]:
+        """Compare the recorder's /status now with the one at start(); never raises."""
+        try:
+            st = self.recorder_status()
+        except (OSError, ValueError) as e:
+            self.status_end = None
+            return [f"recorder status unreachable at end of run: {e}"]
+        self.status_end = dict(st)
+        a, errs = self.status_start, []
+        if st.get("run_dir") != a.get("run_dir"):
+            errs.append(f"recorder run_dir changed: {a.get('run_dir')} -> {st.get('run_dir')}")
+        if st.get("serial") != a.get("serial"):
+            errs.append(f"recorder serial changed: {a.get('serial')} -> {st.get('serial')}")
+        if st.get("n_total", 0) < a.get("n_total", 0):
+            errs.append(f"recorder n_total decreased: {a.get('n_total')} -> {st.get('n_total')}")
+        if not st.get("recording"):
+            errs.append("recorder is not recording at end of run")
+        return errs
 
     def stop(self) -> None:
         self._stop.set()
@@ -255,9 +279,15 @@ class MonsoonSampler(PowerSampler):
             if w is not None:
                 if w.get("complete"):
                     try:
-                        return {"count": w["count"], "mean_P": w["mean_P"], "max_P": w["max_P"]}
+                        out = {"count": w["count"], "mean_P": w["mean_P"], "max_P": w["max_P"]}
                     except KeyError as e:
                         raise RuntimeError(f"recorder window response missing {e}: {w}") from e
+                    expected = (t1 - t0) * NOMINAL_HZ / 1e9
+                    if expected >= 50 and out["count"] < MIN_WINDOW_FRACTION * expected:
+                        raise RuntimeError(
+                            f"recorder window has {out['count']}/{expected:.0f} samples (<95%): "
+                            "dropped data or recorder restart")
+                    return out
                 last_err = None
             if time.monotonic() > deadline:
                 if last_err is not None:
@@ -272,7 +302,7 @@ class MonsoonSampler(PowerSampler):
     def achieved_hz(self) -> float:
         try:
             return float(self.recorder_status().get("sample_hz", 0.0))
-        except OSError:
+        except (OSError, ValueError):
             return 0.0
 
 

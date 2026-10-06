@@ -15,6 +15,7 @@ HELPER = "/usr/local/sbin/pi-power-pin"
 ALLOWED_MHZ = tuple(range(1500, 2401, 100))
 FAN = "/sys/class/thermal/cooling_device0"
 CURRENT_THROTTLE_MASK = 0xF   # under-voltage / capped / throttled / soft-limit *now*
+STICKY_UNDERVOLT = 0x10000    # under-voltage has occurred since boot
 
 
 def apply(cpu_mhz: int | None, fan_full: bool, run=subprocess.run) -> str:
@@ -32,7 +33,22 @@ def apply(cpu_mhz: int | None, fan_full: bool, run=subprocess.run) -> str:
     return status
 
 
+def status(run=subprocess.run) -> str:
+    """Helper `status` output, or 'unavailable: <reason>'. Never raises."""
+    try:
+        p = run(["sudo", "-n", HELPER, "status"], capture_output=True, text=True)
+    except (OSError, subprocess.SubprocessError) as e:
+        return f"unavailable: {e}"
+    if p.returncode != 0:
+        return f"unavailable: {p.stderr.strip()}"
+    return p.stdout.strip()
+
+
 def _read_fan() -> tuple[int, int]:
+    with open(f"{FAN}/type") as t:
+        kind = t.read().strip()
+    if kind != "pwm-fan":
+        raise RuntimeError(f"{FAN}/type is '{kind}', expected 'pwm-fan'")
     with open(f"{FAN}/cur_state") as a, open(f"{FAN}/max_state") as b:
         return int(a.read()), int(b.read())
 
@@ -49,6 +65,23 @@ def wait_fan_full(read=_read_fan, timeout_s: float = 20.0, sleep=time.sleep) -> 
         sleep(0.5)
 
 
+def throttle_errors(ctx_rows: list[dict]) -> list[str]:
+    """One error per context row whose *current* throttle bits (under-voltage etc.) are set."""
+    errs = []
+    for r in ctx_rows:
+        thr = r.get("throttle_bits")
+        if thr is not None and thr & CURRENT_THROTTLE_MASK:
+            errs.append(f"throttle bits 0x{thr:x} at t={r.get('t_ms', 0):.0f} ms")
+    return errs
+
+
+def new_undervoltage(thr0, thr1) -> bool:
+    """True if the sticky under-voltage bit was newly set between two get_throttled reads."""
+    if thr0 is None or thr1 is None:
+        return False
+    return bool((thr1 & ~thr0) & STICKY_UNDERVOLT)
+
+
 def clock_errors(ctx_rows: list[dict], cpu_mhz: int, tol_mhz: int = 25) -> list[str]:
     errs = []
     seen = False
@@ -59,9 +92,7 @@ def clock_errors(ctx_rows: list[dict], cpu_mhz: int, tol_mhz: int = 25) -> list[
         seen = True
         if abs(f - cpu_mhz) > tol_mhz:
             errs.append(f"arm clock {f} MHz != pinned {cpu_mhz} MHz at t={r.get('t_ms', 0):.0f} ms")
-        thr = r.get("throttle_bits")
-        if thr is not None and thr & CURRENT_THROTTLE_MASK:
-            errs.append(f"throttle bits 0x{thr:x} at t={r.get('t_ms', 0):.0f} ms")
+    errs += throttle_errors(ctx_rows)
     if not seen:
         errs.append("no arm clock readings in context")
     return errs

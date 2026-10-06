@@ -16,6 +16,10 @@ class Fake:
     recording = True
     incomplete_calls = 0
     last_query = None
+    run_dir = "/data/rec1"
+    serial = 36517
+    n_total = 10
+    window_count = 500
 
 
 def _server(fake):
@@ -26,13 +30,14 @@ def _server(fake):
         def do_GET(self):
             u = urlparse(self.path)
             if u.path == "/status":
-                body = {"recording": fake.recording, "sample_hz": 4999.0, "serial": 36517,
-                        "vout_V": 5.2, "dropped": 0, "n_total": 10}
+                body = {"recording": fake.recording, "sample_hz": 4999.0, "serial": fake.serial,
+                        "vout_V": 5.2, "dropped": 0, "n_total": fake.n_total,
+                        "run_dir": fake.run_dir}
             else:
                 fake.last_query = {k: int(v[0]) for k, v in parse_qs(u.query).items()}
                 done = fake.incomplete_calls <= 0
                 fake.incomplete_calls -= 1
-                body = {"count": 500, "mean_P": 3.25, "max_P": 4.0, "complete": done}
+                body = {"count": fake.window_count, "mean_P": 3.25, "max_P": 4.0, "complete": done}
             data = json.dumps(body).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -76,7 +81,7 @@ def test_window_converts_ms_to_wall_ns_and_returns_stats(fake_recorder):
     _no_ctx(s)
     s.start()
     w = s.window(100.0, 200.0)
-    assert w == {"count": 500, "mean_P": 3.25, "max_P": 4.0}
+    assert w == {"count": fake.window_count, "mean_P": 3.25, "max_P": 4.0}
     q = fake.last_query
     assert q["t1_ns"] - q["t0_ns"] == 100_000_000
     assert q["t0_ns"] == s._t0_ns + 100_000_000
@@ -125,3 +130,52 @@ def test_window_retries_transient_errors_then_raises():
     s._t0_ns = 0
     with pytest.raises(RuntimeError, match="recorder window query failed"):
         s.window(0.0, 10.0)
+
+
+def test_window_raises_on_short_count(fake_recorder):
+    fake, url = fake_recorder
+    fake.window_count = 500          # 1 s window at 5 kHz expects 5000
+    s = MonsoonSampler(url)
+    _no_ctx(s)
+    s.start()
+    with pytest.raises(RuntimeError, match=r"500/5000 samples \(<95%\)"):
+        s.window(0.0, 1000.0)
+    s.stop()
+
+
+def test_continuity_ok(fake_recorder):
+    fake, url = fake_recorder
+    s = MonsoonSampler(url)
+    _no_ctx(s)
+    s.start()
+    assert s.status_start["run_dir"] == "/data/rec1"
+    fake.n_total = 20
+    assert s.check_recorder_continuity() == []
+    assert s.status_end["n_total"] == 20
+    s.stop()
+
+
+def test_continuity_detects_restart(fake_recorder):
+    fake, url = fake_recorder
+    s = MonsoonSampler(url)
+    _no_ctx(s)
+    s.start()
+    fake.run_dir = "/data/rec2"
+    fake.serial = 99
+    fake.n_total = 3
+    fake.recording = False
+    errs = " | ".join(s.check_recorder_continuity())
+    for word in ("run_dir", "serial", "n_total", "recording"):
+        assert word in errs
+    s.stop()
+
+
+def test_continuity_fetch_failure_is_error_not_raise(fake_recorder):
+    fake, url = fake_recorder
+    s = MonsoonSampler(url, timeout_s=0.3)
+    _no_ctx(s)
+    s.start()
+    s.url = "http://127.0.0.1:9"
+    errs = s.check_recorder_continuity()
+    assert len(errs) == 1 and "unreachable" in errs[0] and s.status_end is None
+    s.stop()

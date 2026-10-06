@@ -40,6 +40,8 @@ from tasks import make_task
 BASELINE_W_MIN, BASELINE_W_MAX = 0.5, 8.0
 ACC_MIN_PD = 0.01   # per-op P_delta sanity (dominant op class)
 MIN_SAMPLES = 30
+MONSOON_MIN_HZ = 4900   # recorder sample_hz floor in monsoon mode (nominal 5000)
+PMIC_MIN_HZ = 50
 
 
 def _write_csv(path, header, rows):
@@ -111,6 +113,8 @@ def main():
     logger.addHandler(_ch)
     logger.info(f"run {ts} -> {outdir}")
 
+    pin_status_start = pinning.status()   # before applying: exposes a stale pin from a prior run
+    logger.info(f"pin status at start: {pin_status_start}")
     pin_status = pinning.apply(args.cpu_mhz, args.fan_full)
     if args.fan_full:
         pinning.wait_fan_full()
@@ -130,6 +134,7 @@ def main():
     if monsoon:
         prof.events = sampler.events
     sampler.start()
+    thr0 = sampler.snapshot_env()[2]
     try:
         # ---- warm-up: sustained inference over ALL modes so temp/DVFS settle
         # before the idle baseline and timed measurements.
@@ -213,6 +218,7 @@ def main():
                     ", ".join(f"{o['op']}({o['mode']}) {o['count']}x {o['self_mean_us']}us"
                               for o in top_op))
 
+        thr1 = sampler.snapshot_env()[2]
         achieved_hz = sampler.achieved_hz()
         logger.info(f"per-op power benches ({achieved_hz:.0f} W-Hz sampling):")
         saved_events, prof.events = prof.events, None   # benches are labeled by bench:<cid> phase markers
@@ -234,6 +240,15 @@ def main():
             sync_pulse(sampler.events, "end")
             sampler.marker("done")
             sampler.events.write_csv(os.path.join(outdir, "events.csv"))
+
+        continuity = sampler.check_recorder_continuity() if monsoon else []
+        pin_status_end = pinning.status()
+        fan_end = None
+        if args.fan_full:
+            try:
+                fan_end = pinning._read_fan()
+            except (OSError, ValueError, RuntimeError) as e:
+                logger.error(f"fan state unreadable at end: {e}")
 
         srows = sampler.rows()
         if not monsoon:
@@ -280,7 +295,11 @@ def main():
             "schema_version": 4 if monsoon else 3,
             "sampler": args.sampler,
             "recorder_url": args.recorder_url if monsoon else None,
-            "recorder_status": sampler.recorder_status() if monsoon else None,
+            "recorder_status_start": sampler.status_start if monsoon else None,
+            "recorder_status_end": sampler.status_end if monsoon else None,
+            "recorder_continuity_errors": continuity if monsoon else None,
+            "throttled_start": thr0, "throttled_end": thr1,
+            "pin_status_start": pin_status_start, "pin_status_end": pin_status_end,
             "t0_real_ns": getattr(sampler, "_t0_ns", None),
             "sync_tags": ["start", "end"] if monsoon else [],
             "cpu_mhz_pinned": args.cpu_mhz, "fan_full": args.fan_full, "pin_status": pin_status,
@@ -330,8 +349,9 @@ def main():
                         errors.append(f"{dom} {r['config_id']}: samples={r['samples_used']}<{MIN_SAMPLES}")
         if not op_rows:
             errors.append("op_table empty")
-        if achieved_hz < 50:
-            errors.append(f"achieved sample Hz={achieved_hz:.1f} < 50")
+        min_hz = MONSOON_MIN_HZ if monsoon else PMIC_MIN_HZ
+        if achieved_hz < min_hz:
+            errors.append(f"achieved sample Hz={achieved_hz:.1f} < {min_hz}")
         if baseline_W is None or not (bmin <= baseline_W <= bmax):
             errors.append(f"baseline_W={baseline_W} out of range")
         if baseline_drift_W is None:
@@ -343,6 +363,18 @@ def main():
             errors.append(f"throttled during run (throttle_bits=0x{thr:x})")
         if args.cpu_mhz is not None:
             errors += pinning.clock_errors(ctx, args.cpu_mhz)
+        if monsoon:
+            if args.cpu_mhz is None:
+                errors += pinning.throttle_errors(ctx)   # clock_errors already covers pinned runs
+            if thr0 is None or thr1 is None:
+                errors.append("throttle state unreadable (get_throttled failed)")
+            elif pinning.new_undervoltage(thr0, thr1):
+                errors.append(f"under-voltage occurred during run "
+                              f"(throttled 0x{thr0:x} -> 0x{thr1:x})")
+            errors += continuity
+        if args.fan_full:
+            if fan_end is None or fan_end[0] < fan_end[1]:
+                errors.append("fan not at max at end of run")
         if not task.oracle():
             extra = getattr(task, "_checked", None)
             oracle_note = f" (best_conf={extra:.3f})" if extra is not None else ""
