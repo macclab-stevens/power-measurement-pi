@@ -53,3 +53,15 @@ def test_smoke_and_only():
     import pytest
     with pytest.raises(ValueError):
         matrix.cells(only=["nope"])
+
+
+def test_frames_sized_per_model():
+    fr = {k: int(a[a.index("--frames") + 1]) for k, a in matrix.MODELS.items()}
+    assert fr["train_lm64_adam"] == 1000 and fr["train_resnet18_sgd"] == 30
+    assert all(v >= 30 for v in fr.values())
+
+
+def test_probe_is_every_model_once():
+    rows = matrix.cells(probe=True)
+    assert [r["model_key"] for r in rows] == list(matrix.MODELS)
+    assert all(r["cell_id"].startswith("probe_") and r["cpu_mhz"] == 2400 for r in rows)

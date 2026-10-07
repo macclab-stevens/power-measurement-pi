@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """SP3 experiment orchestrator (EliteBook). Resumable: one manifest, one append-only results log.
 
-    uv run python experiment.py plan [--smoke] [--only yolo11n,lm64] --out ../runs/matrix/manifest.jsonl
+    uv run python experiment.py plan [--smoke|--probe] [--only yolo11n,lm64] --out ../runs/matrix/manifest.jsonl
     uv run python experiment.py run --manifest ../runs/matrix/manifest.jsonl [--auto-power-cycle 3]
     uv run python experiment.py status --manifest ../runs/matrix/manifest.jsonl
 
@@ -353,6 +353,7 @@ def main() -> None:  # pragma: no cover - CLI
     p = sub.add_parser("plan")
     p.add_argument("--out", required=True)
     p.add_argument("--smoke", action="store_true")
+    p.add_argument("--probe", action="store_true", help="every model once at 2400 MHz")
     p.add_argument("--only", default="")
     p.add_argument("--seed", type=int, default=7)
     r = sub.add_parser("run")
@@ -370,7 +371,7 @@ def main() -> None:  # pragma: no cover - CLI
     if a.cmd == "plan":
         import matrix
         only = [x for x in a.only.split(",") if x]
-        rows = matrix.cells(seed=a.seed, smoke=a.smoke, only=only or None)
+        rows = matrix.cells(seed=a.seed, smoke=a.smoke, only=only or None, probe=a.probe)
         out = Path(a.out)
         out.parent.mkdir(parents=True, exist_ok=True)
         if out.exists():
