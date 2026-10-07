@@ -6,7 +6,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from align import AlignError, align, detect_slips
+from pathlib import Path
+
+from align import AlignError, _robust_rate_hz, align, detect_slips
 from store import SampleStore
 
 FIELDS = ["t_real_ns", "t_mono_ns", "kind", "name", "depth", "mode", "iter",
@@ -143,6 +145,25 @@ def test_single_train_path(tmp_path):
     rec, pi, _ = _build(tmp_path, train_tags=("start",))
     res = align(rec, pi, pi)
     assert res["pass"] is True and res["drift_ppm"] == 0.0 and res["n_edges"] == 6
+
+
+def test_detect_slips_real_run():
+    """m4_smoke_yolo11n (237 s, EliteBook): ~113 samples really lost (sync-pulse ground truth)."""
+    import datetime as dt
+    d = np.loadtxt(Path(__file__).parent / "fixtures" / "real_slips_blocks.csv",
+                   delimiter=",", skiprows=1, dtype=np.int64)
+    last_idx, host = d[:, 0] + d[:, 1] - 1, d[:, 2]
+    assert abs(_robust_rate_hz(last_idx, host) - 4992.33) <= 0.15
+    slips = detect_slips(last_idx, host)
+    assert 90 <= sum(s["samples"] for s in slips) <= 125
+    assert len(slips) >= 3
+
+    def ns(hms):   # 2026-10-06 EDT (UTC-4)
+        t = dt.datetime(2026, 10, 6, *hms, tzinfo=dt.timezone(dt.timedelta(hours=-4)))
+        return int(t.timestamp()) * 1_000_000_000
+    # the 19:45:01 loss precedes the fixture range (events start 19:45:10, minus 5 s pad)
+    for hms in ((19, 46, 0), (19, 47, 0), (19, 47, 45)):
+        assert any(abs(s["t_ns"] - ns(hms)) <= 1_000_000_000 for s in slips), hms
 
 
 def test_align_flags_mid_run_index_slip(tmp_path):

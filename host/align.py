@@ -87,32 +87,45 @@ def _envelope_max_dev_ms(x, y, clock):
     return float(np.abs(mins - np.median(mins)).max() / 1e6)
 
 
-def _robust_rate_hz(x, h, chunk=200, nominal_hz=5000.0):
-    """Sample rate from the lower envelope: per 200-block chunk take the minimum-latency block,
-    then the dominant cluster of slopes between chunk minima `lag` chunks
-    apart. Minima are far less noisy than chunk endpoints."""
+def _robust_rate_hz(x, h, chunk_s=1.0, lag_s=10.0, nominal_hz=5000.0):
+    """Steady sample rate that ignores sample losses (and latency plateaus).
+
+    Blocks are grouped into ~1 s chunks; each chunk contributes its minimum-latency point (far
+    less noisy than an endpoint). Slopes are taken between chunk minima ~10 s apart and reduced
+    by an iterated median, excluding slopes > 3 MAD (floored) from the median. Losses arrive
+    about once a minute, so only the few slopes spanning one are outliers; a median over
+    1 s-spaced chunks, or any rate from whole-chunk endpoints, gets dragged by the losses or
+    the jitter. Falls back to the plain end-to-end rate when the run is too short."""
+    x = np.asarray(x, dtype=np.float64)
+    h = np.asarray(h, dtype=np.float64)
+    if x.size < 4:
+        return nominal_hz
     b0 = 1e9 / nominal_hz
+    blk_s = float(np.median(np.diff(h))) / 1e9
+    chunk = max(8, int(round(chunk_s / max(blk_s, 1e-6))))
     nch = x.size // chunk
     if nch < 2:
         return float((x[-1] - x[0]) * 1e9 / (h[-1] - h[0]))
     r0 = h - x * b0
     px, py = [], []
     for c in range(nch):
-        sl = slice(c * chunk, (c + 1) * chunk)
-        k = c * chunk + int(np.argmin(r0[sl]))
+        k = c * chunk + int(np.argmin(r0[c * chunk:(c + 1) * chunk]))
         px.append(x[k])
         py.append(h[k])
     px, py = np.array(px), np.array(py)
-    lag = 1 if nch < 8 else nch // 4
-    slopes = (py[lag:] - py[:-lag]) / (px[lag:] - px[:-lag])
-    # largest cluster of agreeing slopes (within 0.5 ms over the span); ties go to the lowest
-    # slope because losses only raise it. Median alone fails when two slopes straddle a slip.
-    tol = 0.5e6 / (lag * float(np.median(np.diff(px))))
-    near = np.abs(slopes[:, None] - slopes[None, :]) < tol
-    cnt = near.sum(axis=1)
-    best = np.flatnonzero(cnt == cnt.max())
-    best = best[np.argmin(slopes[best])]
-    return float(1e9 / np.median(slopes[near[best]]))
+    lag = int(min(max(1, round(lag_s / chunk_s)), max(1, nch // 4)))
+    dx = px[lag:] - px[:-lag]
+    slopes = (py[lag:] - py[:-lag]) / dx
+    floor = 0.25e6 / float(np.median(dx))          # 0.25 ms over the slope span, ns per index
+    keep = np.ones(slopes.size, dtype=bool)
+    for _ in range(5):
+        med = np.median(slopes[keep])
+        mad = 1.4826 * np.median(np.abs(slopes[keep] - med))
+        new_keep = np.abs(slopes - med) <= 3.0 * max(mad, floor)
+        if new_keep.sum() == 0 or (new_keep == keep).all():
+            break
+        keep = new_keep
+    return float(1e9 / np.median(slopes[keep]))
 
 
 def detect_slips(last_idx, host_ns, rate_hz=None, min_step_ms=1.0, tail_guard_blocks=10) -> list:
