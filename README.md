@@ -598,7 +598,8 @@ the same commit):
 ```bash
 uv run python experiment.py plan --out ../runs/matrix/manifest.jsonl          # --smoke: 3 cells
 systemd-run --user --unit=exp-matrix --same-dir --collect \
-  ~/.local/bin/uv run python experiment.py run --manifest ../runs/matrix/manifest.jsonl --auto-power-cycle 3
+  ~/.local/bin/uv run python experiment.py run --manifest ../runs/matrix/manifest.jsonl \\
+  --max-attempts 3 --auto-power-cycle 40
 uv run python experiment.py status --manifest ../runs/matrix/manifest.jsonl
 tail -f ../runs/matrix/experiment.log
 ```
@@ -611,10 +612,16 @@ are `ok` are skipped and failed cells get one retry at the end of their round.
 cell on a failed alignment, a wrong pinned clock or fan, missing phases or steps, power outside
 1-25 W, or energy closure worse than 1%.
 
-**Halted Pi.** On 2026-10-07 the Pi twice powered its SoC off mid-workload. The input current
-fell from about 0.83 A to 0.33 A within 10 ms, with a steady 5.25 V supply and peaks under
-1.7 A, and the Pi stayed off until power was cycled. The cause is unknown: the journal is not
-persistent and the event did not reproduce on demand. `--auto-power-cycle N` lets the orchestrator
+**Pi lockups.** On 2026-10-07 the Pi locked up 4 times in about 70 min of load. Each time the input
+current fell from about 0.9 A to 0.34 A within 10 ms, with a steady 5.25 V supply, moderate load
+(about 1 A, peaks under 1.8 A) and no kernel message (`dmesg -W` streamed off-board stayed
+silent). Twice the Pi stayed at about 0.28 A until power was cycled. Twice it rebooted by itself
+after a few seconds, and the bootloader reported `rsts` 0x20 or 0x1020, the watchdog-reset bit.
+Two of the four were in the mobilenet_v3_small inference cell (bench phase); the other two were
+in pytest runs that include mobilenet_v3_small. A third mbv3 run passed. Two attempts to
+reproduce it failed: 60-150 s of a tight 4-thread loop on the SE `Conv2d([1,288,1,1])` (the
+bench that was running at one lockup), and 5,772 `vcgencmd pmic_read_adc` calls under that load.
+The root cause is open; suspect the board or SoC firmware. `--auto-power-cycle N` lets the orchestrator
 recover up to N times, only when the Pi has not answered for 3 minutes, does not answer ping, and
 the Monsoon shows halted-level current (mean < 0.4 A, max < 0.6 A over 5 s). It then stops the
 recorder, runs `vout_off.py --confirm-pi-halted`, and restarts the recorder (a new

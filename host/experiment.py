@@ -87,6 +87,8 @@ def pi_command(cell: dict) -> str:
     cid = cell["cell_id"]
     args = shlex.join([*cell["args"], "--out", f"runs/matrix/{cid}"])
     return (f"cd {PI_DIR} && mkdir -p runs/matrix && rm -rf runs/matrix/{cid} && "
+            f"{{ [ ! -f runs/matrix/{cid}.log ] || mv runs/matrix/{cid}.log "
+            f"runs/matrix/{cid}.log.$(date +%s); }} && "
             f"{PI_UV} run --frozen python src/run.py {args} > runs/matrix/{cid}.log 2>&1")
 
 
