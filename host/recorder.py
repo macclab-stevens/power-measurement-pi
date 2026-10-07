@@ -231,7 +231,8 @@ def main():  # pragma: no cover - needs the HVPM
             if now - rate["t"] >= 5.0:
                 rate["hz"] = rate["n"] / (now - rate["t"])
                 rate.update(t=now, n=0)
-                log.info("n=%d dropped=%d %.1f Hz", store.n_total, store.dropped, rate["hz"])
+                log.info("n=%d raw_dropped_nonzero_blocks=%d %.1f Hz", store.n_total,
+                         store.raw_dropped_nonzero_blocks, rate["hz"])
         elif kind == "info":
             info.update(msg[1])
             (run_dir / "device.json").write_text(json.dumps(msg[1], indent=2))

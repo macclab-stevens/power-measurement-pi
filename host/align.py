@@ -137,9 +137,11 @@ def detect_slips(last_idx, host_ns, rate_hz=None, min_step_ms=1.0, tail_guard_bl
     plateau that later returns to the floor does not raise S, since lower values come later.
     A slip is reported at each k where S[k+1] - S[k] > min_step_ms, at t_ns = host_ns[k+1].
     Steps with fewer than tail_guard_blocks blocks after k+1 are ignored (suffix min is then
-    just jitter), as are steps no larger than 5*jitter/blocks_remaining. rate_hz=None estimates the rate robustly (median slope of chunk-minimum latency points).
+    just jitter), as are steps no larger than 5*jitter/blocks_remaining. rate_hz=None
+    estimates the rate robustly (median slope of chunk-minimum latency points).
     Limits: losses smaller than min_step_ms are invisible, and a latency floor that rises
-    permanently would be counted as a slip.
+    permanently would be counted as a slip. On high-jitter links, slips in the last few tens
+    of blocks may be missed because of the tail rule step >= 5*jitter/remaining.
     """
     x = np.asarray(last_idx, dtype=np.float64)
     h = np.asarray(host_ns, dtype=np.float64)
@@ -253,7 +255,7 @@ def align(recorder_dir, pi_run_dir, out_dir) -> dict:
     hs_sel = b["host_ns"][sel]
     res["slip_rate_hz"] = _robust_rate_hz(last_idx[sel].astype(np.float64),
                                           hs_sel.astype(np.float64))
-    slips = detect_slips(last_idx[sel], hs_sel, None)
+    slips = detect_slips(last_idx[sel], hs_sel, res["slip_rate_hz"])
     res["slips"] = slips
     res["slip_samples_total"] = int(sum(s_["samples"] for s_ in slips))
     if slips:
@@ -356,6 +358,9 @@ def main() -> None:  # pragma: no cover
     if res["slip_warning"]:
         sl = ", ".join(f"t_ns={x['t_ns']} {x['samples']} samples" for x in res["slips"]) or "none"
         print(f"[warn] slip_warning: {'; '.join(res['warnings'])}; slips: {sl}")
+    if res["drift_warning"]:
+        print(f"[warn] drift_warning: drift {res['drift_ppm']:.2f} ppm exceeds "
+              f"{MAX_DRIFT_PPM:.0f} ppm (oscillator drift or clock fit problem)")
 
 
 if __name__ == "__main__":

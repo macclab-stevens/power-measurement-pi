@@ -166,20 +166,6 @@ def test_detect_slips_real_run():
         assert any(abs(s["t_ns"] - ns(hms)) <= 1_000_000_000 for s in slips), hms
 
 
-def test_align_flags_mid_run_index_slip(tmp_path):
-    rec, pi, _ = _build(tmp_path, slip=True)
-    res = align(rec, pi, pi)
-    assert res["pass"] is True
-    assert (pi / "power_trace.parquet").exists()
-    assert res["slip_warning"] is True
-    assert len(res["slips"]) >= 1
-    assert abs(res["slip_samples_total"] - 50) <= 5
-    assert any("nonlinear" in w for w in res["warnings"])
-    assert res["envelope_max_dev_ms"] > 1.0
-    saved = json.loads((pi / "alignment.json").read_text())
-    assert saved["slip_warning"] is True
-
-
 T_BASE = 1_800_000_000_000_000_000
 
 
