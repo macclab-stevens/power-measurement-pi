@@ -453,7 +453,7 @@ The lab GPS/PTP time server is at 192.168.0.20; Pi and EliteBook timestamps are 
 - Measured path resistance is about 0.11 ohm on the current wire. Earlier cables measured
   0.25-0.33 ohm and caused under-voltage under YOLO's ~3 A peaks.
 - The Pi under-voltage threshold is about 4.63 V at the Pi input.
-- The 25 W ceiling is the Pi 5 spec.
+- Design ceiling: 25 W (5 A at 5 V, the Pi 5's maximum supply rating), as requested by the user.
 
 ### Recorder (EliteBook)
 
@@ -465,13 +465,19 @@ systemd-run --user --unit=monsoon-recorder --same-dir --collect \
 systemctl --user stop monsoon-recorder        # stop
 ```
 
-**Stopping the recorder leaves Vout ON (keep-on): the Pi stays powered. To make the output safe
-before rewiring, shut the Pi down cleanly, stop the recorder, then set Vout to 0 with
-`uv run python vout_off.py` (from `host/`; it calls `Monsoon` HVPM `setVout(0)` and prints a
-confirmation).**
+**Stopping the recorder leaves Vout ON (keep-on): the Pi stays powered.** To make the output
+safe before rewiring or changing Vout:
 
-- Changing Vout needs a clean Pi shutdown first. A halted Pi reboots only when power is cycled
-  (restart the recorder at the new Vout, or run `vout_off.py` and then restart it).
+1. Clean Pi shutdown: `ssh -t maccpi@192.168.0.243 sudo poweroff`, then confirm the Pi is halted
+   (ping fails and the Monsoon draw has dropped).
+2. `systemctl --user stop monsoon-recorder` (the output stays ON).
+3. From `~/power-measurement-pi/host`: `uv run python vout_off.py --confirm-pi-halted`.
+4. Rewire, and check polarity with a multimeter.
+5. Start the recorder again (the `systemd-run` command above). The Pi boots when Vout comes on.
+
+`vout_off.py` is the only code that switches the output off; it is a manual safety tool, never
+called by the recorder or experiment code. Changing Vout also needs a clean Pi shutdown first; a
+halted Pi reboots only when power is cycled.
 - API on port 8051: `GET /status` (recording, serial, vout_V, n_total, dropped, sample_hz,
   raw_dropped_nonzero_blocks, run_dir) and `GET /window?t0_ns=&t1_ns=` (count, mean_P, max_P,
   complete; span capped at 600 s).
@@ -560,5 +566,5 @@ Written next to the Pi run by `align.py`:
 ### Validation results
 
 - 20-train sync check: 120/120 edges, max residual 0.257 ms, rms 0.100 ms.
-- yolo11n smoke (monsoon, 2400 MHz, fan full): `[ok]`, residual 0.166 ms, 4 slips / 106 samples,
+- yolo11n smoke (monsoon, 2400 MHz, fan full): `[ok]` (12 edges), residual 0.166 ms, rms 0.089 ms, 4 slips / 106 samples,
   forward 9.6 W/iter, idle 4.87 W, I max 2.86 A.

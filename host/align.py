@@ -137,7 +137,7 @@ def detect_slips(last_idx, host_ns, rate_hz=None, min_step_ms=1.0, tail_guard_bl
     plateau that later returns to the floor does not raise S, since lower values come later.
     A slip is reported at each k where S[k+1] - S[k] > min_step_ms, at t_ns = host_ns[k+1].
     Steps with fewer than tail_guard_blocks blocks after k+1 are ignored (suffix min is then
-    just jitter), as are steps no larger than 5*jitter/blocks_remaining. rate_hz=None
+    just jitter), as are steps smaller than 5*jitter/blocks_remaining. rate_hz=None
     estimates the rate robustly (median slope of chunk-minimum latency points).
     Limits: losses smaller than min_step_ms are invisible, and a latency floor that rises
     permanently would be counted as a slip. On high-jitter links, slips in the last few tens

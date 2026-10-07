@@ -1,24 +1,43 @@
 #!/usr/bin/env python3
-"""Switch the HVPM main-channel output (Vout) OFF.
+"""Switch the HVPM main-channel output (Vout) OFF. Manual safety tool.
 
-The recorder is keep-on: stopping it leaves Vout at its last setting, so the Pi stays
-powered. Run this only after a clean Pi shutdown and after stopping the recorder
-(`systemctl --user stop monsoon-recorder`; the recorder holds the USB device), and before
-touching wiring:
+Never called by the recorder or experiment code. The recorder is keep-on: stopping it leaves
+Vout at its last setting, so the Pi stays powered. Required order:
 
-    uv run python vout_off.py
+  1. cleanly shut the Pi down (`sudo poweroff`) and confirm it is halted
+  2. `systemctl --user stop monsoon-recorder` (it holds the USB device)
+  3. run this script
 
-Prints a confirmation line with the device serial once the command has been sent.
+    uv run python vout_off.py --confirm-pi-halted
+
+Without the flag it explains this and exits with code 2 without touching USB. On success it
+prints a confirmation line with the device serial.
 """
 from __future__ import annotations
 
+import argparse
+import sys
 import time
 
-from Monsoon import HVPM, pmapi
-from Monsoon import Operations as op
+EXPLAIN = """vout_off.py switches the Monsoon output OFF and cuts power to the Pi.
+Order: (1) cleanly shut the Pi down and confirm it is halted, (2) stop the recorder with
+`systemctl --user stop monsoon-recorder`, (3) run this script with --confirm-pi-halted.
+Refusing to run without --confirm-pi-halted (USB not touched)."""
 
 
-def main() -> None:
+def main(argv=None) -> None:
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--confirm-pi-halted", action="store_true",
+                    help="assert the Pi is cleanly shut down and the recorder is stopped")
+    a = ap.parse_args(argv)
+    if not a.confirm_pi_halted:
+        print(EXPLAIN, file=sys.stderr)
+        raise SystemExit(2)
+
+    from Monsoon import HVPM, pmapi          # imported only after the confirmation check
+    from Monsoon import Operations as op
+
     protocol = pmapi.USB_protocol()
     serials = protocol.enumerateDevices()
     if not serials:
