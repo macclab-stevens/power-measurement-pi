@@ -7,8 +7,9 @@ on-board PMIC. Output is a joinable per-run dataset for later training a
 power-prediction model.
 
 > **Starting fresh / another session?** Read this file. All code and output live
-> on the Pi at `/home/macc2026/Desktop/pi_power_measurement`. To run: `cd` there
-> and `~/.local/bin/uv run src/run.py`. Every step below is reproducible.
+> on the Pi at `/home/maccpi/Desktop/power-measurement-pi` (Pi user `maccpi`, `192.168.0.243`; formerly
+> `macc2026@192.168.1.153`, `pi_power_measurement`). To run: `cd` there
+> and `~/.local/bin/uv run src/run.py`. For the Monsoon backend see §14. Every step below is reproducible.
 
 ---
 
@@ -37,9 +38,9 @@ See §6 for measured numbers from a verified run.
 | CPU | 4× Cortex-A76 @ up to 2.4 GHz (`vcgencmd` shows ~2.4 GHz under load) |
 | Cooling | Active cooler (idle ~47 °C, 4-core burn ~62 °C, no current throttle) |
 | Camera | `ov5647` (Pi Camera v1, 5 MP) on the CSI port; libcamera stack |
-| Access | `ssh -i ~/.ssh/id_pi_ml_model_pow_cap macc2026@192.168.1.153` |
+| Access | `ssh maccpi@192.168.0.243` |
 
-**PMIC power source:** the Pi 5's DA9090 PMIC exposes rail currents/voltages via
+**PMIC power source (PMIC era; numbers in §6-§8 below are from this backend):** the Pi 5's DA9090 PMIC exposes rail currents/voltages via
 `vcgencmd pmic_read_adc`. `vcgencmd pmic_read_adc 7 15` returns VDD_CORE current
 and voltage in ~4–5 ms (~190–200 Hz, no root). Full 26-rail dump ~24 ms (used as
 run-wide context only). The ML/CPU load lands on VDD_CORE, so it is the primary
@@ -49,7 +50,7 @@ power rail for per-op attribution.
 
 ## 3. Environment (already installed — do not reinstall)
 
-Everything lives under `/home/macc2026/Desktop/pi_power_measurement`:
+Everything lives under `/home/maccpi/Desktop/power-measurement-pi`:
 
 ```
 .venv/            # uv venv, --python /usr/bin/python3 --system-site-packages
@@ -92,8 +93,8 @@ unit) — any future sudo command needs an interactive TTY.
 ## 4. Run it
 
 ```bash
-ssh -i ~/.ssh/id_pi_ml_model_pow_cap macc2026@192.168.1.153
-cd /home/macc2026/Desktop/pi_power_measurement
+ssh maccpi@192.168.0.243
+cd /home/maccpi/Desktop/power-measurement-pi
 # full capture: 30 frames of detection + per-op power benches (3 s/op)
 ~/.local/bin/uv run src/run.py --frames 30 --bench 3
 ```
@@ -270,7 +271,7 @@ Pi collecting per-layer / per-op power data unattended for hours.
 
 ### Usage
 ```bash
-cd /home/macc2026/Desktop/pi_power_measurement
+cd /home/maccpi/Desktop/power-measurement-pi
 uv run python collect.py --hours 6                        # 6 hours, default cycle
 uv run python collect.py --runs 50                        # fixed number of cycles
 uv run python collect.py --hours 8 --frames 40 --bench 5 --warmup 10 --conf 0.25
@@ -318,10 +319,10 @@ bad cycle cannot take down the rest. It honors whichever budget (`--hours` or
 
 ---
 
-## 12. Git & version control (local repo, no remote)
+## 12. Git & version control (local repo, no remote; history below is from the original PMIC-era Pi checkout)
 
 The project is a **git repository on the Pi** at
-`/home/macc2026/Desktop/pi_power_measurement` — created locally and **not pushed
+`/home/maccpi/Desktop/power-measurement-pi` — created locally and **not pushed
 to any remote**.
 
 ### Current state
@@ -425,3 +426,139 @@ predictor, whose schema will dictate it. Verified runs:
   distinct configs, SKIPPED=0, dominant-op green.
 - `verify_multiarg.py`: 3-tensor positional replay + int64/bool + per-mode
   identity all pass.
+
+---
+
+## 14. Monsoon backend (schema v4): runbook
+
+The Monsoon HVPM records the Pi's input power at ~5 kHz, continuously and independently of any
+run. The Pi marks its own timeline (events + sync pulses); `host/align.py` aligns the two
+offline. Sections 1-13 describe the PMIC era (`--sampler pmic`, schema 3); this section covers
+`--sampler monsoon` (schema 4). Design: `docs/superpowers/specs/2026-10-06-monsoon-experiment-design.md`;
+measured bring-up: `docs/superpowers/plans/sp1-bringup-log.md`.
+
+### Topology
+
+| Machine | Address | Role |
+|---|---|---|
+| NUC | 192.168.0.205 | dev |
+| EliteBook | `macc2026@192.168.0.11` | HVPM 36517 host, recorder, align |
+| Pi 5 | `maccpi@192.168.0.243` | workloads, `~/Desktop/power-measurement-pi` |
+
+The lab GPS/PTP time server is at 192.168.0.20; Pi and EliteBook timestamps are on its wall clock.
+
+### Power path facts
+
+- The HVPM main channel powers the Pi through USB-C at Vout 5.25 V with a 6 A limit.
+- Measured path resistance is about 0.11 ohm on the current wire. Earlier cables measured
+  0.25-0.33 ohm and caused under-voltage under YOLO's ~3 A peaks.
+- The Pi under-voltage threshold is about 4.63 V at the Pi input.
+- The 25 W ceiling is the Pi 5 spec.
+
+### Recorder (EliteBook)
+
+From `~/power-measurement-pi/host`:
+
+```bash
+systemd-run --user --unit=monsoon-recorder --same-dir --collect \
+  ~/.local/bin/uv run python recorder.py --vout 5.25 --current-limit 6
+systemctl --user stop monsoon-recorder        # stop
+```
+
+**Stopping the recorder leaves Vout ON (keep-on): the Pi stays powered. To make the output safe
+before rewiring, shut the Pi down cleanly, stop the recorder, then set Vout to 0 with
+`uv run python vout_off.py` (from `host/`; it calls `Monsoon` HVPM `setVout(0)` and prints a
+confirmation).**
+
+- Changing Vout needs a clean Pi shutdown first. A halted Pi reboots only when power is cycled
+  (restart the recorder at the new Vout, or run `vout_off.py` and then restart it).
+- API on port 8051: `GET /status` (recording, serial, vout_V, n_total, dropped, sample_hz,
+  raw_dropped_nonzero_blocks, run_dir) and `GET /window?t0_ns=&t1_ns=` (count, mean_P, max_P,
+  complete; span capped at 600 s).
+- Data goes to `host/data/<ts>/` (git-ignored): raw blocks with host arrival stamps, the samples
+  file, `blocks.csv`, `device.json`.
+
+### Pi pinning
+
+- `tools/pi-power-pin` is a root helper (pin governor/frequency, fan, restore) installed with a
+  sudoers rule. One-time install (one sudo prompt):
+
+```bash
+ssh -t maccpi@192.168.0.243 'sudo install -o root -g root -m 0755 ~/Desktop/power-measurement-pi/tools/pi-power-pin /usr/local/sbin/pi-power-pin && echo "maccpi ALL=(root) NOPASSWD: /usr/local/sbin/pi-power-pin" | sudo tee /etc/sudoers.d/pi-power-pin >/dev/null && sudo chmod 0440 /etc/sudoers.d/pi-power-pin && sudo visudo -cf /etc/sudoers.d/pi-power-pin'
+```
+
+- `run.py --cpu-mhz 2400 --fan-full` pins the CPU at 2.4 GHz (performance governor) and the fan at
+  full, and records the pin status in `run_meta.json`. Monsoon runs do not force these flags;
+  always pass both, since `cpu_mhz_pinned: null` marks an unpinned diagnostic run.
+- 5-minute pinned soak: peak 54.9 C, 2.4 GHz on every sample, throttled 0x0, EXT5V 4.867-4.878 V.
+
+### Running a cell
+
+On the Pi, from `~/Desktop/power-measurement-pi`:
+
+```bash
+uv run --frozen python src/run.py --sampler monsoon --cpu-mhz 2400 --fan-full \
+    --task ... --out runs/<name> > log 2>&1
+```
+
+**Never pipe its output through `head`: SIGPIPE kills the run.** Redirect to a file instead.
+
+Then on the EliteBook (do not touch the recorder), copy the run over and align:
+
+```bash
+rsync -a maccpi@192.168.0.243:Desktop/power-measurement-pi/runs/<name> ~/power-measurement-pi/runs/
+cd ~/power-measurement-pi/host && uv run python align.py --recorder-dir data/<ts> --pi-run ../runs/<name>
+```
+
+`align.py` prints `[ok] ...` (plus `[warn] slip_warning: ...` / `[warn] drift_warning: ...`), or
+`[FAIL] ...` and exits non-zero when the sync-pulse residual gate fails.
+`src/sync_check.py --trains 20 --spacing 2 --out runs/sync_check` emits pulse trains only, to
+validate alignment without a workload.
+
+### Outputs
+
+Pi side, in `runs/<name>/`:
+
+- `events.csv`: the Pi's timeline on the PTP wall clock. Columns `t_real_ns, t_mono_ns, kind, name,
+  depth, mode, iter, layer_path, config_id, window_id`. Kinds: `marker` (phase starts), `begin`/
+  `end` (layer spans), `pulse_on`/`pulse_off` (sync-pulse edges), `ctx_begin`/`ctx_end` (context
+  reads by the sampler thread).
+- `run_meta.json` v4: `schema_version` 4, `sampler`, `recorder_url`, `recorder_status_start`/
+  `_end`, `recorder_continuity_errors`, `throttled_start`/`_end`, `pin_status_start`/`_end`,
+  `pin_status`, `cpu_mhz_pinned`, `fan_full`, `t0_real_ns`, `sync_tags`, `achieved_sample_hz`,
+  plus the v3 keys (`baseline_*`, `op_sequence`, `arch_fingerprint`, ...).
+
+Written next to the Pi run by `align.py`:
+
+- `alignment.json`: `pass`, `fail_reasons`, `n_edges`, `trains`, `max_residual_ms`,
+  `rms_residual_ms`, `c0_ns` (USB latency plus any common lag), `c1`, `drift_ppm`, `ref_ns`,
+  `rise_bias_ms`, `fall_bias_ms`, `rise_minus_fall_ms`, `lag_note`, `coarse_clock`,
+  `envelope_max_dev_ms`, `nan_fraction`, `max_block_gap_ms`, `raw_dropped_nonzero_blocks_in_run`,
+  `slip_rate_hz`, `slips` (list of `t_ns`, `step_ms`, `samples`), `slip_samples_total`,
+  `warnings`, and the two flags:
+  - `slip_warning`: true if sample losses were detected or the coarse-clock envelope is
+    nonlinear. Per-layer labels after a slip are shifted by the slip size (5-20 ms).
+  - `drift_warning`: true if clock drift over the run exceeds 50 ppm.
+  The pulse-residual gate (max residual < 1.0 ms) is the only fatal one.
+- `power_trace.parquet`: one row per Monsoon sample on the Pi clock. Columns `t_s`, `t_pi_ns`,
+  `I_A`, `V_V`, `P_W`, `phase`, `mode`, `iter`, `layer_path`, `depth`, `ctx_read` (true while the
+  Pi's vcgencmd context read was running; exclude these samples for clean power).
+
+### Known hardware behaviours
+
+- The HVPM `dropped` field is per-packet (0/14), not a counter. It is recorded only
+  (`raw_dropped_nonzero_blocks`) and is not used for gap accounting.
+- Unreported sample losses happen, roughly once a minute, 5-20 ms each, during runs. They were
+  reproduced by `/window` polling. The detector flags them (`slips`). The decision is to accept
+  them and take 10 runs per model.
+- The EliteBook PTP stack flaps (`phc2sys` `PTP_SYS_OFFSET_PRECISE` timeouts). This does not
+  affect alignment, which uses the Pi's sync pulses.
+- The library has a ~9.94-day `sampleLimit`; restart the recorder before then (Pi shut down first).
+- Heavy runs can still trip the Pi under-voltage gate at the current wiring (extrapolated 5 A at
+  the Pi is about 4.65 V); such runs are rejected by design.
+
+### Validation results
+
+- 20-train sync check: 120/120 edges, max residual 0.257 ms, rms 0.100 ms.
+- yolo11n smoke (monsoon, 2400 MHz, fan full): `[ok]`, residual 0.166 ms, 4 slips / 106 samples,
+  forward 9.6 W/iter, idle 4.87 W, I max 2.86 A.
