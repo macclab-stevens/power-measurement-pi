@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from align import AlignError, align
+from align import AlignError, align, detect_slips
 from store import SampleStore
 
 FIELDS = ["t_real_ns", "t_mono_ns", "kind", "name", "depth", "mode", "iter",
@@ -87,6 +87,7 @@ def test_align_recovers_offset_and_passes(tmp_path):
     rec, pi, _ = _build(tmp_path)
     res = align(rec, pi, pi)
     assert res["pass"] is True and res["n_edges"] == 12
+    assert res["slip_warning"] is False and res["slips"] == []
     assert res["max_residual_ms"] < 0.5
     assert abs(res["drift_ppm"]) < 5
     assert abs(res["rise_minus_fall_ms"]) < 0.2
@@ -143,12 +144,32 @@ def test_single_train_path(tmp_path):
     assert res["pass"] is True and res["drift_ppm"] == 0.0 and res["n_edges"] == 6
 
 
-def test_align_rejects_mid_run_index_slip(tmp_path):
+def test_align_flags_mid_run_index_slip(tmp_path):
     rec, pi, _ = _build(tmp_path, slip=True)
-    with pytest.raises(AlignError, match="nonlinear"):
-        align(rec, pi, pi)
+    res = align(rec, pi, pi)
+    assert res["pass"] is True
+    assert (pi / "power_trace.parquet").exists()
+    assert res["slip_warning"] is True
+    assert len(res["slips"]) >= 1
+    assert abs(res["slip_samples_total"] - 50) <= 5
+    assert any("nonlinear" in w for w in res["warnings"])
+    assert res["envelope_max_dev_ms"] > 1.0
     saved = json.loads((pi / "alignment.json").read_text())
-    assert saved["pass"] is False and saved["envelope_max_dev_ms"] > 1.0
+    assert saved["slip_warning"] is True
+
+
+def test_detect_slips_pure():
+    rng = np.random.default_rng(3)
+    n_blocks, blk, rate = 1000, 50, 5000.0
+    true_idx = np.arange(n_blocks) * blk + (blk - 1)
+    idx = true_idx.copy()
+    idx[400:] -= 30                                   # 30 samples lost at block 400
+    host = (1_800_000_000_000_000_000 + true_idx * 1e9 / rate + 2e6
+            + rng.uniform(0, 0.2e6, n_blocks)).astype(np.int64)
+    slips = detect_slips(idx, host, rate)
+    assert len(slips) == 1
+    assert abs(slips[0]["samples"] - 30) <= 3
+    assert detect_slips(true_idx, host, rate) == []
 
 
 def test_align_reports_raw_dropped_but_does_not_gate(tmp_path):

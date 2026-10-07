@@ -87,6 +87,23 @@ def _envelope_max_dev_ms(x, y, clock):
     return float(np.abs(mins - np.median(mins)).max() / 1e6)
 
 
+def detect_slips(last_idx, host_ns, rate_hz, window_blocks=80, min_step_ms=1.0) -> list:
+    """Sample-loss steps: increases of the trailing rolling-min of the index-vs-host residual."""
+    x = np.asarray(last_idx, dtype=np.float64)
+    h = np.asarray(host_ns, dtype=np.float64)
+    if x.size < 2:
+        return []
+    r = (h - h[0]) - (x - x[0]) * 1e9 / rate_hz
+    pad = np.concatenate([np.full(window_blocks - 1, np.inf), r])
+    rm = np.lib.stride_tricks.sliding_window_view(pad, window_blocks).min(axis=1)
+    steps = np.diff(rm) / 1e6
+    out = []
+    for k in np.flatnonzero(steps > min_step_ms):
+        out.append({"t_ns": int(host_ns[k + 1]), "step_ms": float(steps[k]),
+                    "samples": int(round(steps[k] * rate_hz / 1000))})
+    return out
+
+
 def align(recorder_dir, pi_run_dir, out_dir) -> dict:
     recorder_dir, pi_run_dir, out_dir = Path(recorder_dir), Path(pi_run_dir), Path(out_dir)
     ev = pd.read_csv(pi_run_dir / "events.csv", keep_default_na=False,
@@ -166,17 +183,25 @@ def align(recorder_dir, pi_run_dir, out_dir) -> dict:
     env = _envelope_max_dev_ms(last_idx[sel].astype(np.float64),
                                b["host_ns"][sel].astype(np.float64), clock)
     res["envelope_max_dev_ms"] = env
+    warnings = []
     if env is not None and env > ENVELOPE_MAX_DEV_MS:
-        fail_reasons.append("coarse clock envelope nonlinear (sample-index slip?)")
+        warnings.append("coarse clock envelope nonlinear (sample-index slip?)")
     if len(trains) >= 2 and abs(res["drift_ppm"]) > MAX_DRIFT_PPM:
-        fail_reasons.append("drift > 50 ppm")
+        warnings.append("drift > 50 ppm")
+    slips = detect_slips(last_idx[sel], b["host_ns"][sel], 1e9 / clock.b_ns)
+    res["slips"] = slips
+    res["slip_samples_total"] = int(sum(s_["samples"] for s_ in slips))
+    if slips:
+        warnings.append(f"{len(slips)} sample-loss slip(s), {res['slip_samples_total']} samples")
+    res["warnings"] = warnings
+    res["slip_warning"] = bool(warnings)
     if res["max_residual_ms"] >= PASS_MS:
         fail_reasons.append("residual >= 1.0 ms")
     res["nan_fraction"] = float(np.isnan(IV).any(axis=1).mean()) if len(IV) else 0.0
     hs = b["host_ns"][sel]
     res["max_block_gap_ms"] = float(np.diff(hs).max() / 1e6)
     res["fail_reasons"] = fail_reasons
-    res["pass"] = bool(res["max_residual_ms"] < PASS_MS and not fail_reasons)
+    res["pass"] = bool(res["max_residual_ms"] < PASS_MS)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "alignment.json").write_text(json.dumps(res, indent=2))
     if not res["pass"]:
@@ -263,6 +288,9 @@ def main() -> None:  # pragma: no cover
     print(f"[ok] edges={res['n_edges']} max_residual={res['max_residual_ms']:.3f} ms "
           f"rms={res['rms_residual_ms']:.3f} ms drift={res['drift_ppm']:.2f} ppm "
           f"usb_offset={res['c0_ns'] / 1e6:.3f} ms")
+    if res["slip_warning"]:
+        sl = ", ".join(f"t_ns={x['t_ns']} {x['samples']} samples" for x in res["slips"]) or "none"
+        print(f"[warn] slip_warning: {'; '.join(res['warnings'])}; slips: {sl}")
 
 
 if __name__ == "__main__":
