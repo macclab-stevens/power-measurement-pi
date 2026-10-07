@@ -87,18 +87,64 @@ def _envelope_max_dev_ms(x, y, clock):
     return float(np.abs(mins - np.median(mins)).max() / 1e6)
 
 
-def detect_slips(last_idx, host_ns, rate_hz, window_blocks=80, min_step_ms=1.0) -> list:
-    """Sample-loss steps: increases of the trailing rolling-min of the index-vs-host residual."""
+def _robust_rate_hz(x, h, chunk=200, nominal_hz=5000.0):
+    """Sample rate from the lower envelope: per 200-block chunk take the minimum-latency block,
+    then the dominant cluster of slopes between chunk minima `lag` chunks
+    apart. Minima are far less noisy than chunk endpoints."""
+    b0 = 1e9 / nominal_hz
+    nch = x.size // chunk
+    if nch < 2:
+        return float((x[-1] - x[0]) * 1e9 / (h[-1] - h[0]))
+    r0 = h - x * b0
+    px, py = [], []
+    for c in range(nch):
+        sl = slice(c * chunk, (c + 1) * chunk)
+        k = c * chunk + int(np.argmin(r0[sl]))
+        px.append(x[k])
+        py.append(h[k])
+    px, py = np.array(px), np.array(py)
+    lag = 1 if nch < 8 else nch // 4
+    slopes = (py[lag:] - py[:-lag]) / (px[lag:] - px[:-lag])
+    # largest cluster of agreeing slopes (within 0.5 ms over the span); ties go to the lowest
+    # slope because losses only raise it. Median alone fails when two slopes straddle a slip.
+    tol = 0.5e6 / (lag * float(np.median(np.diff(px))))
+    near = np.abs(slopes[:, None] - slopes[None, :]) < tol
+    cnt = near.sum(axis=1)
+    best = np.flatnonzero(cnt == cnt.max())
+    best = best[np.argmin(slopes[best])]
+    return float(1e9 / np.median(slopes[near[best]]))
+
+
+def detect_slips(last_idx, host_ns, rate_hz=None, min_step_ms=1.0, tail_guard_blocks=10) -> list:
+    """Find sample-loss steps in the (last_idx, host_ns) block stream.
+
+    r = (host - host[0]) - (idx - idx[0]) / rate is the index-vs-host residual: constant USB
+    latency floor plus non-negative arrival jitter. A real sample loss is permanent, so the
+    suffix minimum S[k] = min(r[k:]) steps up right after it (no lag). A temporary latency
+    plateau that later returns to the floor does not raise S, since lower values come later.
+    A slip is reported at each k where S[k+1] - S[k] > min_step_ms, at t_ns = host_ns[k+1].
+    Steps with fewer than tail_guard_blocks blocks after k+1 are ignored (suffix min is then
+    just jitter), as are steps no larger than 5*jitter/blocks_remaining. rate_hz=None estimates the rate robustly (median slope of chunk-minimum latency points).
+    Limits: losses smaller than min_step_ms are invisible, and a latency floor that rises
+    permanently would be counted as a slip.
+    """
     x = np.asarray(last_idx, dtype=np.float64)
     h = np.asarray(host_ns, dtype=np.float64)
     if x.size < 2:
         return []
+    if rate_hz is None:
+        rate_hz = _robust_rate_hz(x, h)
     r = (h - h[0]) - (x - x[0]) * 1e9 / rate_hz
-    pad = np.concatenate([np.full(window_blocks - 1, np.inf), r])
-    rm = np.lib.stride_tricks.sliding_window_view(pad, window_blocks).min(axis=1)
-    steps = np.diff(rm) / 1e6
+    S = np.minimum.accumulate(r[::-1])[::-1]
+    steps = (S[1:] - S[:-1]) / 1e6
+    jit_ms = 2.0 * float(np.median(r - S)) / 1e6      # jitter scale (range of a uniform spread)
     out = []
     for k in np.flatnonzero(steps > min_step_ms):
+        m = x.size - (k + 1)
+        # near the end the suffix min over m blocks is sparse: its natural gaps are ~jit/m, so
+        # require the step to clear 5 * jit/m as well (high-jitter links lose tail sensitivity)
+        if m < tail_guard_blocks or steps[k] < 5.0 * jit_ms / m:
+            continue
         out.append({"t_ns": int(host_ns[k + 1]), "step_ms": float(steps[k]),
                     "samples": int(round(steps[k] * rate_hz / 1000))})
     return out
@@ -184,17 +230,23 @@ def align(recorder_dir, pi_run_dir, out_dir) -> dict:
                                b["host_ns"][sel].astype(np.float64), clock)
     res["envelope_max_dev_ms"] = env
     warnings = []
-    if env is not None and env > ENVELOPE_MAX_DEV_MS:
+    env_bad = env is not None and env > ENVELOPE_MAX_DEV_MS
+    if env_bad:
         warnings.append("coarse clock envelope nonlinear (sample-index slip?)")
-    if len(trains) >= 2 and abs(res["drift_ppm"]) > MAX_DRIFT_PPM:
+    drift_bad = len(trains) >= 2 and abs(res["drift_ppm"]) > MAX_DRIFT_PPM
+    if drift_bad:
         warnings.append("drift > 50 ppm")
-    slips = detect_slips(last_idx[sel], b["host_ns"][sel], 1e9 / clock.b_ns)
+    res["drift_warning"] = bool(drift_bad)
+    hs_sel = b["host_ns"][sel]
+    res["slip_rate_hz"] = _robust_rate_hz(last_idx[sel].astype(np.float64),
+                                          hs_sel.astype(np.float64))
+    slips = detect_slips(last_idx[sel], hs_sel, None)
     res["slips"] = slips
     res["slip_samples_total"] = int(sum(s_["samples"] for s_ in slips))
     if slips:
         warnings.append(f"{len(slips)} sample-loss slip(s), {res['slip_samples_total']} samples")
     res["warnings"] = warnings
-    res["slip_warning"] = bool(warnings)
+    res["slip_warning"] = bool(env_bad or slips)
     if res["max_residual_ms"] >= PASS_MS:
         fail_reasons.append("residual >= 1.0 ms")
     res["nan_fraction"] = float(np.isnan(IV).any(axis=1).mean()) if len(IV) else 0.0

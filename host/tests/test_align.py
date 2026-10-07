@@ -88,6 +88,7 @@ def test_align_recovers_offset_and_passes(tmp_path):
     res = align(rec, pi, pi)
     assert res["pass"] is True and res["n_edges"] == 12
     assert res["slip_warning"] is False and res["slips"] == []
+    assert res["drift_warning"] is False
     assert res["max_residual_ms"] < 0.5
     assert abs(res["drift_ppm"]) < 5
     assert abs(res["rise_minus_fall_ms"]) < 0.2
@@ -158,18 +159,72 @@ def test_align_flags_mid_run_index_slip(tmp_path):
     assert saved["slip_warning"] is True
 
 
-def test_detect_slips_pure():
-    rng = np.random.default_rng(3)
-    n_blocks, blk, rate = 1000, 50, 5000.0
+T_BASE = 1_800_000_000_000_000_000
+
+
+def _stream(n_blocks=1000, blk=50, rate=5000.0, lat_ms=2.0, jit_ms=0.2, losses=(), plateau=None,
+            seed=3):
+    """losses: [(block, n_samples)] permanent index losses; host time follows true samples."""
+    rng = np.random.default_rng(seed)
     true_idx = np.arange(n_blocks) * blk + (blk - 1)
     idx = true_idx.copy()
-    idx[400:] -= 30                                   # 30 samples lost at block 400
-    host = (1_800_000_000_000_000_000 + true_idx * 1e9 / rate + 2e6
-            + rng.uniform(0, 0.2e6, n_blocks)).astype(np.int64)
-    slips = detect_slips(idx, host, rate)
+    for b_, n_ in losses:
+        idx[b_:] -= n_
+    lat = lat_ms + rng.uniform(0, jit_ms, n_blocks)
+    if plateau:
+        lat[plateau[0]:plateau[1]] += plateau[2]
+    host = (T_BASE + true_idx * 1e9 / rate + lat * 1e6).astype(np.int64)
+    return idx, host, true_idx
+
+
+def test_detect_slips_pure():
+    idx, host, true_idx = _stream(losses=[(400, 30)])
+    slips = detect_slips(idx, host, 5000.0)
     assert len(slips) == 1
     assert abs(slips[0]["samples"] - 30) <= 3
-    assert detect_slips(true_idx, host, rate) == []
+    assert abs(slips[0]["t_ns"] - host[400]) <= 3 * 10_000_000
+    assert detect_slips(true_idx, host, 5000.0) == []
+    assert len(detect_slips(idx, host)) == 1          # rate estimated robustly
+
+
+def test_detect_slips_no_false_positive_jitter():
+    idx, host, _ = _stream(n_blocks=10_000, jit_ms=35.0)
+    assert detect_slips(idx, host) == []
+
+
+def test_detect_slips_ignores_temporary_latency_plateau():
+    idx, host, _ = _stream(plateau=(300, 600, 5.0))
+    assert detect_slips(idx, host) == []
+
+
+def test_detect_slips_near_end():
+    idx, host, _ = _stream(losses=[(970, 30)])
+    slips = detect_slips(idx, host)
+    assert len(slips) == 1 and abs(slips[0]["samples"] - 30) <= 3
+
+
+def test_detect_slips_multiple():
+    idx, host, _ = _stream(losses=[(400, 30), (420, 30)])
+    slips = detect_slips(idx, host)
+    assert len(slips) == 2
+    for sl, blk in zip(slips, (400, 420)):
+        assert abs(sl["samples"] - 30) <= 3
+        assert abs(sl["t_ns"] - host[blk]) <= 3 * 10_000_000
+
+
+def test_align_flags_mid_run_index_slip(tmp_path):
+    rec, pi, _ = _build(tmp_path, slip=True)
+    res = align(rec, pi, pi)
+    assert res["pass"] is True
+    assert (pi / "power_trace.parquet").exists()
+    assert res["slip_warning"] is True
+    assert len(res["slips"]) >= 1
+    assert abs(res["slip_samples_total"] - 50) <= 5
+    assert any("nonlinear" in w for w in res["warnings"])
+    assert res["envelope_max_dev_ms"] > 1.0
+    assert res["slip_rate_hz"] == pytest.approx(5000 / (1 + 30e-6), rel=1e-4)
+    saved = json.loads((pi / "alignment.json").read_text())
+    assert saved["slip_warning"] is True
 
 
 def test_align_reports_raw_dropped_but_does_not_gate(tmp_path):
