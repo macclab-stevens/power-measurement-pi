@@ -29,7 +29,7 @@ ENVELOPE_MAX_DEV_MS = 1.0  # coarse-clock lower envelope must be linear to this 
 MAX_DRIFT_PPM = 50.0
 ENVELOPE_SEGMENTS = 20     # same rule as fit_sample_clock
 MIN_ENVELOPE_BLOCKS = 40
-LABEL_KINDS = ("marker", "begin", "end", "pulse_on", "pulse_off")
+LABEL_KINDS = ("marker", "begin", "end", "pulse_on", "pulse_off", "step_begin", "step_end")
 
 
 class AlignError(RuntimeError):
@@ -308,6 +308,13 @@ def align(recorder_dir, pi_run_dir, out_dir) -> dict:
         layer[ok] = paths[j[ok]]
         depth[ok] = d
 
+    step = np.full(t_pi.size, "", dtype=object)
+    for lvl, s in sorted(_step_spans(ev).items()):
+        st, en, names = s[:, 0].astype(np.float64), s[:, 1].astype(np.float64), s[:, 2]
+        j = np.searchsorted(st, t_pi, side="right") - 1
+        ok = (j >= 0) & (t_pi < en[np.clip(j, 0, None)])
+        step[ok] = names[j[ok]]
+
     cb = np.sort(ev[ev["kind"] == "ctx_begin"]["t_real_ns"].to_numpy(dtype=np.float64))
     ce = np.sort(ev[ev["kind"] == "ctx_end"]["t_real_ns"].to_numpy(dtype=np.float64))
     n_ctx = min(len(cb), len(ce))
@@ -321,7 +328,7 @@ def align(recorder_dir, pi_run_dir, out_dir) -> dict:
         "t_s": (t_pi - t_first) / 1e9, "t_pi_ns": t_pi.astype(np.int64),
         "I_A": IV[:, 0].astype(np.float32), "V_V": IV[:, 1].astype(np.float32),
         "P_W": P.astype(np.float32), "phase": phase, "mode": mode, "iter": it,
-        "layer_path": layer, "depth": depth, "ctx_read": ctx_read,
+        "step": step, "layer_path": layer, "depth": depth, "ctx_read": ctx_read,
     })
     df.to_parquet(out_dir / "power_trace.parquet", index=False)
     return res
@@ -338,6 +345,20 @@ def _layer_spans(ev) -> dict:
             open_.setdefault(key, []).append(t)
         elif open_.get(key):
             out.setdefault(int(d), []).append((open_[key].pop(), t, path))
+    return {d: np.array(sorted(v, key=lambda r: r[0]), dtype=object) for d, v in out.items()}
+
+
+def _step_spans(ev) -> dict:
+    """nesting level -> array[(start_ns, end_ns, name)] sorted by start; steps pair LIFO."""
+    st = ev[ev["kind"].isin(["step_begin", "step_end"])]
+    stack: list = []
+    out: dict = {}
+    for kind, name, t in zip(st["kind"], st["name"], st["t_real_ns"]):
+        if kind == "step_begin":
+            stack.append((name, t))
+        elif stack and stack[-1][0] == name:
+            n, t0 = stack.pop()
+            out.setdefault(len(stack), []).append((t0, t, n))
     return {d: np.array(sorted(v, key=lambda r: r[0]), dtype=object) for d, v in out.items()}
 
 

@@ -7,6 +7,7 @@ appends, cheap enough for per-layer begin/end events.
 """
 from __future__ import annotations
 
+import contextlib
 import csv
 import threading
 import time
@@ -49,6 +50,17 @@ class EventLog:
     def end(self, name: str, layer_path: str = "") -> None:
         self._add("end", name, self._depth, layer_path=layer_path)
         self._depth = max(0, self._depth - 1)
+
+    @contextlib.contextmanager
+    def step(self, name: str):
+        """Sub-phase span inside one iteration (preprocess, forward, backward, ...).
+
+        Logged as step_begin/step_end; does not change the layer depth."""
+        self._add("step_begin", name, 0)
+        try:
+            yield
+        finally:
+            self._add("step_end", name, 0)
 
     def edge(self, kind: str, name: str) -> None:
         self._add(kind, name, 0)

@@ -254,3 +254,20 @@ def test_ctx_read_flag_and_labels_unaffected(tmp_path):
     for t in (c0 + 25_000_000, c1 + 100_000_000):
         r = df.iloc[int(np.argmin(np.abs(df["t_pi_ns"].to_numpy() - t)))]
         assert r["mode"] == "forward" and r["iter"] == "3" and r["phase"] == "forward"
+
+
+def test_align_labels_innermost_step(tmp_path):
+    S0, S1 = T0 + 5_800_000_000, T0 + 6_600_000_000          # step "forward" wraps layer "0"
+    N0, N1 = T0 + 6_050_000_000, T0 + 6_150_000_000          # nested step inside it
+    extra = [("step_begin", "forward", 0, "", S0), ("step_begin", "inner", 0, "", N0),
+             ("step_end", "inner", 0, "", N1), ("step_end", "forward", 0, "", S1)]
+    rec, pi, (L0, L1, C0, C1) = _build(tmp_path, extra_events=extra)
+    align(rec, pi, pi)
+    df = pd.read_parquet(pi / "power_trace.parquet")
+    def at(t):
+        return df.iloc[int(np.argmin(np.abs(df["t_pi_ns"].to_numpy() - t)))]
+    assert at((N0 + N1) // 2)["step"] == "inner"
+    r = at((C1 + L1) // 2)
+    assert r["step"] == "forward" and r["layer_path"] == "0"
+    assert at(S1 + 100_000_000)["step"] == ""
+    assert at(S0 - 100_000_000)["step"] == ""

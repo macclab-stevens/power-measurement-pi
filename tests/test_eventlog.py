@@ -57,3 +57,26 @@ def test_write_csv_roundtrip(tmp_path):
     rows = list(csv.DictReader(open(p)))
     assert list(rows[0].keys()) == FIELDS
     assert rows[1]["kind"] == "pulse_on" and rows[1]["name"] == "sync_start"
+
+
+def test_step_spans_nest_without_touching_layer_depth():
+    ev = EventLog()
+    ev.labels.update(mode="train", iter=3)
+    with ev.step("forward"):
+        ev.begin("layer", layer_path="0")
+        ev.end("layer", layer_path="0")
+    rows = ev.rows()
+    assert [(r["kind"], r["name"], r["depth"]) for r in rows] == [
+        ("step_begin", "forward", 0), ("begin", "layer", 1),
+        ("end", "layer", 1), ("step_end", "forward", 0)]
+    assert {(r["mode"], r["iter"]) for r in rows} == {("train", 3)}
+
+
+def test_step_end_is_logged_when_the_body_raises():
+    ev = EventLog()
+    try:
+        with ev.step("loss"):
+            raise ValueError("boom")
+    except ValueError:
+        pass
+    assert [r["kind"] for r in ev.rows()] == ["step_begin", "step_end"]

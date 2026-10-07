@@ -68,7 +68,7 @@ def _op_rows(prof, mode: str) -> list[dict]:
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--task", default="image", help="image | lm (default image)")
+    ap.add_argument("--task", default="image", help="image | lm | train (default image)")
     ap.add_argument("--model", default="yolo11n.pt")
     ap.add_argument("--frames", type=int, default=30)
     ap.add_argument("--bench", type=float, default=3.0)
@@ -78,6 +78,15 @@ def main():
     ap.add_argument("--conf", type=float, default=0.25)
     ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--seq", type=int, default=64, help="LM context length (prefill)")
+    ap.add_argument("--batch", type=int, default=8, help="training batch size (--task train)")
+    ap.add_argument("--optimizer", default="sgd", choices=["sgd", "adam"],
+                    help="training optimizer (--task train)")
+    ap.add_argument("--no-bench", action="store_true",
+                    help="skip the per-op isolation benches (perop_power.csv header only)")
+    ap.add_argument("--serve", type=int, default=0,
+                    help="after the modes, N single requests with idle gaps (phase 'serve')")
+    ap.add_argument("--serve-gap-ms", type=float, default=200.0,
+                    help="idle time between serve requests (step 'idle_between_requests')")
     ap.add_argument("--check-image", default=None,
                     help="detection oracle: require object conf>=--conf on this image file")
     ap.add_argument("--live-camera", action="store_true",
@@ -120,21 +129,35 @@ def main():
     if pin_status:
         logger.info(f"pinned: {pin_status}")
 
-    task = make_task(args.task, args.model, args)
-    prof = LayerProfiler(task.module)
-    modes = task.modes()
-    n_params = sum(p.numel() for p in task.module.parameters())
-    logger.info(f"task='{args.task}' model='{args.model}' modes={modes} | "
-                f"torch={torch.__version__} | hooked={len(prof._modules)} modules | "
-                f"params={n_params/1e6:.2f}M")
-
     sampler = make_sampler(args.sampler, args.recorder_url)
     monsoon = args.sampler == "monsoon"
-    if monsoon:
-        prof.events = sampler.events
     sampler.start()
     thr0 = sampler.snapshot_env()[2]
+    task = None
     try:
+        # ---- lifecycle: model load and the first call of each mode are measured phases
+        sampler.marker("load_weights")
+        t_load = time.perf_counter()
+        task = make_task(args.task, args.model, args)
+        load_s = time.perf_counter() - t_load
+        prof = LayerProfiler(task.module)
+        modes = task.modes()
+        n_params = sum(p.numel() for p in task.module.parameters())
+        logger.info(f"task='{args.task}' model='{args.model}' modes={modes} | "
+                    f"torch={torch.__version__} | hooked={len(prof._modules)} modules | "
+                    f"params={n_params/1e6:.2f}M | load {load_s:.2f}s")
+        if monsoon:
+            prof.events = sampler.events
+            task.step = sampler.events.step
+        first_ms = {}
+        for m in modes:
+            sampler.marker(f"first:{m}")
+            prof.set_mode(f"first:{m}")
+            t1 = time.perf_counter()
+            task.run_one(m)
+            first_ms[m] = round((time.perf_counter() - t1) * 1000, 3)
+        logger.info(f"first call per mode (ms): {first_ms}")
+
         # ---- warm-up: sustained inference over ALL modes so temp/DVFS settle
         # before the idle baseline and timed measurements.
         if args.warmup > 0:
@@ -174,6 +197,18 @@ def main():
                 else:
                     task.run_one(mode)
             logger.info(f"  mode {mode}: {args.frames} iterations done")
+
+        # ---- serve: isolated requests with idle gaps (race-to-idle transitions)
+        if args.serve > 0 and args.task != "train":
+            prof.set_mode("serve")
+            sampler.marker("serve")
+            for r in range(args.serve):
+                prof.set_frame(r)
+                for m in modes:
+                    task.run_one(m)
+                with task.step("idle_between_requests"):
+                    time.sleep(args.serve_gap_ms / 1000.0)
+            logger.info(f"serve: {args.serve} requests, gap {args.serve_gap_ms:.0f} ms")
 
         # ABAB global baseline, slice B (2 s); the run baseline is mean(A, B)
         sampler.marker("baseline_B")
@@ -221,8 +256,13 @@ def main():
         logger.info(f"per-op power benches ({achieved_hz:.0f} W-Hz sampling):")
         saved_events, prof.events = prof.events, None   # benches are labeled by bench:<cid> phase markers
         try:
-            perop = bench_configs(prof, sampler, baseline_W, args.bench,
-                                  require_samples=MIN_SAMPLES, max_retries=2, log=logger.info)
+            if args.no_bench:
+                perop = []
+                logger.info("  skipped (--no-bench)")
+            else:
+                perop = bench_configs(prof, sampler, baseline_W, args.bench,
+                                      require_samples=MIN_SAMPLES, max_retries=2,
+                                      log=logger.info)
         finally:
             prof.events = saved_events
         thr1 = sampler.snapshot_env()[2]
@@ -284,6 +324,13 @@ def main():
         meta = {
             "task": args.task, "model": args.model, "modes": modes,
             "imgsz": args.imgsz, "conf": args.conf, "seq_len": args.seq,
+            "batch": args.batch if args.task == "train" else 1,
+            "optimizer": args.optimizer if args.task == "train" else None,
+            "train_loss": [round(v, 5) for v in getattr(task, "losses", [])] or None,
+            "bench_skipped": args.no_bench,
+            "serve_requests": args.serve if args.task != "train" else 0,
+            "serve_gap_ms": args.serve_gap_ms,
+            "load_weights_s": round(load_s, 4), "first_call_ms": first_ms,
             "threads": args.threads, "frames_per_mode": args.frames,
             "warmup_passes": args.warmup, "params_M": round(n_params / 1e6, 3),
             "mean_fps": None,
@@ -393,7 +440,8 @@ def main():
     finally:
         sampler.stop()
         try:
-            task.stop_camera()
+            if task is not None:
+                task.stop_camera()
         except AttributeError:
             pass
 
