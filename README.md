@@ -1,634 +1,727 @@
-# Pi 5 YOLO Power-Measurement Harness — Runbook & Reference
+# Raspberry Pi 5 ML Power Measurement
 
-**Model-agnostic YOLO power/energy data collection on a Raspberry Pi 5.**
-Live camera + a YOLO detection model (any ultralytics weights) while capturing
-fine-grained per-layer, per-op timing, and per-operation power from the Pi's
-on-board PMIC. Output is a joinable per-run dataset for later training a
-power-prediction model.
+Measure how much electrical power a Raspberry Pi 5 uses while it runs machine-learning models,
+and label every power reading with what the model was doing at that instant.
 
-> **Starting fresh / another session?** Read this file. All code and output live
-> on the Pi at `/home/maccpi/Desktop/power-measurement-pi` (Pi user `maccpi`, `192.168.0.243`; formerly
-> `macc2026@192.168.1.153`, `pi_power_measurement`). To run: `cd` there
-> and `~/.local/bin/uv run src/run.py`. For the Monsoon backend see §14. Every step below is reproducible.
+The result is a dataset like this: *"at 12:07:03.1234 the Pi drew 10.3 W, and it was running the
+`backward` step of training iteration 17 of resnet18, inside layer `layer3.1.conv2`"*. That dataset
+is meant for training a model that predicts power from what the hardware is doing.
 
----
-
-## 1. Goal & status
-
-- Execute a YOLO detection model on live camera frames at useful FPS.
-- For each run, capture per-layer profiles, per-aten-op timing, and per-operation
-  steady-state power.
-- Store a clean, joinable dataset for a downstream power-prediction model
-  (`bandwidth + op cost + freq + temp -> power`).
-- Phase 1 (this): PyTorch-CPU YOLO + camera + on-board PMIC power sampling.
-- Later phases (designed for, not built): **Monsoon** power monitor (high-rate
-  input power), **ONNX/TFLite** backends, and the power-prediction model itself.
-
-**Status: WORKING.** A full 30-frame + per-op bench run passes acceptance.
-See §6 for measured numbers from a verified run.
+> **New here?** Read sections 1 to 3 to understand the setup, section 4 to set it up, and
+> section 5 to run it. Section 9 lists what to do when something breaks.
 
 ---
 
-## 2. Hardware (verified)
+## Contents
 
-| Item | Detail |
+1. [What this project does (in plain words)](#1-what-this-project-does-in-plain-words)
+2. [Words you will see everywhere](#2-words-you-will-see-everywhere)
+3. [The three computers and the power meter](#3-the-three-computers-and-the-power-meter)
+4. [One-time setup](#4-one-time-setup)
+5. [Everyday use](#5-everyday-use)
+6. [What the output files mean](#6-what-the-output-files-mean)
+7. [Results so far](#7-results-so-far)
+8. [Power safety: turning the Pi on and off, rewiring](#8-power-safety-turning-the-pi-on-and-off-rewiring)
+9. [Troubleshooting](#9-troubleshooting)
+10. [How it works under the hood](#10-how-it-works-under-the-hood)
+11. [Reference](#11-reference)
+12. [Developing: tests, deploying code, git](#12-developing-tests-deploying-code-git)
+13. [Project layout and further docs](#13-project-layout-and-further-docs)
+
+---
+
+## 1. What this project does (in plain words)
+
+A Raspberry Pi 5 runs ML workloads: image models (YOLO object detectors, image classifiers),
+small language models, and training loops. We want to know **how much power each part of that
+work costs**.
+
+The Pi cannot measure itself accurately, so an external lab instrument, a **Monsoon HVPM power
+monitor**, powers the Pi and measures the current and voltage going into it 5,000 times per
+second. A laptop (the "EliteBook") talks to the Monsoon over USB and records everything.
+
+The hard part is matching the two timelines: the Monsoon knows *how much power* was used at each
+moment, and the Pi knows *what it was doing* at each moment. To line them up:
+
+1. The Pi writes down a timestamp every time it starts or ends something (a phase, a step, a
+   layer). That is the **event log**.
+2. At the start and end of every run, the Pi deliberately burns all 4 CPU cores in a fixed on/off
+   rhythm (the **sync pulse**). This shows up as a clear square wave in the power trace.
+3. Afterwards, a script (`host/align.py`) finds that square wave in the Monsoon data and uses it
+   to line up the two clocks to well under a millisecond. Then every power sample gets the label
+   of whatever the Pi was doing at that instant.
+
+```
+        USB-C power (5.25 V)                    USB (data)
+ Pi 5  <====================  Monsoon HVPM  -------------------->  EliteBook
+ runs the models               measures V and I                   records 5 kHz power,
+ writes events.csv             5,000 times/s                      aligns, checks, stores
+   ^                                                                   |
+   |                        SSH (commands, copy results)               |
+   +-------------------------------------------------------------------+
+```
+
+A whole **experiment** is many such runs (called **cells**): different models, different CPU
+clock speeds, repeated several times. The EliteBook runs them one after another automatically.
+
+---
+
+## 2. Words you will see everywhere
+
+| Word | Meaning |
 |---|---|
-| Board | Raspberry Pi 5 Model B Rev 1.0, 8 GB RAM |
-| OS | Debian GNU/Linux 13 (trixie), kernel `6.18.39+rpt-rpi-2712` (aarch64) |
-| CPU | 4× Cortex-A76 @ up to 2.4 GHz (`vcgencmd` shows ~2.4 GHz under load) |
-| Cooling | Active cooler (idle ~47 °C, 4-core burn ~62 °C, no current throttle) |
-| Camera | `ov5647` (Pi Camera v1, 5 MP) on the CSI port; libcamera stack |
-| Access | `ssh maccpi@192.168.0.243` |
-
-**PMIC power source (PMIC era; numbers in §6-§8 below are from this backend):** the Pi 5's DA9090 PMIC exposes rail currents/voltages via
-`vcgencmd pmic_read_adc`. `vcgencmd pmic_read_adc 7 15` returns VDD_CORE current
-and voltage in ~4–5 ms (~190–200 Hz, no root). Full 26-rail dump ~24 ms (used as
-run-wide context only). The ML/CPU load lands on VDD_CORE, so it is the primary
-power rail for per-op attribution.
+| **Monsoon / HVPM** | The power monitor (Monsoon High Voltage Power Monitor, serial 36517). It is the Pi's power supply *and* the meter. |
+| **Recorder** | `host/recorder.py`, a program on the EliteBook that records the Monsoon non-stop and answers questions about it over HTTP (port 8051). |
+| **Run** | One execution of `src/run.py` on the Pi: load a model, measure it, write files. |
+| **Cell** | One run as part of the experiment matrix, e.g. `yolo11n_2400_r03` = YOLO11n at 2400 MHz, repeat 3. |
+| **Matrix** | The full list of cells (here 224). |
+| **Phase** | A big chunk of a run: `load_weights`, `warmup`, `forward`, `train`, `serve`, `bench:<op>`, ... |
+| **Step** | A piece of one iteration: `preprocess`, `forward`, `postprocess`, or for training `dataload`, `zero_grad`, `forward`, `loss`, `backward`, `optimizer_step`. |
+| **Layer** | One module of the neural network (e.g. `model.3.conv`). Every layer call is logged too. |
+| **Sync pulse** | The deliberate on/off CPU burst used to line up the clocks. |
+| **Alignment** | Matching the Pi timeline to the Monsoon timeline (`host/align.py`). |
+| **Residual** | How far off the alignment is at each sync edge. Must be below 1 ms, typically 0.1-0.3 ms. |
+| **Slip** | The Monsoon occasionally loses a few milliseconds of samples without saying so. Alignment detects and flags these. Accepted as a known limitation. |
+| **Pinning** | Locking the CPU clock to a fixed speed (1500, 2000 or 2400 MHz) and the fan at full speed, so neither changes during a run and confuses the power numbers. |
+| **Baseline** | The power the Pi uses while idle (about 4.9 W at 2400 MHz with the fan at full speed). |
 
 ---
 
-## 3. Environment (already installed — do not reinstall)
+## 3. The three computers and the power meter
 
-Everything lives under `/home/maccpi/Desktop/power-measurement-pi`:
-
-```
-.venv/            # uv venv, --python /usr/bin/python3 --system-site-packages
-pyproject.toml    # pinned deps
-uv.lock           # lockfile = source of truth for future syncs
-src/
-  run.py            # orchestrator + acceptance asserts (entry point)
-  cam.py            # Picamera2 wrapper (640x480 RGB888, AE/AWB locked)
-  detector.py       # ultralytics YOLO wrapper (any weights)
-  powersampler.py   # PMIC sampling daemon + sampler contract
-  layers.py         # per-module forward hooks, config_id, aten profiling
-  microbench.py     # per-op steady-state power benches
-  verify.py         # prints a dataset-quality summary for the latest run
-runs/<iso-ts>/      # one output dir per run
-```
-
-Stack and install (already done, for reference):
-
-| Package | Version | Notes |
+| Machine | Address / login | What it does |
 |---|---|---|
-| uv | 0.12.14 | at `~/.local/bin/uv` |
-| Python | 3.13.5 (system `/usr/bin/python3`) | venv uses it for picamera2 ABI |
-| torch | 2.14.0 | wheel tagged `+cu130` but **CPU-only** (`torch.cuda.is_available()==False`) |
-| torchvision | 0.29.0 | |
-| ultralytics | 8.4.152 | |
-| opencv-python-headless | 5.0.0.93 | headless avoids libGL over SSH |
-| python3-picamera2 | 0.3.37-1 | apt-installed (pulls python3-libcamera) |
+| **Pi 5** (8 GB) | `maccpi@192.168.0.243`, project in `~/Desktop/power-measurement-pi` | Runs the ML workloads (`src/run.py`). |
+| **EliteBook** (laptop) | `macc2026@192.168.0.11`, project in `~/power-measurement-pi` | Monsoon host: runs the recorder, the experiment orchestrator, alignment and checks. All results end up here. |
+| **NUC** (desktop) | `192.168.0.205`, project in `~/Desktop/power-measurement-pi` | Development machine: where code is edited, tested, committed and sent to the other two. |
+| **Monsoon HVPM** | USB to the EliteBook | Powers the Pi through USB-C at 5.25 V (6 A limit) and measures it. |
+| **Lab time server** | `192.168.0.20` (GPS/PTP) | Keeps the Pi and EliteBook clocks in sync (both run `timemaster`). |
 
-Install recipe (if you ever rebuild the Pi): `uv init --bare` **first** (uv
-requires a pyproject to exist before `uv add`), then
-`uv add ultraalytics==8.4.152 torch==2.14.0 opencv-python-headless`
-(match exact pins to keep power data cross-run comparable). `apt-get install -y
-python3-picamera2` was run with a user-supplied sudo password.
-
-sudo requires the user's password interactively (`sudo -n` does NOT work on this
-unit) — any future sudo command needs an interactive TTY.
+**Why two separate computers for the Pi and the Monsoon?** If the Pi recorded its own power, the
+recording itself would use CPU and pollute the measurement. Keeping the recorder on another machine
+means the Pi does nothing but the workload.
 
 ---
 
-## 4. Run it
+## 4. One-time setup
+
+You only do this once (or after reinstalling a machine). If the lab is already set up, skip to
+[section 5](#5-everyday-use).
+
+### 4.1 Wiring
+
+1. **Remove the Pi's normal power supply.** The Monsoon replaces it.
+2. Connect the **Monsoon main-channel output** to the Pi's **USB-C power input**. Use a short, thick
+   cable: the resistance of this path matters. At about 3 A peak, a 0.25-0.33 ohm cable drops the
+   Pi below its under-voltage threshold (about 4.63 V), and the run is rejected. The current wire
+   measures about 0.11 ohm. **Check polarity with a multimeter before switching on.**
+3. Connect the **Monsoon USB port** to the EliteBook.
+4. Power the Monsoon itself as its manual describes.
+
+The Pi stays powered as long as the Monsoon output is on. Read [section 8](#8-power-safety-turning-the-pi-on-and-off-rewiring)
+before you ever unplug or rewire anything.
+
+### 4.2 SSH keys (so machines can talk without passwords)
+
+The orchestrator on the EliteBook logs into the Pi automatically, so it needs a key. Run these
+yourself (they ask for the password once):
 
 ```bash
-ssh maccpi@192.168.0.243
-cd /home/maccpi/Desktop/power-measurement-pi
-# full capture: 30 frames of detection + per-op power benches (3 s/op)
-~/.local/bin/uv run src/run.py --frames 30 --bench 3
+# on the NUC
+ssh-copy-id maccpi@192.168.0.243
+ssh-copy-id macc2026@192.168.0.11
+# on the EliteBook
+ssh-copy-id maccpi@192.168.0.243
 ```
 
-Put any recognisable object in front of the camera (COCO-80 classes work best —
-a keyboard, mouse, toy airplane, mug, bottle, book…). **Acceptance requires at
-least one object detected at conf ≥ 0.25**; otherwise the run exits non-zero
-with an explicit message.
+Test: `ssh maccpi@192.168.0.243 true` must return without asking for a password.
+Never put passwords into scripts or this repo.
 
-Options:
-
-| Flag | Default | Meaning |
-|---|---|---|
-| `--weights` | `yolo11n.pt` | any ultralytics weights path/name (auto-downloads) |
-| `--frames` | 30 | detection frames captured |
-| `--bench` | 3.0 | seconds per isolated op benchmark |
-| `--warmup` | 10 | warm-up inference passes before measurement (thermal/DVFS stabilization) |
-| `--conf` | 0.25 | detection confidence threshold |
-| `--imgsz` | 640 | inference input size |
-| `--threads` | 4 | torch threads (matches the 4-core Pi; recorded in meta) |
-| `--out` | auto | explicit output dir |
-
-Run takes ~4–5 min (30 frames at ~4 fps + ~45 op benches). Summary line prints
-fps, baseline W, sampling Hz, row counts, best detection.
-
----
-
-## 5. Swap the model (model-agnostic)
-
-The harness has **no hardcoded model/class dependency**:
-
-- `--weights` accepts any ultralytics `.pt` (yolo11n, yolov8n, yolo12n, yolov8s,
-  yolov8m, …) or an absolute path to a trained weights file. The model is
-  auto-downloaded into ultralytics' cache on first use.
-- Acceptance is **class-agnostic**: `Detector.max_conf()` reports the strongest
-  detection across all classes — the harness never cares which object is present.
-- Layer hooks walk the model's inference graph generically: ultralytics models
-  expose their graph at `.model`; any raw `torch.nn.Module` is walked directly
-  (`_iter_inference_modules` in `layers.py`).
-- Pinned torch/ultralytics versions are recorded in `run_meta.json` (not hardcoded).
-
-So swapping models is just passing a different `--weights`; nothing else changes.
-*Verified by running the identical pipeline with `yolov8n.pt`.*
-
-Caveat: per-op microbenchmarks require the model to be a **PyTorch `nn.Module`**
-with normal `nn.Conv2d`/`nn.BatchNorm2d`/etc. structure (true for the whole
-ultralytics YOLO family). Non-PyTorch or opaque backends are a separate adapter
-(see §9).
-
----
-
-## 6. Verified run (dataset reality check)
-
-Best full run: `runs/20260915T023947` (YOLO11n):
-
-```
-fps=4.13  baseline_W=1.46  hz=189  layer_rows=226  op_rows=93  perop_rows=45  skipped=0
-detection: airplane @ 0.547 (class-agnostic acceptance)
-```
-
-Top per-op power (VDD_CORE, steady-state isolation loops):
-
-```
-Conv2d  P_delta=5.34 W  E_per_call=15.6 mJ  t=2.92 ms  samples=517
-Conv2d  P_delta=5.02 W  E_per_call=3.91 mJ  t=0.78 ms  samples=614
-... 40/40 Conv2d rows with P_delta > 0.01 W, each ≥ 500 samples
-```
-
-- Raw trace: 28,695 PMIC samples split `idle`(1.3k) / `inference`(1.8k) /
-  `bench:<config>`(25.6k) — every sample is phase/window-marked.
-- Aten ops: `mkldnn_convolution` dominates (78 calls, ~1.9 ms mean), plus
-  `silu_`, `cat`, `copy_`, etc.
-- Confounders captured per op window: temp 59.8→62.0 °C, arm freq ~2.4 GHz.
-- Idle baseline is sanity-bounded (0.5–8 W) and aborts if the PMIC parse is wrong.
-
----
-
-## 7. Output schema & relationships (for the ML model later)
-
-Every run writes `runs/<iso-ts>/`:
-
-| File | Content | Key columns |
-|---|---|---|
-| `samples.csv` | raw PMIC samples | `t_ms, phase, window_id, I_A, V_V, P_W` |
-| `context.csv` | env every ~5 s | `t_ms, temp_C, arm_MHz, throttle_bits, rail_*` |
-| `layer_table.csv` | per-module profile | `path, config_id, class, config_json, leaf, params, macs, input_shapes, out_shapes, lat_mean/median/std_ms` |
-| `op_table.csv` | aten-op timing | `op, count, self_total_us, self_mean_us, input_shapes` |
-| `perop_power.csv` | per-op power | `config_id, class, config_json, t_per_call_ms, P_mean_W, P_delta_W, E_per_call_mJ, temp_start/end_C, freq_start/end_MHz, samples_used, SKIPPED` |
-| `annotated.jpg` | best-detection frame | — |
-| `run_meta.json` | run metadata + methodology | versions, baseline_W, hz, fps, throttle_bits, join_contract |
-
-**Joins:** `layer_table.config_id ↔ perop_power.config_id` (authoritative).
-`op_table` is aten-level timing (module join is via layer_table). All tables are
-time-anchored by the run's `ts`/`outdir`.
-
-**Units contract:** numeric columns are suffixed `_W/_ms/_mJ/_C/_MHz`;
-`E_mJ = P_W × t_ms` (W·ms = mJ). Documented in `run_meta.json` so a future
-Monsoon backend cannot introduce a 1000× unit bug.
-
-**Methodology (so training knows exactly what a column means):** before any
-measurement the harness runs a **warm-up phase** (`--warmup`, default 10
-inference passes on a synthetic frame) so temperature and CPU DVFS reach steady
-state and the expensive first-inference transient (lazy init / graph fusion /
-JIT — the first real inference is ~2.8 s vs ~0.23 s for later frames) is
-absorbed *before* the idle baseline. The idle baseline is thus taken warm and
-stable. Per-op power is measured by *steady-state isolation microbenchmark* —
-deepcopy each leaf module, feed it cache-hot inputs of its real shapes, loop it
-for `~bench` seconds while sampling VDD_CORE, `P_delta = P_mean − idle_baseline`.
-This is attributed power, **not** instantaneous per-op power inside a live run
-(the honest physical limit at ~200 Hz for ms-scale ops). DVFS is not fought —
-arm freq and temp are captured as features so the predictor can regress them out.
-
----
-
-## 8. Known issues, decisions & traps (do not relearn these)
-
-1. **ultralytics `fuse()` folds BatchNorm into conv at load.** `*.bn` modules
-   never execute. Hooks only aggregate modules that actually ran (which is the
-   real deployed fused graph — correct to measure).
-2. **`Concat.forward(x)` takes a list, not splatted tensors.** `microbench.py`
-   dispatches `list`-vs-`tensor` inputs (`_forward`).
-3. **Sample deque race:** `window()` must copy the deque under the sampler lock
-   (`deque mutated during iteration` otherwise — surfaced on trivial ops).
-4. **`uv add` fails without a pyproject** → `uv init --bare` first.
-5. **PyPI default `torch` resolves to the CUDA-tagged build** (torch 2.14
-   `+cu130`, ~5.6 GB) even on aarch64; it runs CPU-only and is fine, just big.
-   If size matters, use the CPU-only index (`https://download.pytorch.org/whl/cpu`).
-6. **Dark image ⇒ no detection** — the ov5647 AE/AWB is locked after a 2 s
-   warmup; if the scene is dim the frame is near-black and nothing is detected.
-   Light the object. (Console: `mean` brightness ~110 in the working case.)
-7. **`vcgencmd get_throttled` = `0x50000`** (latched under-voltage + throttled
-   *occurred at some point*). Current state bits 0/1 are 0, but the latched flags
-   indicate the supply possibly sags under load. **Use a quality 5 V/5 A PSU and
-   a proper USB-C PD cable** before the Monsoon phase to avoid CPU freq caps
-   corrupting power data.
-8. **sudo needs a password** on this unit (`sudo -n` fails). Interactive TTY only.
-
----
-
-## 9. Monsoon (next power source) — the drop-in boundary
-
-The sampler is the single integration point. A `MonsoonSampler` must implement
-the same public contract as `PowerSampler` in `powersampler.py`:
-
-```python
-start()                 # begin sampling on a daemon thread
-stop()                  # stop + raise if sampling failed
-marker(name)            # label the current phase; bumps window_id on new label
-now_ms()                # sampler-relative ms (for window brackets)
-window(t0_ms, t1_ms)    # -> {"count", "mean_P"(W), "max_P"}
-snapshot_env()          # -> (temp_C, arm_MHz, throttled_bits)  [brackets bench windows]
-rows()                  # -> [{t_ms, phase, window_id, I_A, V_V, P_W}]
-```
-
-Monsoon measures **input 5 V rail power** at kHz — a strictly better ground truth
-than the summed PMIC rails. Keep the same row schema so `run.py`, the CSVs, and
-the later predictor are unchanged.
-
-## 10. Next phases (not built)
-
-1. **MonsoonSampler** backend (above) — high-rate, whole-board input power.
-2. **ONNX / TFLite int8** inference backends (faster fps; per-op attribution
-   coarser — TFLite has no PyTorch-style hooks).
-3. **Power-prediction model**: features = op class, tensor shapes, MACs, params,
-   arm freq, temp, thread count, backend; target = `P_delta_W` / `E_per_call_mJ`.
-   The dataset schema (§7) is designed for this.
-
----
-
-## 11. Long-duration collection (`collect.py`)
-
-`collect.py` runs the full capture pipeline **repeatedly** so you can leave the
-Pi collecting per-layer / per-op power data unattended for hours.
-
-### Usage
-```bash
-cd /home/maccpi/Desktop/power-measurement-pi
-uv run python collect.py --hours 6                        # 6 hours, default cycle
-uv run python collect.py --runs 50                        # fixed number of cycles
-uv run python collect.py --hours 8 --frames 40 --bench 5 --warmup 10 --conf 0.25
-```
-
-### Flags (forwarded to `src/run.py` per cycle)
-| Flag | Default | Meaning |
-|---|---|---|
-| `--hours` | 0 | stop after this many hours (0 = no time budget) |
-| `--runs` | 0 | stop after this many cycles (0 = no count budget; give at least one) |
-| `--frames` | 30 | detection frames per cycle |
-| `--bench` | 3.0 | seconds per isolated op benchmark per cycle |
-| `--warmup` | 10 | warm-up inference passes before baseline per cycle |
-| `--conf` | 0.25 | detection confidence threshold |
-| `--imgsz` | 640 | inference input size |
-| `--threads` | 4 | torch threads |
-| `--weights` | `yolo11n.pt` | model to run (swap freely) |
-| `--cooldown` | 8.0 | seconds idle between cycles (heat/DVFS settle) |
-| `--max-fail` | 1 | consecutive failed cycles before aborting |
-| `--out` | `runs` | output base directory |
-
-### How it works
-Each cycle is an **isolated `src/run.py` subprocess** (fresh camera, sampler,
-model). That means hours of collection never accumulate memory or drift, and one
-bad cycle cannot take down the rest. It honors whichever budget (`--hours` or
-`--runs`) you set and stops cleanly.
-
-### Outputs (under `runs/`)
-- `collect_report.csv` — one row per cycle: `cycle, started, duration_s,
-  returncode, outdir, fps, baseline_W, hz, layer_rows, op_rows, perop_rows,
-  skipped, best_conf`. This is the run-level overview to build the training
-  table from.
-- `collect.log` — full collector log + per-cycle status (OK/FAILED + stdout tail).
-- `<ts>/` — the full normal dataset for every cycle (see §7).
-
-### Practical notes
-- **Put a recognisable object in front of the camera** (COCO class preferred).
-  If nothing is detected, a cycle fails acceptance (`best_conf 0.000`) and counts
-  toward `--max-fail`. Detection now handles the empty-frame case cleanly
-  (`Detector.max_conf` returns 0.0).
-- Throughput: a `--frames 30 --bench 3` cycle takes ~4–5 min, so `--hours 6`
-  yields ~70 cycles (~70 datasets). For "tons of data" just raise the hours.
-- Data grows fast (≈1.5 MB samples.csv per cycle) but is gitignored — archive
-  `runs/` separately if you need to keep it.
-
----
-
-## 12. Git & version control (local repo, no remote; history below is from the original PMIC-era Pi checkout)
-
-The project is a **git repository on the Pi** at
-`/home/maccpi/Desktop/power-measurement-pi` — created locally and **not pushed
-to any remote**.
-
-### Current state
-```
-01ef510 gitignore: ignore redownloadable yolo weights (*.pt)
-e80bae4 YOLO11n Pi-5 power harness: per-layer/per-op power data collection
-```
-
-### What is / isn't tracked
-- **Tracked:** `src/` (cam, detector, layers, microbench, powersampler, run),
-  `collect.py`, `analyze_trends.py`, `verify.py`, `README.md`, `pyproject.toml`,
-  `uv.lock`, `.gitignore`.
-- **Ignored (`.gitignore`):** `runs/` (raw datasets — stay on disk, out of git),
-  `.venv/`, `*.pt` (redownloadable weights), `*.log`, `__pycache__/`, `.DS_Store`.
-
-### Everyday commands
-```bash
-git status                 # what changed
-git log --oneline          # commit history
-git add <files>            # stage changes (e.g. git add src/run.py)
-git commit -m "description"
-git diff                   # review unstaged changes
-```
-Data and weights are intentionally kept out of git; code + tooling + docs are
-the tracked artifacts. `runs/` is the thing to archive/back up on its own.
-
----
-
-## 13. Model-agnostic generalization (implemented, M1–M3)
-
-The harness no longer requires YOLO. It runs **any PyTorch model** through a
-`TaskAdapter` while measuring op-/layer-wise power the same way. Grounded in the
-adversarial review (§ in `plan_power_generalization.md`).
-
-### Architecture (three decoupled planes)
-- **Data plane (measurement)** — `powersampler.py` (model-agnostic contract),
-  `layers.py` hooks, `torch.profiler`, `microbench.py`.
-- **Control plane (task drivers)** — `tasks.py`: `ImageTask` (classification +
-  detection) and `TokenLMTask` (causal LM: prefill + decode). Adding a family =
-  one adapter file; no data-plane change.
-- **Structure plane** — deferred by review (see below); cheap structural signal
-  (`path`, `callsite`, `mode`, ordered `op_sequence`) captured in the dataset now.
-
-### Measurement identity (the critical fix)
-`config_id` = sha256(class + structural attrs + **input shapes** + **input
-dtypes**). It deliberately excludes path/callsite, so identical (op,shape,dtype)
-configs share ONE bench. `path`, `callsite`, `mode` are separate structural
-columns. Benches are deduped per measurement config.
-
-### Input capture (multi-arg / dtype-aware replay)
-Per forward argument we record kind + shape + dtype + replay spec, so
-`microbench` replays correctly instead of SKIPPING:
-- int64 index tensors (Embedding) and bool masks replay as **zeros** (legal values);
-- multi-argument positional leaves (e.g. `nn.MultiheadAttention` q,k,v) replay
-  as multiple tensors — verified end-to-end (`verify_multiarg.py`);
-- Concat list-kind inputs unchanged.
-
-### Call-site-aware timing
-Per-path stack tags every invocation (fixes the old single-slot `_start[path]`
-bug for shared/tied/reentrant modules). Every call is recorded with frame, mode
-and input-config index.
-
-### Features (per site)
-`macs` (Conv2d/Conv1d/ConvTranspose2d/Linear), `bytes_moved` (= sum in/out
-numel × dtype bytes) and `arithmetic_intensity` (= macs/bytes) — power tracks
-memory bandwidth, so these matter more than MACs for attention/decode.
-
-### Usage
-```bash
-uv run src/run.py --task image --model yolo11n.pt --check-image bus.jpg \
-                  --frames 25 --bench 3               # detection (golden)
-uv run src/run.py --task image --model <classif.pt>   # classification
-uv run src/run.py --task lm --model minigpt --seq 64  # causal LM (torch-only)
-uv run src/run.py --task lm --model hf:gpt2 --seq 64  # needs `uv add transformers`
-uv run python verify.py runs/<ts>                     # schema/identity/acceptance
-```
-
-### Outputs (schema additions vs §7)
-- `layer_table.csv` += `input_dtypes`, `macs`, `bytes_moved`, `arith_intensity`,
-  `callsite`, `mode`.
-- `perop_power.csv` += `input_dtypes`, `macs`, `bytes_moved`.
-- `op_table.csv` += `mode` (per-mode aten timing).
-- `run_meta.json` += `task`, `modes`, `arch_fingerprint`, `op_sequence`,
-  `seq_len`, `params_M`.
-
-### Acceptance (task-gated)
-Per-task oracle replaces object-conf. Global invariants kept: **SKIPPED is
-fatal**, samples≥30, hz≥50, baseline in range, op_table non-empty, per-dominant-op
-P_delta>0.01 W. `--check-image` still requires object conf≥`--conf` for image
-detection.
-
-### Deferred by review
-Full fx→networkx graph emission. Site identity + execution order are already in
-the dataset (cheap); build the DAG with a future graph-aggregating envelope
-predictor, whose schema will dictate it. Verified runs:
-`runs/golden_yolo11n`, `runs/golden_minigpt`.
-
-### Verified (post-implementation)
-- YOLO golden: 324 layer sites, 165 configs, SKIPPED=0, dominant-op green.
-- Mini-GPT LM: prefill+decode, int64 Embedding / multi-arg replay / per-mode
-  distinct configs, SKIPPED=0, dominant-op green.
-- `verify_multiarg.py`: 3-tensor positional replay + int64/bool + per-mode
-  identity all pass.
-
----
-
-## 14. Monsoon backend (schema v4): runbook
-
-The Monsoon HVPM records the Pi's input power at ~5 kHz, continuously and independently of any
-run. The Pi marks its own timeline (events + sync pulses); `host/align.py` aligns the two
-offline. Sections 1-13 describe the PMIC era (`--sampler pmic`, schema 3); this section covers
-`--sampler monsoon` (schema 4). Design: `docs/superpowers/specs/2026-10-06-monsoon-experiment-design.md`;
-measured bring-up: `docs/superpowers/plans/sp1-bringup-log.md`.
-
-### Topology
-
-| Machine | Address | Role |
-|---|---|---|
-| NUC | 192.168.0.205 | dev |
-| EliteBook | `macc2026@192.168.0.11` | HVPM 36517 host, recorder, align |
-| Pi 5 | `maccpi@192.168.0.243` | workloads, `~/Desktop/power-measurement-pi` |
-
-The lab GPS/PTP time server is at 192.168.0.20; Pi and EliteBook timestamps are on its wall clock.
-
-### Power path facts
-
-- The HVPM main channel powers the Pi through USB-C at Vout 5.25 V with a 6 A limit.
-- Measured path resistance is about 0.11 ohm on the current wire. Earlier cables measured
-  0.25-0.33 ohm and caused under-voltage under YOLO's ~3 A peaks.
-- The Pi under-voltage threshold is about 4.63 V at the Pi input.
-- Design ceiling: 25 W (5 A at 5 V, the Pi 5's maximum supply rating), as requested by the user.
-
-### Recorder (EliteBook)
-
-From `~/power-measurement-pi/host`:
+### 4.3 Get the code onto all three machines
 
 ```bash
-systemd-run --user --unit=monsoon-recorder --same-dir --collect \
-  ~/.local/bin/uv run python recorder.py --vout 5.25 --current-limit 6
-systemctl --user stop monsoon-recorder        # stop
+git clone git@github.com:macclab-stevens/power-measurement-pi.git
+cd power-measurement-pi && git checkout monsoon-experiment
 ```
 
-**Stopping the recorder leaves Vout ON (keep-on): the Pi stays powered.** To make the output
-safe before rewiring or changing Vout:
+Paths used throughout: `~/Desktop/power-measurement-pi` on the Pi and the NUC,
+`~/power-measurement-pi` on the EliteBook. (If a machine cannot reach GitHub, see
+[section 12.2](#122-deploying-code-to-the-pi-and-the-elitebook).)
 
-1. Clean Pi shutdown: `ssh -t maccpi@192.168.0.243 sudo poweroff`, then confirm the Pi is halted
-   (ping fails and the Monsoon draw has dropped).
-2. `systemctl --user stop monsoon-recorder` (the output stays ON).
-3. From `~/power-measurement-pi/host`: `uv run python vout_off.py --confirm-pi-halted`.
-4. Rewire, and check polarity with a multimeter.
-5. Start the recorder again (the `systemd-run` command above). The Pi boots when Vout comes on.
+### 4.4 Install `uv` (the Python environment tool) on the Pi and the EliteBook
 
-`vout_off.py` is the only code that switches the output off; it is a manual safety tool, never
-called by the recorder or experiment code. Changing Vout also needs a clean Pi shutdown first; a
-halted Pi reboots only when power is cycled.
-- API on port 8051: `GET /status` (recording, serial, vout_V, n_total, dropped, sample_hz,
-  raw_dropped_nonzero_blocks, run_dir) and `GET /window?t0_ns=&t1_ns=` (count, mean_P, max_P,
-  complete; span capped at 600 s).
-- Data goes to `host/data/<ts>/` (git-ignored): raw blocks with host arrival stamps, the samples
-  file, `blocks.csv`, `device.json`.
+[`uv`](https://docs.astral.sh/uv/) creates the Python environment with the exact package versions
+from `uv.lock`, so every machine measures with the same software.
 
-### Pi pinning
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh     # installs to ~/.local/bin/uv
+```
 
-- `tools/pi-power-pin` is a root helper (pin governor/frequency, fan, restore) installed with a
-  sudoers rule. One-time install (one sudo prompt):
+### 4.5 Pi setup
+
+```bash
+cd ~/Desktop/power-measurement-pi
+~/.local/bin/uv sync --frozen        # installs torch, torchvision, ultralytics, opencv (large: ~5.6 GB)
+```
+
+Then install the **pinning helper**. Changing the CPU clock and fan needs root, and the experiment
+runs unattended, so a tiny root script is allowed to run without a password. It accepts only four
+fixed commands (`pin <MHz>`, `fan full`, `restore`, `status`). One sudo prompt:
 
 ```bash
 ssh -t maccpi@192.168.0.243 'sudo install -o root -g root -m 0755 ~/Desktop/power-measurement-pi/tools/pi-power-pin /usr/local/sbin/pi-power-pin && echo "maccpi ALL=(root) NOPASSWD: /usr/local/sbin/pi-power-pin" | sudo tee /etc/sudoers.d/pi-power-pin >/dev/null && sudo chmod 0440 /etc/sudoers.d/pi-power-pin && sudo visudo -cf /etc/sudoers.d/pi-power-pin'
 ```
 
-- `run.py --cpu-mhz 2400 --fan-full` pins the CPU at 2.4 GHz (performance governor) and the fan at
-  full, and records the pin status in `run_meta.json`. Monsoon runs do not force these flags;
-  always pass both, since `cpu_mhz_pinned: null` marks an unpinned diagnostic run.
-- 5-minute pinned soak: peak 54.9 C, 2.4 GHz on every sample, throttled 0x0, EXT5V 4.867-4.878 V.
+Check it: `sudo -n /usr/local/sbin/pi-power-pin status` prints the governor, clock, fan state and
+temperature.
 
-### Running a cell
+Check the clock sync: `systemctl is-active timemaster` should print `active`.
 
-On the Pi, from `~/Desktop/power-measurement-pi`:
+### 4.6 EliteBook setup
+
+1. Let normal users access the Monsoon over USB (udev rule, needs sudo once):
+
+   ```bash
+   echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="2ab9", ATTR{idProduct}=="0001", MODE="0664", GROUP="plugdev"' \
+     | sudo tee /etc/udev/rules.d/99-monsoon.rules
+   sudo udevadm control --reload-rules && sudo udevadm trigger
+   ```
+
+   Your user must be in the `plugdev` group (`groups` shows it). Check that `lsusb` lists a
+   device with ID `2ab9:0001`.
+
+2. Install the host environment (the `host/` folder has its own small environment: Monsoon
+   library, numpy, pandas, pyarrow):
+
+   ```bash
+   cd ~/power-measurement-pi/host && ~/.local/bin/uv sync
+   ```
+
+3. Start the recorder (next section). Check clock sync: `systemctl is-active timemaster`.
+
+### 4.7 Start the recorder
+
+The recorder must run **all the time**. It switches the Monsoon output on (which powers and
+boots the Pi) and records non-stop into `host/data/<timestamp>/`.
 
 ```bash
-uv run --frozen python src/run.py --sampler monsoon --cpu-mhz 2400 --fan-full \
-    --task ... --out runs/<name> > log 2>&1
+cd ~/power-measurement-pi/host
+systemd-run --user --unit=monsoon-recorder --same-dir --collect \
+  ~/.local/bin/uv run python recorder.py --vout 5.25 --current-limit 6
 ```
 
-**Never pipe its output through `head`: SIGPIPE kills the run.** Redirect to a file instead.
-
-Then on the EliteBook (do not touch the recorder), copy the run over and align:
+`systemd-run` keeps it running in the background after you log out. Check it:
 
 ```bash
-rsync -a maccpi@192.168.0.243:Desktop/power-measurement-pi/runs/<name> ~/power-measurement-pi/runs/
-cd ~/power-measurement-pi/host && uv run python align.py --recorder-dir data/<ts> --pi-run ../runs/<name>
+curl -s localhost:8051/status
+# {"recording": true, "serial": 36517, "vout_V": 5.25, "sample_hz": 4992.4, ...}
 ```
 
-`align.py` prints `[ok] ...` (plus `[warn] slip_warning: ...` / `[warn] drift_warning: ...`), or
-`[FAIL] ...` and exits non-zero when the sync-pulse residual gate fails.
-`src/sync_check.py --trains 20 --spacing 2 --out runs/sync_check` emits pulse trains only, to
-validate alignment without a workload.
+`sample_hz` is about 4,992 (the Monsoon's real rate, slightly under the nominal 5,000).
 
-### Outputs
+The Monsoon library stops after about 9.9 days of continuous sampling. Restart the recorder
+before then, following [section 8](#8-power-safety-turning-the-pi-on-and-off-rewiring).
 
-Pi side, in `runs/<name>/`:
+---
 
-- `events.csv`: the Pi's timeline on the PTP wall clock. Columns `t_real_ns, t_mono_ns, kind, name,
-  depth, mode, iter, layer_path, config_id, window_id`. Kinds: `marker` (phase starts), `begin`/
-  `end` (layer spans), `pulse_on`/`pulse_off` (sync-pulse edges), `ctx_begin`/`ctx_end` (context
-  reads by the sampler thread).
-- `run_meta.json` v4: `schema_version` 4, `sampler`, `recorder_url`, `recorder_status_start`/
-  `_end`, `recorder_continuity_errors`, `throttled_start`/`_end`, `pin_status_start`/`_end`,
-  `pin_status`, `cpu_mhz_pinned`, `fan_full`, `t0_real_ns`, `sync_tags`, `achieved_sample_hz`,
-  plus the v3 keys (`baseline_*`, `op_sequence`, `arch_fingerprint`, ...).
+## 5. Everyday use
 
-Written next to the Pi run by `align.py`:
+### 5.1 Pre-flight checklist
 
-- `alignment.json`: `pass`, `fail_reasons`, `n_edges`, `trains`, `max_residual_ms`,
-  `rms_residual_ms`, `c0_ns` (USB latency plus any common lag), `c1`, `drift_ppm`, `ref_ns`,
-  `rise_bias_ms`, `fall_bias_ms`, `rise_minus_fall_ms`, `lag_note`, `coarse_clock`,
-  `envelope_max_dev_ms`, `nan_fraction`, `max_block_gap_ms`, `raw_dropped_nonzero_blocks_in_run`,
-  `slip_rate_hz`, `slips` (list of `t_ns`, `step_ms`, `samples`), `slip_samples_total`,
-  `warnings`, and the two flags:
-  - `slip_warning`: true if sample losses were detected or the coarse-clock envelope is
-    nonlinear. Per-layer labels after a slip are shifted by the slip size (5-20 ms).
-  - `drift_warning`: true if clock drift over the run exceeds 50 ppm.
-  The pulse-residual gate (max residual < 1.0 ms) is the only fatal one.
-- `power_trace.parquet`: one row per Monsoon sample on the Pi clock. Columns `t_s`, `t_pi_ns`,
-  `I_A`, `V_V`, `P_W`, `phase`, `mode`, `iter`, `layer_path`, `depth`, `ctx_read` (true while the
-  Pi's vcgencmd context read was running; exclude these samples for clean power).
-
-### Known hardware behaviours
-
-- The HVPM `dropped` field is per-packet (0/14), not a counter. It is recorded only
-  (`raw_dropped_nonzero_blocks`) and is not used for gap accounting.
-- Unreported sample losses happen, roughly once a minute, 5-20 ms each, during runs. They were
-  reproduced by `/window` polling. The detector flags them (`slips`). The decision is to accept
-  them and take 10 runs per model.
-- The EliteBook PTP stack flaps (`phc2sys` `PTP_SYS_OFFSET_PRECISE` timeouts). This does not
-  affect alignment, which uses the Pi's sync pulses.
-- The library has a ~9.94-day `sampleLimit`; restart the recorder before then (Pi shut down first).
-- Heavy runs can still trip the Pi under-voltage gate at the current wiring (extrapolated 5 A at
-  the Pi is about 4.65 V); such runs are rejected by design.
-
-### Phases, steps and training (SP2)
-
-A monsoon run now records the whole model lifecycle. Markers (`phase` in the trace), in order:
-`load_weights`, `first:<mode>` (first call of each mode: lazy init, allocator, kernel setup),
-`warmup`, `sync:start`, `baseline_A`, the measured modes, `serve` (with `--serve N`),
-`baseline_B`, `bench:*` (unless `--no-bench`), `sync:end`, `done`.
-
-Inside an iteration, `EventLog.step` spans (`step_begin`/`step_end` events) give the
-sub-phase; `align.py` writes it as the `step` column of `power_trace.parquet`:
-
-| Task | Steps per iteration |
-|---|---|
-| `image` | `preprocess` (letterbox or resize + normalize of a uint8 frame; `camera_capture` with `--live-camera`), `forward`, `postprocess` (NMS for detection, softmax + top-5 for classification) |
-| `lm` | `preprocess` (token ids), `forward`, `postprocess` (softmax + argmax of the last position) |
-| `train` | `dataload`, `zero_grad`, `forward`, `loss`, `backward`, `optimizer_step` |
-| `serve` phase | the task's steps, then `idle_between_requests` (`--serve-gap-ms`) |
-
-Training: `--task train --model torchvision:<name>|minigpt-explicit --batch 8 --optimizer sgd|adam`
-(synthetic data from a fixed pool, 10 classes for images, next-token loss for MiniGPT). The loss
-curve is stored as `run_meta.train_loss`. Training cells use `--no-bench`.
-
-### Experiment matrix (SP3)
-
-`host/matrix.py` defines 14 models (yolov8n, yolo11n, effb0, mbv3, resnet18, MiniGPT seq
-16/64/128 inference; mbv3, resnet18, MiniGPT seq 64 training with SGD and Adam). Each runs 10
-times at 2400 MHz and 3 times each at 1500 and 2000 MHz: 224 cells. The cells are ordered in
-rounds (round r = repeat r), shuffled within a round, and the sweep repeats sit in rounds 1, 5
-and 8.
-
-From `~/power-measurement-pi/host` on the EliteBook (recorder running, Pi up, both machines on
-the same commit):
+Run these before any measurement. All of them must look right.
 
 ```bash
-uv run python experiment.py plan --out ../runs/matrix/manifest.jsonl          # --smoke: 3 cells
+# EliteBook: recorder running and recording?
+ssh macc2026@192.168.0.11 'curl -s localhost:8051/status'          # "recording": true
+
+# Pi: reachable, no power problems, cool?
+ssh maccpi@192.168.0.243 'vcgencmd get_throttled; vcgencmd measure_temp'
+#   throttled=0x0 is ideal. 0x50000 means an under-voltage happened earlier since boot (old news).
+#   A low bit set (0x1, 0x4, ...) means a problem right now.
+
+# Same code version on both?
+ssh maccpi@192.168.0.243 'git -C Desktop/power-measurement-pi log --oneline -1'
+ssh macc2026@192.168.0.11 'git -C power-measurement-pi log --oneline -1'
+```
+
+### 5.2 Measure one model by hand
+
+Useful to try something out. On the **Pi**:
+
+```bash
+cd ~/Desktop/power-measurement-pi
+~/.local/bin/uv run --frozen python src/run.py \
+    --sampler monsoon --cpu-mhz 2400 --fan-full \
+    --task image --model yolo11n.pt --check-image bus.jpg \
+    --frames 30 --serve 10 \
+    --out runs/my_test > runs/my_test.log 2>&1
+tail runs/my_test.log          # ends with "[ok] dataset written to runs/my_test"
+```
+
+What the flags mean:
+
+- `--sampler monsoon`: use the Monsoon, not the Pi's built-in meter.
+- `--cpu-mhz 2400 --fan-full`: pin the clock and fan. Always pass both for real data.
+- `--task image --model yolo11n.pt`: which workload. See [section 11.1](#111-srcrunpy-flags) for
+  every option, including `--task lm` (language model) and `--task train`.
+- `--out runs/my_test`: where the results go.
+
+> **Never pipe the output into `head`** (`... | head`). When `head` exits, the run is killed
+> mid-measurement. Always redirect into a file as shown.
+
+Then, on the **EliteBook**, copy the run over and align it:
+
+```bash
+cd ~/power-measurement-pi
+rsync -a maccpi@192.168.0.243:Desktop/power-measurement-pi/runs/my_test runs/
+cd host
+REC=$(curl -s localhost:8051/status | python3 -c 'import json,sys; print(json.load(sys.stdin)["run_dir"])')
+~/.local/bin/uv run python align.py --recorder-dir "$REC" --pi-run ../runs/my_test
+~/.local/bin/uv run python verify_cell.py ../runs/my_test --cpu-mhz 2400
+```
+
+`align.py` prints `[ok] edges=12 max_residual=0.17 ms ...` when it worked. `verify_cell.py`
+prints a summary and `"ok": true`.
+
+### 5.3 Run the whole experiment matrix
+
+The matrix (defined in `host/matrix.py`) is 14 workloads × 3 clock speeds:
+
+- **Inference:** yolov8n, yolo11n, efficientnet_b0, mobilenet_v3_small, resnet18, and MiniGPT with
+  prompt lengths 16, 64 and 128.
+- **Training:** mobilenet_v3_small, resnet18 and MiniGPT (prompt length 64), each with SGD and
+  with Adam.
+- **Repeats:** each runs 10 times at 2400 MHz and 3 times each at 1500 and 2000 MHz.
+
+That makes 224 cells and about 9 hours. The order is shuffled within each round so that slow
+drifts (temperature, time of day) don't line up with one model.
+
+All on the **EliteBook**, from `~/power-measurement-pi/host`:
+
+```bash
+# 1. Make the to-do list (a "manifest"). Use a new folder name for each experiment.
+~/.local/bin/uv run python experiment.py plan --out ../runs/matrix/manifest.jsonl
+#    Try it small first:  --smoke (3 cells)  or  --probe (every model once)
+
+# 2. Start it in the background (survives logging out)
 systemd-run --user --unit=exp-matrix --same-dir --collect \
-  ~/.local/bin/uv run python experiment.py run --manifest ../runs/matrix/manifest.jsonl \\
+  ~/.local/bin/uv run python experiment.py run --manifest ../runs/matrix/manifest.jsonl \
   --max-attempts 3 --auto-power-cycle 40
-uv run python experiment.py status --manifest ../runs/matrix/manifest.jsonl
+
+# 3. Check on it whenever you like
+~/.local/bin/uv run python experiment.py status --manifest ../runs/matrix/manifest.jsonl
 tail -f ../runs/matrix/experiment.log
 ```
 
-Per cell: recorder check, Pi reachable, Pi below 50 C, `run.py` on the Pi (log in
-`runs/matrix/<cell>.log` there), `dmesg -W` streamed to `<cell>.dmesg.log`, rsync back,
-`align.py`, `verify_cell.py`, one line in `results.jsonl`. Restarting `run` resumes: cells that
-are `ok` are skipped and failed cells get one retry at the end of their round.
-`verify_cell.py` writes `phase_energy.csv` (energy per phase, iteration and step) and fails the
-cell on a failed alignment, a wrong pinned clock or fan, missing phases or steps, power outside
-1-25 W, or energy closure worse than 1%.
+The `status` output looks like this:
 
-**Pi lockups.** On 2026-10-07 the Pi locked up 4 times in about 70 min of load. Each time the input
-current fell from about 0.9 A to 0.34 A within 10 ms, with a steady 5.25 V supply, moderate load
-(about 1 A, peaks under 1.8 A) and no kernel message (`dmesg -W` streamed off-board stayed
-silent). Twice the Pi stayed at about 0.28 A until power was cycled. Twice it rebooted by itself
-after a few seconds, and the bootloader reported `rsts` 0x20 or 0x1020, the watchdog-reset bit.
-Two of the four were in the mobilenet_v3_small inference cell (bench phase); the other two were
-in pytest runs that include mobilenet_v3_small. A third mbv3 run passed. Two attempts to
-reproduce it failed: 60-150 s of a tight 4-thread loop on the SE `Conv2d([1,288,1,1])` (the
-bench that was running at one lockup), and 5,772 `vcgencmd pmic_read_adc` calls under that load.
-The root cause is open; suspect the board or SoC firmware. `--auto-power-cycle N` lets the orchestrator
-recover up to N times, only when the Pi has not answered for 3 minutes, does not answer ping, and
-the Monsoon shows halted-level current (mean < 0.4 A, max < 0.6 A over 5 s). It then stops the
-recorder, runs `vout_off.py --confirm-pi-halted`, and restarts the recorder (a new
-`host/data/<ts>` directory). Each cycle is logged to `power_cycles.jsonl`.
+```
+cells 224  ok 150  failed 0  not run 74
+mean ok cell 2.2 min; remaining ~2.7 h
+ok cells with slip_warning: 83
+```
 
-### Validation results
+For every cell, the orchestrator does these steps:
 
-- 20-train sync check: 120/120 edges, max residual 0.257 ms, rms 0.100 ms.
-- yolo11n smoke (monsoon, 2400 MHz, fan full): `[ok]` (12 edges), residual 0.166 ms, rms 0.089 ms, 4 slips / 106 samples,
-  forward 9.6 W/iter, idle 4.87 W, I max 2.86 A.
+1. Checks that the recorder is recording and the Pi is reachable.
+2. Waits until the Pi is below 50 °C, so every cell starts from a similar temperature.
+3. Runs `src/run.py` on the Pi over SSH, and streams the Pi's kernel log (`dmesg`) to a file.
+4. Copies the results back (`rsync`).
+5. Aligns them (`align.py`) and checks them (`verify_cell.py`).
+6. Writes one line to `results.jsonl`, then goes to the next cell.
+
+**It is safe to stop and restart.** Run the same `run` command again: cells already marked `ok`
+are skipped. A failed cell is retried at the end of its round, up to `--max-attempts` times.
+
+To stop it: `systemctl --user stop exp-matrix`.
+
+**`--auto-power-cycle 40`** handles the Pi lockups described in [section 9](#9-troubleshooting).
+If the Pi stops answering and the Monsoon confirms it is really halted, the orchestrator
+switches the power off and on to reboot it, at most 40 times. Each cycle is logged to
+`power_cycles.jsonl`. Leave it at `0` if you don't want the experiment to touch the power.
+
+---
+
+## 6. What the output files mean
+
+Each cell ends up in `~/power-measurement-pi/runs/<experiment>/<cell_id>/` on the EliteBook.
+
+### 6.1 The files you will actually use
+
+| File | What it is | Typical use |
+|---|---|---|
+| `power_trace.parquet` | **The main dataset.** One row per Monsoon sample (5,000 per second) with the label of what the Pi was doing. | Training the power predictor, plotting. |
+| `phase_energy.csv` | Energy and average power per phase, iteration and step. | Quick comparisons ("how much energy does backward cost?"). |
+| `run_meta.json` | Everything about the run: model, settings, clock, temperatures, software versions, training loss curve. | Knowing what the cell was. |
+| `alignment.json` | How well the clocks were lined up, and whether samples were lost. | Data-quality filtering. |
+
+### 6.2 `power_trace.parquet` columns
+
+| Column | Meaning |
+|---|---|
+| `t_s` | Seconds since the run started. |
+| `t_pi_ns` | The sample's time on the Pi's (lab-synced) clock, in nanoseconds. |
+| `I_A`, `V_V`, `P_W` | Current (A), voltage (V) and power (W) going into the Pi. |
+| `phase` | The big chunk: `load_weights`, `first:<mode>`, `warmup`, `sync:start`, `baseline_A`, `forward` / `prefill` / `decode` / `train`, `serve`, `baseline_B`, `bench:<config>`, `sync:end`, `gap`, `idle`. |
+| `mode`, `iter` | Inside a measured phase: which mode and which iteration number. Empty elsewhere. |
+| `step` | The sub-part of the iteration (see the table below), or empty. |
+| `layer_path` | The innermost network layer running at that instant, or empty. |
+| `depth` | How deeply nested that layer is. |
+| `ctx_read` | `True` while the Pi was reading its own sensors (`vcgencmd`), which briefly costs a little power. Drop these rows for clean numbers. |
+
+Steps per task:
+
+| Task | Steps in each iteration |
+|---|---|
+| Image inference | `preprocess` (resize/letterbox the image, normalize) → `forward` → `postprocess` (NMS for detectors, top-5 for classifiers) |
+| Language model | `preprocess` (token ids) → `forward` → `postprocess` (pick the next token) |
+| Training | `dataload` → `zero_grad` → `forward` → `loss` → `backward` → `optimizer_step` |
+| `serve` phase | the task's steps, then `idle_between_requests` |
+
+Load one in Python:
+
+```python
+import pandas as pd
+df = pd.read_parquet("runs/matrix/train_resnet18_sgd_2400_r00/power_trace.parquet")
+df = df[~df.ctx_read]                                   # drop sensor-read moments
+print(df[df.phase == "train"].groupby("step").P_W.mean())
+# roughly: backward 10.6, dataload 8.7, forward 11.2, loss 9.2, optimizer_step 8.9, zero_grad 8.2
+```
+
+### 6.3 Experiment-level files
+
+These are in the experiment folder (e.g. `runs/matrix/`):
+
+| File | What it is |
+|---|---|
+| `manifest.jsonl` | The to-do list: one cell per line, with its exact `run.py` arguments. |
+| `results.jsonl` | One line per attempt: status, which stage failed, timings, alignment and check summaries, git commit. |
+| `experiment.log` | Human-readable progress log. |
+| `<cell>.log` | The Pi's console output for that cell. |
+| `<cell>.dmesg.log` | The Pi's kernel messages during that cell (evidence if the Pi crashes). |
+| `power_cycles.jsonl` | When the orchestrator had to power-cycle the Pi (only if it happened). |
+
+### 6.4 Other files in a cell folder
+
+- `events.csv`: the Pi's raw timeline, one row per event. It is the input to `align.py`.
+- `layer_table.csv`: per-layer timing, shapes and compute cost (MACs, bytes moved).
+- `perop_power.csv`: power of each layer type measured in isolation (the `bench:*` phases).
+  Training cells skip this (`--no-bench`).
+- `op_table.csv`: PyTorch operator timings.
+- `context.csv`: temperature, clock and throttle flags every 5 s.
+
+Column-by-column details are in [section 11](#11-reference).
+
+---
+
+## 7. Results so far
+
+Full matrix, 2026-10-07: **224 / 224 cells passed** (4 cells needed a retry because of a
+Monsoon sample loss during a sync pulse; no Pi lockups during the matrix). Worst alignment error
+in any kept cell: 0.36 ms. Data: 4.4 GB in `~/power-measurement-pi/runs/matrix/` on the EliteBook.
+
+Average power (W), ± spread across repeats:
+
+| Workload | 2400 MHz | 2000 MHz | 1500 MHz |
+|---|---|---|---|
+| Idle baseline (fan at full speed) | 4.9 | 4.5 | 4.0 |
+| resnet18 inference | 10.70 ± 0.06 | 8.73 | 6.24 |
+| yolov8n / yolo11n inference | 9.94 / 9.58 | 8.26 / 7.96 | 5.95 / 5.88 |
+| efficientnet_b0 / mobilenet_v3_small inference | 9.26 / 8.97 | 7.79 / 7.46 | 5.77 / 5.59 |
+| MiniGPT prefill / decode | 7.6-8.1 / 8.6 | 6.5-6.9 / 7.1 | 5.0-5.2 / 5.3 |
+| resnet18 training (SGD / Adam) | 10.55 / 10.38 | 8.77 / 8.65 | 6.32 / 6.28 |
+| mobilenet_v3 and MiniGPT training | 9.4-9.6 | 7.8-8.0 | 5.7-5.8 |
+
+What stands out:
+
+- **Repeats agree** within about ±0.1 W, so the occasional sample loss does not distort averages.
+- **Clock speed matters a lot.** Going from 2400 to 1500 MHz cuts the power above idle by roughly
+  2.5 to 4 W.
+- **Training steps differ.** `forward` and `backward` cost the most (about 9.6-11.2 W at
+  2400 MHz). `zero_grad`, `dataload` and the SGD optimizer step cost the least (about 6.5-8.7 W).
+- **For detectors, pre- and post-processing** use 1.5-2 W less than the network itself.
+
+---
+
+## 8. Power safety: turning the Pi on and off, rewiring
+
+The Monsoon is the Pi's only power source. Some of its behaviour is surprising:
+
+- **Stopping the recorder does NOT turn the Pi off.** The output stays on ("keep-on"), so
+  restarting the recorder never cuts the Pi's power by accident.
+- **A Pi that has been shut down (`sudo poweroff`) stays off** until its power is switched off and
+  on again. Restarting the recorder alone does not do that.
+- **The only program that switches the output off is `host/vout_off.py`**, and it refuses to run
+  without `--confirm-pi-halted`.
+
+**To rewire, change the voltage, or restart the recorder cleanly**, do exactly this, in order:
+
+1. Shut the Pi down cleanly: `ssh -t maccpi@192.168.0.243 sudo poweroff`. Wait until it stops
+   answering `ping 192.168.0.243`.
+2. Stop the recorder (the output stays on): `systemctl --user stop monsoon-recorder`.
+3. Switch the output off: `cd ~/power-measurement-pi/host && ~/.local/bin/uv run python vout_off.py --confirm-pi-halted`
+4. Rewire if needed, and check polarity with a multimeter.
+5. Start the recorder ([section 4.7](#47-start-the-recorder)). The output comes on and the Pi boots.
+
+Every recorder start creates a new folder in `host/data/`; old recordings are kept.
+
+---
+
+## 9. Troubleshooting
+
+| Symptom | What it means | What to do |
+|---|---|---|
+| Pi does not answer `ping`/`ssh`, and the Monsoon shows it drawing only about 0.28-0.34 A (how to check: end of this section) | **Pi lockup** (see below). | Wait 3 minutes: sometimes it reboots by itself. If not, follow [section 8](#8-power-safety-turning-the-pi-on-and-off-rewiring) steps 2, 3 and 5 (it is already halted). The matrix orchestrator does this itself with `--auto-power-cycle`. |
+| Cell failed at `align` with "residual >= 1.0 ms" | The Monsoon lost samples right inside a sync pulse, so the clocks could not be matched. | Nothing. The cell is retried automatically. It happened 4 times in 228 attempts. |
+| `slip_warning` in results | The Monsoon lost a few ms of samples during the run (about once a minute). Labels after that point are shifted by a few ms. | Accepted. Repeats average it out. Filter on `alignment.json` → `slip_samples_total` if you need perfect labels. |
+| Run fails with "under-voltage occurred during run" | The Pi's input voltage dipped below about 4.63 V. | Check the power cable (short and thick, about 0.1 ohm). Heavy workloads above about 3 A are at risk. |
+| Run fails with "baseline drift" or clock errors | The Pi changed speed, or something else ran during the measurement. | Make sure nothing else runs on the Pi. Check `pi-power-pin status`. |
+| `Monsoon recorder unreachable` | The recorder is not running. | Start it ([section 4.7](#47-start-the-recorder)). |
+| The run dies silently | Its output was piped into `head`. | Redirect output into a file instead. |
+| `git mismatch: host ... vs Pi ...` when starting the matrix | The Pi and the EliteBook run different code versions. | Update both ([section 12.2](#122-deploying-code-to-the-pi-and-the-elitebook)). |
+
+**Pi lockups (open issue).** On 2026-10-07 the Pi froze 4 times in about 70 minutes of load. All
+four were before the matrix started; there were none during the 9-hour matrix.
+
+- **What it looks like:** the Pi's current suddenly drops from about 0.9 A to 0.34 A within 10 ms.
+  The supply voltage stays steady and the kernel logs nothing.
+- **What happens next:** twice it rebooted itself after a few seconds. The Pi firmware recorded a
+  watchdog reset: `/proc/device-tree/chosen/bootloader/rsts` read `0x20` or `0x1020`. Twice it
+  stayed frozen until its power was switched off and on.
+- **Possible link:** two of the four happened while running mobilenet_v3_small.
+- **Not reproduced:** a tight loop on the layer that was running at one lockup, and thousands of
+  sensor reads under load, both ran clean.
+- **Suspected cause:** the board or its firmware.
+
+To capture evidence next time, turn on a persistent system log on the Pi:
+`sudo mkdir -p /var/log/journal && sudo systemctl restart systemd-journald`.
+
+To see the Pi's current draw yourself, run this on the EliteBook from `host/`:
+
+```bash
+~/.local/bin/uv run python -c "
+import json, urllib.request, numpy as np; from store import open_samples
+d = json.load(urllib.request.urlopen('http://localhost:8051/status'))['run_dir']
+s = open_samples(d); I = np.array(s[len(s)-25000:len(s)])[:, 0]
+print(f'last 5 s: mean {I.mean():.3f} A, max {I.max():.3f} A')"
+```
+
+About 0.9-1 A is idle with the fan at full speed; about 0.28 A means the Pi is frozen or halted.
+
+---
+
+## 10. How it works under the hood
+
+### 10.1 One run, start to finish (`src/run.py`)
+
+1. **Pin** the CPU clock and fan (`tools/pi-power-pin`), and record their state.
+2. **`load_weights`**: build or load the model. This is measured too.
+3. **`first:<mode>`**: the very first inference or training step. It is slow (memory allocation,
+   kernel setup), so it is measured separately.
+4. **`warmup`**: a few more passes, so temperature and caches settle.
+5. **Sync pulse (start)**, then **`baseline_A`**: 2 s of idle to measure the idle power.
+6. **Measured modes** (`forward`, or `prefill` + `decode`, or `train`): N iterations, each split
+   into steps, with every layer call logged.
+7. **`serve`** (inference only): single requests with 200 ms idle gaps, to see how power behaves
+   when going between busy and idle.
+8. **`baseline_B`**: 2 s idle again. The idle power is the mean of A and B; if they differ by more
+   than 0.5 W the run fails.
+9. **`bench:<config>`** (inference only): each distinct layer type is run alone in a tight loop
+   for 1-2 s, giving its steady-state power.
+10. **Sync pulse (end)**, write `events.csv`, `run_meta.json` and the other tables.
+11. **Acceptance checks**: the clock stayed pinned, no throttling or under-voltage, the fan stayed
+    at full, the model produced sane output. Any failure fails the run.
+
+### 10.2 Lining up the clocks (`host/align.py`)
+
+1. **Coarse:** both machines are synced to the lab GPS time server, and the recorder stamps every
+   USB data block with the EliteBook time on arrival. That gives a first guess to within a few
+   milliseconds.
+2. **Fine:** the sync pulse pattern (all cores ON 150 ms, OFF 100, ON 300, OFF 100, ON 50) is
+   searched for near the guessed position. Its 12 edges (6 at the start, 6 at the end) are matched
+   to the Pi's logged edge times. A straight-line fit (offset plus drift) maps Pi time to Monsoon
+   time.
+3. **Check:** if any edge is more than 1 ms off the fit, the run fails. Typical is 0.1-0.3 ms.
+4. **Label:** every sample gets the latest phase, the innermost step and the innermost layer
+   active at that instant.
+5. **Sample-loss detection:** a lost chunk of samples shows up as a permanent jump in the
+   relationship between "sample number" and "arrival time". The detector reports those as `slips`.
+
+### 10.3 The experiment orchestrator (`host/experiment.py`)
+
+- `plan` expands `host/matrix.py` into a manifest.
+- `run` works through it round by round; each attempt is appended to `results.jsonl`.
+- **Failure stages:**
+  - `recorder` and `pi_down` stop the whole experiment, because nothing can work until a human
+    looks.
+  - `pi_crash`, `run`, `rsync`, `align` and `verify` are retried.
+- **Power-cycle guard:** it only switches the power off and on when all three are true:
+  - the Pi has not answered for 3 minutes;
+  - it does not answer `ping`;
+  - the Monsoon shows halted-level current (mean below 0.4 A and max below 0.6 A over 5 s).
+- **Last step:** at the very end it restores the Pi's normal clock and fan settings.
+
+---
+
+## 11. Reference
+
+### 11.1 `src/run.py` flags
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--task` | `image` | `image` (detection/classification), `lm` (language model), `train` |
+| `--model` | `yolo11n.pt` | `yolo11n.pt`, `yolov8n.pt` (any ultralytics weights); `torchvision:<name>` (e.g. `torchvision:resnet18`); `minigpt`, `minigpt-explicit`; `hf:<name>` (Hugging Face causal LM) |
+| `--sampler` | `pmic` | `monsoon` for real data; `pmic` is the old on-board meter |
+| `--recorder-url` | `http://192.168.0.11:8051` | where the recorder is |
+| `--cpu-mhz` | none | pin the clock: 1500-2400 in steps of 100 |
+| `--fan-full` | off | fan at full speed for the whole run |
+| `--frames` | 30 | measured iterations per mode |
+| `--warmup` | 10 | warm-up passes |
+| `--threads` | 4 | PyTorch threads |
+| `--imgsz` | 640 | image size (image and image-training tasks) |
+| `--seq` | 64 | prompt length (LM tasks) |
+| `--batch` | 8 | training batch size (must be at least 2) |
+| `--optimizer` | `sgd` | `sgd` (momentum 0.9, lr 0.01) or `adam` (lr 1e-3) |
+| `--serve` | 0 | number of single requests in the `serve` phase |
+| `--serve-gap-ms` | 200 | idle time between serve requests |
+| `--bench` | 3.0 | seconds per isolated layer benchmark |
+| `--no-bench` | off | skip the layer benchmarks |
+| `--check-image` | none | detection sanity check: this image must give a detection with at least `--conf` confidence |
+| `--conf` | 0.25 | detection confidence threshold |
+| `--live-camera` | off | use real camera frames (Pi camera) instead of a fixed image |
+| `--out` | `runs/<timestamp>` | output folder |
+
+### 11.2 `host/experiment.py`
+
+| Command | Options |
+|---|---|
+| `plan --out <manifest>` | `--smoke` (3 cells), `--probe` (each model once at 2400 MHz), `--only a,b` (only these model keys), `--seed N` (shuffle order) |
+| `run --manifest <manifest>` | `--max-attempts N` (default 2), `--auto-power-cycle N` (default 0), `--results <file>`, `--allow-git-mismatch` |
+| `status --manifest <manifest>` | `--results <file>` |
+
+### 11.3 `events.csv` (Pi side)
+
+Columns: `t_real_ns` (lab-synced wall clock), `t_mono_ns`, `kind`, `name`, `depth`, `mode`, `iter`,
+`layer_path`, `config_id`, `window_id`.
+
+| `kind` | Written when |
+|---|---|
+| `marker` | a phase starts (`name` = phase) |
+| `step_begin` / `step_end` | a step starts or ends (`name` = step) |
+| `begin` / `end` | a layer call starts or ends (`layer_path`, nesting `depth`) |
+| `pulse_on` / `pulse_off` | a sync-pulse edge |
+| `ctx_begin` / `ctx_end` | the Pi's sensor read starts or ends |
+
+### 11.4 `alignment.json`
+
+- **Pass/fail:** `pass` and `fail_reasons`. The only fatal check is `max_residual_ms` < 1.0.
+- **Fit quality:** `n_edges`, `trains`, `max_residual_ms`, `rms_residual_ms`.
+- **The fit itself:** `c0_ns` (offset, mostly USB latency), `c1` and `drift_ppm`.
+- **Warnings:**
+  - `slip_warning` and `slips` (each with `t_ns`, `step_ms`, `samples`) and `slip_samples_total`;
+  - `drift_warning` (drift above 50 ppm);
+  - `envelope_max_dev_ms` and `nan_fraction`.
+
+### 11.5 `run_meta.json` (most useful keys)
+
+- **What ran:** `task`, `model`, `modes`, `frames_per_mode`, `threads`, `imgsz`, `seq_len`,
+  `batch`, `optimizer`.
+- **Training:** `train_loss` (loss per training iteration).
+- **Lifecycle timing:** `load_weights_s`, `first_call_ms`.
+- **Idle power:** `baseline_W`, `baseline_A_W`, `baseline_B_W`, `baseline_drift_W`.
+- **Pinning and power health:** `cpu_mhz_pinned`, `fan_full`, `pin_status_start`/`_end`,
+  `throttled_start`/`_end`.
+- **Recorder:** `recorder_status_start`/`_end`.
+- **Software:** `torch_version`, `schema_version` (4 for Monsoon runs).
+
+### 11.6 `phase_energy.csv`
+
+One row per (`phase`, `iter`, `step`): `n_samples`, `mean_P_W`, `dur_ms`, `E_mJ` (energy in
+millijoules = W × ms), `ctx_read_frac`, `t_start_s`, `t_end_s`.
+
+### 11.7 Units
+
+Numeric columns carry their unit in the name: `_W` watts, `_A` amps, `_V` volts, `_ms`
+milliseconds, `_ns` nanoseconds, `_mJ` millijoules, `_C` °C, `_MHz`. Energy is always
+`E_mJ = P_W × t_ms`.
+
+---
+
+## 12. Developing: tests, deploying code, git
+
+### 12.1 Tests
+
+```bash
+# Pi-side code (needs torch; run on the Pi)
+cd ~/Desktop/power-measurement-pi && ~/.local/bin/uv run --with pytest pytest tests/
+# Host-side code (run on the EliteBook)
+cd ~/power-measurement-pi/host && ~/.local/bin/uv run pytest
+```
+
+`tests/test_phases.py` needs an old run folder (`runs/fix_abab_smoke`) and fails where that
+folder is missing. That is expected.
+
+### 12.2 Deploying code to the Pi and the EliteBook
+
+Edit and commit on the NUC. Then either:
+
+- **via GitHub:** `git push origin monsoon-experiment`, then `git pull` on the Pi and the EliteBook;
+- **directly over SSH** (works without GitHub access on those machines), from the NUC:
+
+  ```bash
+  for h in macc2026@192.168.0.11:power-measurement-pi maccpi@192.168.0.243:Desktop/power-measurement-pi; do
+    u=${h%%:*}; d=${h#*:}
+    git push -f "ssh://$u/~/$d" monsoon-experiment:refs/heads/incoming
+    ssh $u "cd $d && git merge --ff-only incoming && git log --oneline -1"
+  done
+  ```
+
+Both machines must be on the same commit before a matrix starts (the orchestrator checks).
+
+### 12.3 What is in git and what is not
+
+- **Tracked:** code, tests, docs, `uv.lock`.
+- **Not tracked** (see `.gitignore`):
+  - `runs/` (measurement data, back it up separately);
+  - `host/data/` (raw Monsoon recordings, about 0.15 GB per hour, 3.5 GB per day);
+  - `.venv/`, model weights (`*.pt`), logs.
+
+---
+
+## 13. Project layout and further docs
+
+```
+src/                  Pi side
+  run.py              one measurement run (entry point)
+  tasks.py            workloads: ImageTask, TokenLMTask, TrainTask
+  layers.py           per-layer hooks, timing, compute-cost features
+  eventlog.py         the Pi's event log (phases, steps, layers)
+  syncpulse.py        the sync-pulse emitter
+  powersampler.py     Monsoon client (and the old PMIC sampler)
+  microbench.py       isolated per-layer power benchmarks
+  pinning.py          talks to tools/pi-power-pin
+  sync_check.py       emit sync pulses only (alignment self-test)
+host/                 EliteBook side
+  recorder.py         always-on Monsoon recorder + HTTP API
+  align.py            line up clocks, label every sample
+  verify_cell.py      check one cell, write phase_energy.csv
+  experiment.py       run the matrix (plan / run / status)
+  matrix.py           which models, clocks, repeats
+  vout_off.py         manual safety tool: switch the Monsoon output off
+  store.py, clockfit.py   recording storage and clock fitting
+tools/pi-power-pin    root helper for clock and fan pinning
+tests/, host/tests/   unit tests
+modeling/, trace_forecast/, analysis/   earlier analysis on the old PMIC data
+docs/                 design docs, plans, logs
+```
+
+Further reading:
+
+- Design spec: `docs/superpowers/specs/2026-10-06-monsoon-experiment-design.md`
+- Measurement-plane bring-up log (what was measured and decided, SP1):
+  `docs/superpowers/plans/sp1-bringup-log.md`
+- Workloads and matrix plan (SP2 and SP3): `docs/superpowers/plans/2026-10-07-sp2-sp3-workloads-and-matrix.md`
+- The old on-board PMIC harness (schema v3), `collect.py`, model-agnostic adapters:
+  `docs/legacy-pmic-harness.md`
+- **Next step (not built yet), SP4:** one index across all cells, for training the power
+  predictor.
