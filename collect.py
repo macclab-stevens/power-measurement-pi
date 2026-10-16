@@ -4,7 +4,7 @@
 Repeatedly runs the capture pipeline (src/run.py) for many cycles so you can
 collect hours of per-layer / per-op power data unattended.
 
-Usage (from the project dir /home/macc2026/Desktop/pi_power_measurement):
+Usage (from the project dir on the Pi, ~/Desktop/power-measurement-pi):
     uv run python collect.py --hours 6
     uv run python collect.py --runs 50 --frames 30 --bench 3
     uv run python collect.py --hours 4 --cooldown 10 --conf 0.3

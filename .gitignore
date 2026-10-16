@@ -7,3 +7,5 @@ nohup.out
 *.log
 *.pt
 handoff_phase_trace_v1/
+host/data/
+host/.venv/

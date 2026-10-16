@@ -1,0 +1,57 @@
+#!/bin/sh
+# pi-power-pin: root helper that pins the Pi 5 CPU clock and fan for power experiments.
+# Installed root-owned at /usr/local/sbin/pi-power-pin and whitelisted (NOPASSWD) for
+# maccpi in /etc/sudoers.d/pi-power-pin. Accepts only the fixed commands below.
+#
+#   pi-power-pin pin <MHz>      lock all 4 cores at MHz (1500..2400, step 100)
+#   pi-power-pin fan full       force the fan to max step (lower fan trip points)
+#   pi-power-pin restore        ondemand 1500-2400 MHz + stock fan trips (50/60/67.5/75 C)
+#   pi-power-pin status         print governor, clocks, fan state/RPM, temp
+set -eu
+CPU=/sys/devices/system/cpu/cpufreq/policy0
+TZ=/sys/class/thermal/thermal_zone0
+FAN=/sys/class/thermal/cooling_device0
+STOCK_TRIPS="50000 60000 67500 75000"
+FULL_TRIPS="20000 21000 22000 23000"
+
+usage() { echo "usage: pi-power-pin pin <1500..2400 step 100> | fan full | restore | status" >&2; exit 2; }
+
+set_trips() {
+    i=1
+    for t in $1; do echo "$t" > "$TZ/trip_point_${i}_temp"; i=$((i + 1)); done
+}
+
+set_freq() {  # $1 governor, $2 min kHz, $3 max kHz (widen first so min <= max always holds)
+    echo 1500000 > "$CPU/scaling_min_freq"
+    echo 2400000 > "$CPU/scaling_max_freq"
+    echo "$1" > "$CPU/scaling_governor"
+    echo "$3" > "$CPU/scaling_max_freq"
+    echo "$2" > "$CPU/scaling_min_freq"
+}
+
+case "${1:-}" in
+    pin)
+        case "${2:-}" in
+            1500|1600|1700|1800|1900|2000|2100|2200|2300|2400) ;;
+            *) usage ;;
+        esac
+        khz=$(( $2 * 1000 ))
+        set_freq performance "$khz" "$khz"
+        ;;
+    fan)
+        [ "${2:-}" = full ] || usage
+        set_trips "$FULL_TRIPS"
+        ;;
+    restore)
+        set_freq ondemand 1500000 2400000
+        set_trips "$STOCK_TRIPS"
+        ;;
+    status)
+        ;;
+    *) usage ;;
+esac
+echo "governor=$(cat $CPU/scaling_governor) min_kHz=$(cat $CPU/scaling_min_freq)" \
+     "max_kHz=$(cat $CPU/scaling_max_freq) cur_kHz=$(cat $CPU/scaling_cur_freq)" \
+     "fan_state=$(cat $FAN/cur_state)/$(cat $FAN/max_state)" \
+     "fan_rpm=$(cat /sys/devices/platform/cooling_fan/hwmon/*/fan1_input 2>/dev/null || echo ?)" \
+     "temp_mC=$(cat $TZ/temp)"
