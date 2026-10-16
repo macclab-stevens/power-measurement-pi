@@ -84,13 +84,14 @@ def pending(manifest: list[dict], results: list[dict], max_attempts: int) -> lis
             and st.get(c["cell_id"], {}).get("attempts", 0) < max_attempts]
 
 
-def pi_command(cell: dict) -> str:
-    cid = cell["cell_id"]
-    args = shlex.join([*cell["args"], "--out", f"runs/matrix/{cid}"])
-    return (f"cd {PI_DIR} && mkdir -p runs/matrix && rm -rf runs/matrix/{cid} && "
-            f"{{ [ ! -f runs/matrix/{cid}.log ] || mv runs/matrix/{cid}.log "
-            f"runs/matrix/{cid}.log.$(date +%s); }} && "
-            f"{PI_UV} run --frozen python src/run.py {args} > runs/matrix/{cid}.log 2>&1")
+def pi_command(cell: dict, subdir: str = "runs/matrix") -> str:
+    """run.py for one cell, output to <subdir>/<cell_id> under PI_DIR. `subdir` and the cell id
+    are not quoted: callers pass validated names (matrix ids, lab.py's name pattern)."""
+    out = f"{subdir}/{cell['cell_id']}"
+    args = shlex.join([*cell["args"], "--out", out])
+    return (f"cd {PI_DIR} && mkdir -p {subdir} && rm -rf {out} && "
+            f"{{ [ ! -f {out}.log ] || mv {out}.log {out}.log.$(date +%s); }} && "
+            f"{PI_UV} run --frozen python src/run.py {args} > {out}.log 2>&1")
 
 
 def parse_temp(out: str) -> float | None:
@@ -173,7 +174,8 @@ class RecorderUnavailable(RuntimeError):
 class Orchestrator:
     def __init__(self, runs_dir, results_path, sh=None, status_fn=recorder_status,
                  align_fn=None, verify_fn=None, current_fn=halted_current, sleep=time.sleep,
-                 auto_power_cycle: int = 0, log=print):
+                 auto_power_cycle: int = 0, log=print, pi_subdir: str = "runs/matrix",
+                 run_timeout_s: float | None = None):
         self.runs = Path(runs_dir)
         self.results_path = Path(results_path)
         self.sh = sh or Shell()
@@ -184,6 +186,8 @@ class Orchestrator:
         self.sleep = sleep
         self.cycles_left = auto_power_cycle
         self.log = log
+        self.pi_subdir = pi_subdir          # run folder on the Pi, relative to PI_DIR
+        self.run_timeout_s = run_timeout_s  # None: RUN_TIMEOUT_S, read at call time
         self.provenance: dict = {}
 
     # ---- health -------------------------------------------------------------------------------
@@ -292,16 +296,17 @@ class Orchestrator:
         dm, dm_f = self.sh.popen([*SSH, PI, "dmesg -W"], local.parent / f"{cid}.dmesg.log")
         try:
             t_run = time.monotonic()
-            rc, out = self.sh.ssh(pi_command(cell), RUN_TIMEOUT_S)
+            timeout = RUN_TIMEOUT_S if self.run_timeout_s is None else self.run_timeout_s
+            rc, out = self.sh.ssh(pi_command(cell, self.pi_subdir), timeout)
             res["run_s"] = round(time.monotonic() - t_run, 1)
         finally:
             dm.terminate()
             dm_f.close()
         res["run_rc"] = rc
         # always fetch what exists (log + run dir) for diagnosis
-        self.sh.run(["rsync", "-a", f"{PI}:{PI_DIR}/runs/matrix/{cid}.log",
+        self.sh.run(["rsync", "-a", f"{PI}:{PI_DIR}/{self.pi_subdir}/{cid}.log",
                      str(local.parent / f"{cid}.log")], 300)
-        rrc, rout = self.sh.run(["rsync", "-a", f"{PI}:{PI_DIR}/runs/matrix/{cid}/",
+        rrc, rout = self.sh.run(["rsync", "-a", f"{PI}:{PI_DIR}/{self.pi_subdir}/{cid}/",
                                  str(local) + "/"], 600)
         if rc != 0:
             if not self.pi_up():

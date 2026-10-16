@@ -19,6 +19,8 @@ is meant for training a model that predicts power from what the hardware is doin
 3. [The three computers and the power meter](#3-the-three-computers-and-the-power-meter)
 4. [One-time setup](#4-one-time-setup)
 5. [Everyday use](#5-everyday-use)
+   ([checklist](#51-pre-flight-checklist), [the quick way: `./lab`](#52-the-quick-way-lab),
+   [by hand](#53-measure-one-model-by-hand), [the matrix](#54-run-the-whole-experiment-matrix))
 6. [What the output files mean](#6-what-the-output-files-mean)
 7. [Results so far](#7-results-so-far)
 8. [Power safety: turning the Pi on and off, rewiring](#8-power-safety-turning-the-pi-on-and-off-rewiring)
@@ -228,7 +230,8 @@ before then, following [section 8](#8-power-safety-turning-the-pi-on-and-off-rew
 
 ### 5.1 Pre-flight checklist
 
-Run these before any measurement. All of them must look right.
+Run these before any measurement. All of them must look right. `./lab check`
+([section 5.2](#52-the-quick-way-lab)) does all of this, and more, in one go.
 
 ```bash
 # EliteBook: recorder running and recording?
@@ -244,9 +247,57 @@ ssh maccpi@192.168.0.243 'git -C Desktop/power-measurement-pi log --oneline -1'
 ssh macc2026@192.168.0.11 'git -C power-measurement-pi log --oneline -1'
 ```
 
-### 5.2 Measure one model by hand
+### 5.2 The quick way: `./lab`
 
-Useful to try something out. On the **Pi**:
+`./lab` (the script `host/lab.py`) does a whole single measurement in one command: pre-flight
+checks, run.py on the Pi, copy back, align, verify, and a plain-English summary. Run it on the
+**EliteBook**, from `~/power-measurement-pi` (the recorder runs there). Every command has a
+detailed `--help`.
+
+```bash
+cd ~/power-measurement-pi
+./lab check                       # is everything ready? read-only, changes nothing
+./lab presets                     # the 14 ready-made workloads (the matrix models)
+./lab run yolo11n                 # one preset, exactly like a matrix cell at 2400 MHz
+./lab run yolo11n train_lm64_adam train_resnet18_sgd    # the 3-cell smoke test, in sequence
+./lab run train_resnet18_sgd --cpu-mhz 1500 --frames 10 # override any value
+./lab run --task image --model torchvision:resnet50 --imgsz 224 --frames 50   # your own
+./lab run resnet18 --dry-run      # only show the commands; contacts no machine
+./lab test pr1                    # the 3 tests from the PR #1 review, on the Pi
+./lab test --host                 # the whole Pi suite, then the host suite here
+```
+
+- **What `check` looks at:** the recorder (recording at about 4,992 Hz, not near its ~9.9-day
+  limit), the Pi (reachable, temperature, throttling, the pinning helper), the same git commit on
+  both machines, and that nothing else is running (run.py or pytest on the Pi, the matrix here).
+  If the Pi does not answer, it shows the Monsoon current and what to do
+  ([section 9](#9-troubleshooting)).
+- **`run` always** adds `--sampler monsoon --fan-full --cpu-mhz <MHz>` (default 2400). It refuses
+  to start if any check fails. It waits until the Pi is below 50 °C, as the matrix does
+  (`--no-thermal-gate` to skip). It prints a line to follow the Pi's output live:
+  `ssh maccpi@192.168.0.243 tail -f Desktop/power-measurement-pi/runs/lab/<name>.log`.
+- **Where files go:** `runs/lab/<name>/` on both machines, plus `<name>.log` (Pi console) and
+  `<name>.dmesg.log` (Pi kernel log) next to it on the EliteBook. Every run adds one line to
+  `runs/lab/results.jsonl`. The default `<name>` is `<preset or model>_<MHz>_<date-time>`;
+  `--name` picks your own, and an existing name is refused. Test output goes to
+  `runs/lab/tests/`.
+- **Afterwards** the Pi's clock and fan are put back to normal, unless `--keep-pinned` is given
+  or run.py is still running on the Pi.
+- **Ctrl-C** stops waiting and tells you whether run.py is still running on the Pi and how to
+  stop it (`ssh maccpi@192.168.0.243 pkill -INT -f src/run.py`). It never kills it for you.
+- **It never switches power** and never stops the recorder. After a Pi lockup it tells you what
+  to do ([section 8](#8-power-safety-turning-the-pi-on-and-off-rewiring) and
+  [section 9](#9-troubleshooting)).
+- **Exit codes:** 0 all ok, 1 a check, run or test failed (the failed stage is printed with an
+  explanation), 2 bad command line, 130 interrupted.
+
+`./lab` is a two-line wrapper for `~/.local/bin/uv run --project host python host/lab.py`, so
+the host environment (numpy, pandas) is used. For many repeats or clock sweeps use the matrix
+([section 5.4](#54-run-the-whole-experiment-matrix)).
+
+### 5.3 Measure one model by hand
+
+This is what `./lab run` does for you, step by step. On the **Pi**:
 
 ```bash
 cd ~/Desktop/power-measurement-pi
@@ -283,7 +334,7 @@ REC=$(curl -s localhost:8051/status | python3 -c 'import json,sys; print(json.lo
 `align.py` prints `[ok] edges=12 max_residual=0.17 ms ...` when it worked. `verify_cell.py`
 prints a summary and `"ok": true`.
 
-### 5.3 Run the whole experiment matrix
+### 5.4 Run the whole experiment matrix
 
 The matrix (defined in `host/matrix.py`) is 14 workloads × 3 clock speeds:
 
@@ -651,15 +702,29 @@ milliseconds, `_ns` nanoseconds, `_mJ` millijoules, `_C` °C, `_MHz`. Energy is 
 
 ### 12.1 Tests
 
+The easy way, from `~/power-measurement-pi` on the EliteBook
+([section 5.2](#52-the-quick-way-lab)):
+
+```bash
+./lab test                  # the whole Pi suite, over ssh
+./lab test pr1              # only the 3 tests from the PR #1 review
+./lab test tests/test_pinning.py -x
+./lab test --host           # Pi suite, then the host suite here (--host-only: host suite only)
+```
+
+It refuses to start while a measurement or the matrix is running (the tests heat the Pi), and
+saves the output to `runs/lab/tests/`. By hand:
+
 ```bash
 # Pi-side code (needs torch; run on the Pi)
-cd ~/Desktop/power-measurement-pi && ~/.local/bin/uv run --with pytest pytest tests/
+cd ~/Desktop/power-measurement-pi && ~/.local/bin/uv run --frozen --with pytest pytest tests/
 # Host-side code (run on the EliteBook)
 cd ~/power-measurement-pi/host && ~/.local/bin/uv run pytest
 ```
 
-`tests/test_phases.py` needs an old run folder (`runs/fix_abab_smoke`) and fails where that
-folder is missing. That is expected.
+`tests/test_phases.py::test_no_idle_contamination` needs an old run folder
+(`runs/fix_abab_smoke`) and fails where that folder is missing. That is expected; `./lab test`
+deselects it in that case and says so.
 
 ### 12.2 Deploying code to the Pi and the EliteBook
 
@@ -701,7 +766,9 @@ src/                  Pi side
   microbench.py       isolated per-layer power benchmarks
   pinning.py          talks to tools/pi-power-pin
   sync_check.py       emit sync pulses only (alignment self-test)
+lab                   one-command launcher (wrapper for host/lab.py)
 host/                 EliteBook side
+  lab.py              single runs and tests: check / run / test / presets
   recorder.py         always-on Monsoon recorder + HTTP API
   align.py            line up clocks, label every sample
   verify_cell.py      check one cell, write phase_energy.csv

@@ -264,3 +264,52 @@ def test_parse_git_head_ignores_ssh_warnings():
     assert ex.parse_git_head(f"d2d6971\n{warn}\n") == "d2d6971"
     assert ex.parse_git_head(f"{warn}\nd2d6971\n") == "d2d6971"
     assert ex.parse_git_head(warn) is None
+
+
+# ---- pi_subdir / run_timeout_s (used by lab.py) ---------------------------------------------
+def test_pi_command_for_the_matrix_is_unchanged():
+    c = _cell("lm16_2400_r00")
+    assert ex.pi_command(c) == (
+        "cd Desktop/power-measurement-pi && mkdir -p runs/matrix && rm -rf runs/matrix/lm16_2400_r00"
+        " && { [ ! -f runs/matrix/lm16_2400_r00.log ] || mv runs/matrix/lm16_2400_r00.log "
+        "runs/matrix/lm16_2400_r00.log.$(date +%s); } && ~/.local/bin/uv run --frozen python "
+        "src/run.py --task lm --model minigpt-explicit --cpu-mhz 2400 "
+        "--out runs/matrix/lm16_2400_r00 > runs/matrix/lm16_2400_r00.log 2>&1")
+
+
+def test_pi_command_custom_subdir():
+    cmd = ex.pi_command(_cell("x1"), "runs/lab")
+    assert "mkdir -p runs/lab && rm -rf runs/lab/x1 &&" in cmd
+    assert "mv runs/lab/x1.log runs/lab/x1.log.$(date +%s)" in cmd
+    assert cmd.endswith("--out runs/lab/x1 > runs/lab/x1.log 2>&1") and "runs/matrix" not in cmd
+
+
+class _SubdirShell(FakeShell):
+    def __init__(self):
+        super().__init__()
+        self.timeouts = []
+
+    def ssh(self, cmd, timeout):
+        if "src/run.py" in cmd:
+            self.cmds.append(("ssh", cmd))
+            self.timeouts.append(timeout)
+            return 0, "out"
+        return super().ssh(cmd, timeout)
+
+
+def test_orchestrator_custom_subdir_and_timeout(tmp_path, monkeypatch):
+    sh = _SubdirShell()
+    o, _ = _orch(tmp_path, sh, pi_subdir="runs/lab", run_timeout_s=123)
+    assert o.run_cell(_cell("x1"), 1)["status"] == "ok"
+    run = [c for k, c in sh.cmds if k == "ssh" and "src/run.py" in c]
+    assert len(run) == 1 and "--out runs/lab/x1 " in run[0] and sh.timeouts == [123]
+    srcs = [c[2] for k, c in sh.cmds if k == "run" and c[0] == "rsync"]
+    assert srcs == [f"{ex.PI}:{ex.PI_DIR}/runs/lab/x1.log", f"{ex.PI}:{ex.PI_DIR}/runs/lab/x1/"]
+
+
+def test_orchestrator_default_timeout_read_at_call_time(tmp_path, monkeypatch):
+    sh = _SubdirShell()
+    o, _ = _orch(tmp_path, sh, pi_subdir="runs/lab")
+    monkeypatch.setattr(ex, "RUN_TIMEOUT_S", 77)
+    o.run_cell(_cell("x1"), 1)
+    assert sh.timeouts == [77]
