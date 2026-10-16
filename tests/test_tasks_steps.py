@@ -99,3 +99,24 @@ def test_train_rejects_batch_one_and_unknown_optimizer():
         make_task("train", "torchvision:resnet18", _opt(batch=1))
     with pytest.raises(ValueError, match="optimizer"):
         make_task("train", "minigpt-explicit", _opt(optimizer="lion"))
+
+
+def test_topk_bounded_by_number_of_classes():
+    task = make_task("image", "torchvision:mobilenet_v3_small", _opt())
+    vals, idx = task.postprocess(torch.randn(1, 2))
+    assert idx.shape == (1, 2)
+
+
+def test_live_frames_use_shared_preprocess(monkeypatch):
+    import numpy as np
+    task = make_task("image", "torchvision:mobilenet_v3_small", _opt(imgsz=96, live_camera=True))
+    frames = iter([np.zeros((480, 640, 3), dtype=np.uint8)] * 3)
+    monkeypatch.setattr(task, "_camera_frame", lambda: next(frames))
+    seen = []
+    real = task.preprocess
+    monkeypatch.setattr(task, "preprocess", lambda f: seen.append(f.shape) or real(f))
+    ev = EventLog()
+    task.step = ev.step
+    task.run_one("forward")
+    assert seen == [(480, 640, 3)]
+    assert _steps(ev) == _flat(["camera_capture", "preprocess", "forward", "postprocess"])

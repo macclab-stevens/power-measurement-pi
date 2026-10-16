@@ -150,7 +150,7 @@ def test_power_cycle_refused_when_current_is_not_halted(tmp_path, monkeypatch):
     sh = FakeShell(pi_up=False)
     o, _ = _orch(tmp_path, sh, auto_power_cycle=3, current_fn=lambda d: (0.9, 1.5))
     err = o.recover_pi()
-    assert "not halted" in err and o.cycles_left == 3
+    assert "halt not confirmed" in err and o.cycles_left == 3
     assert not any(k == "run" and "vout_off.py" in " ".join(c) for k, c in sh.cmds)
 
 
@@ -191,3 +191,69 @@ def test_status_report(tmp_path):
     txt = ex.status_report(man, res)
     assert "ok 1" in txt and "failed 1" in txt and "not run 1" in txt
     assert "failed at align: b_2400_r00" in txt and "slip_warning: 1" in txt
+
+
+# ---- PR #1 review fixes ---------------------------------------------------------------------
+@pytest.mark.parametrize("cur", [(float("nan"), float("nan")), (0.2, float("nan")),
+                                 (float("nan"), 0.3), (-0.1, 0.2), (0.2, float("inf"))])
+def test_power_cycle_fails_closed_on_invalid_current(tmp_path, monkeypatch, cur):
+    monkeypatch.setattr(ex, "PI_DOWN_S", 0)
+    sh = FakeShell(pi_up=False)
+    o, _ = _orch(tmp_path, sh, auto_power_cycle=3, current_fn=lambda d: cur)
+    err = o.recover_pi()
+    assert err and "not power-cycling" in err and o.cycles_left == 3
+    assert not any(k == "run" for k, _ in sh.cmds)
+
+
+def test_halted_current_ignores_nan_and_fails_on_empty(tmp_path, monkeypatch):
+    import numpy as np
+    import store
+    data = np.full((25000, 2), 0.28)
+    data[:100] = np.nan
+    monkeypatch.setattr(store, "open_samples", lambda d: data)
+    m, mx = ex.halted_current("x")
+    assert abs(m - 0.28) < 1e-9 and abs(mx - 0.28) < 1e-9
+    monkeypatch.setattr(store, "open_samples", lambda d: np.full((25000, 2), np.nan))
+    m, mx = ex.halted_current("x")
+    assert m != m and mx != mx          # NaN: recover_pi then refuses to cycle
+
+
+def test_recorder_failure_during_recovery_is_a_recorder_result(tmp_path, monkeypatch):
+    monkeypatch.setattr(ex, "PI_DOWN_S", 0)
+    calls = {"n": 0}
+
+    def status():
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise OSError("connection refused")
+        return {"recording": True, "run_dir": "data/x"}
+
+    sh = FakeShell(pi_up=False)
+    o, _ = _orch(tmp_path, sh, auto_power_cycle=3)
+    o.status_fn = status
+    s = o.run([_cell("a_2400_r00"), _cell("b_2400_r00")])
+    rows = ex.load_jsonl(tmp_path / "runs" / "results.jsonl")
+    assert rows[0]["stage"] == "recorder" and "connection refused" in rows[0]["error"]
+    assert s["aborted"].startswith("recorder")
+
+
+def test_recorder_failure_after_recovery_is_a_recorder_result(tmp_path):
+    calls = {"n": 0}
+
+    def status():
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("gone")
+        return {"recording": True, "run_dir": "data/x"}
+
+    o, _ = _orch(tmp_path, FakeShell())
+    o.status_fn = status
+    r = o.run_cell(_cell("a_2400_r00"), 1)
+    assert r["stage"] == "recorder" and "gone" in r["error"]
+
+
+def test_exit_code_requires_every_cell_ok():
+    assert ex.exit_code({"cells": 3, "ok": 3, "aborted": None}) == 0
+    assert ex.exit_code({"cells": 3, "ok": 2, "aborted": None}) != 0
+    assert ex.exit_code({"cells": 3, "ok": 0, "aborted": None}) != 0
+    assert ex.exit_code({"cells": 3, "ok": 3, "aborted": "pi_down: x"}) != 0

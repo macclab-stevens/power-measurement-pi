@@ -78,3 +78,42 @@ def test_inference_cell_expects_serve_and_bench(tmp_path):
     d = _run(tmp_path, meta_over={"task": "image", "serve_requests": 10, "bench_skipped": False})
     errs = verify(d)["errors"]
     assert any("serve" in e for e in errs) and any("bench" in e for e in errs)
+
+
+def _trace(d, p):
+    df = pd.read_parquet(d / "power_trace.parquet")
+    df["P_W"] = p(df["P_W"].to_numpy().copy())
+    df.to_parquet(d / "power_trace.parquet")
+
+
+def test_energy_counts_only_observed_samples(tmp_path):
+    d = _run(tmp_path)
+
+    def nan_some(P):
+        P[::200] = np.nan                       # 0.5 %: below the 1 % NaN limit
+        return P
+    _trace(d, nan_some)
+    r = verify(d)
+    assert r["ok"], r["errors"]
+    assert r["energy_closure"] < 1e-6
+    pe = pd.read_csv(d / "phase_energy.csv", keep_default_na=False)
+    P = pd.read_parquet(d / "power_trace.parquet")["P_W"].to_numpy(dtype=np.float64)
+    assert abs(pe["E_mJ"].sum() - np.nansum(P) * 0.2) < 1e-3     # 0.2 ms per sample
+
+
+def test_all_nan_trace_is_an_error_not_an_exception(tmp_path):
+    d = _run(tmp_path)
+    _trace(d, lambda P: np.full_like(P, np.nan))
+    r = verify(d)
+    assert not r["ok"] and any("finite" in e or "NaN" in e for e in r["errors"])
+
+
+def test_infinite_power_fails(tmp_path):
+    d = _run(tmp_path)
+
+    def one_inf(P):
+        P[5] = np.inf
+        return P
+    _trace(d, one_inf)
+    r = verify(d)
+    assert not r["ok"] and any("infinite" in e for e in r["errors"])

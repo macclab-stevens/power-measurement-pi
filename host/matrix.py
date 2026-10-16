@@ -73,14 +73,14 @@ def cells(seed: int = 7, smoke: bool = False, only: list[str] | None = None,
     """Manifest rows. Round r holds main repeat r of every model, plus one sweep repeat at the
     rounds from sweep_rounds(); rows are shuffled within a round, so the repeats of one model
     are spread over the whole matrix."""
-    if smoke:
-        return [_cell(k, mhz, 0, 0, prefix="smoke_") for k, mhz in SMOKE]
-    if probe:                                   # every model once at the main clock
-        return [_cell(k, MAIN_MHZ, 0, 0, prefix="probe_") for k in MODELS]
-    keys = [k for k in MODELS if not only or k in only]
     unknown = sorted(set(only or ()) - set(MODELS))
     if unknown:
         raise ValueError(f"unknown model keys: {unknown}")
+    keys = [k for k in MODELS if not only or k in only]
+    if smoke:
+        return [_cell(k, mhz, 0, 0, prefix="smoke_") for k, mhz in SMOKE if k in keys]
+    if probe:                                   # every model once at the main clock
+        return [_cell(k, MAIN_MHZ, 0, 0, prefix="probe_") for k in keys]
     rng = random.Random(seed)
     sweep_at = {r: i for i, r in enumerate(sweep_rounds())}
     out: list[dict] = []

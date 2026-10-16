@@ -204,3 +204,15 @@ def test_sync_pulse_pauses_ctx_reads(fake_recorder, monkeypatch):
     s.sync_pulse("start")
     assert seen == [("start", True)]
     assert not s.ctx_pause.is_set()
+
+
+def test_snapshot_env_is_bracketed_by_ctx_events(fake_recorder, monkeypatch):
+    import powersampler
+    _, url = fake_recorder
+    s = MonsoonSampler(url)
+    monkeypatch.setattr(powersampler, "_measure_temp", lambda: 41.0)
+    monkeypatch.setattr(powersampler, "_measure_clock_arm", lambda: 2_400_000_000)
+    monkeypatch.setattr(powersampler, "_get_throttled", lambda: 0)
+    assert s.snapshot_env() == (41.0, 2400, 0)
+    kinds = [(r["kind"], r["name"]) for r in s.events.rows()]
+    assert kinds == [("ctx_begin", "snapshot"), ("ctx_end", "snapshot")]

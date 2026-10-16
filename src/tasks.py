@@ -177,30 +177,28 @@ class ImageTask(TaskAdapter):
             from ultralytics.utils.nms import non_max_suppression
             return non_max_suppression(out, conf_thres=self._conf, iou_thres=0.45)
         logits = out[0] if isinstance(out, (list, tuple)) else out
-        return torch.softmax(logits, dim=-1).topk(5, dim=-1)
+        return torch.softmax(logits, dim=-1).topk(min(5, logits.shape[-1]), dim=-1)
 
-    def _fixture(self):
-        if self._live:
-            if self._frame_iter is None:
-                from cam import Camera
-                self._cam = Camera(size=(640, 480))
-                meta = self._cam.start()
-                self._frame_iter = self._cam.frames()
-                self.cam_meta = meta
-            import numpy as np
-            frame = next(self._frame_iter)                     # HWC uint8 RGB888
-            t = torch.from_numpy(np.ascontiguousarray(frame)).permute(2, 0, 1)
-            return t.unsqueeze(0).float() / 255.0              # 1,3,H,W float32
-        return torch.rand(1, 3, self._imgsz, self._imgsz)
+    def _camera_frame(self):
+        """Next raw camera frame (HWC uint8 RGB888); starts the camera on first use."""
+        if self._frame_iter is None:
+            from cam import Camera
+            self._cam = Camera(size=(640, 480))
+            meta = self._cam.start()
+            self._frame_iter = self._cam.frames()
+            self.cam_meta = meta
+        import numpy as np
+        return np.ascontiguousarray(next(self._frame_iter))
 
     def run_one(self, mode: str):
         with torch.no_grad():
             if self._live:
                 with self.step("camera_capture"):
-                    x = self._fixture()
+                    frame = self._camera_frame()
             else:
-                with self.step("preprocess"):
-                    x = self.preprocess(self._source_frame())
+                frame = self._source_frame()
+            with self.step("preprocess"):           # same path for camera and fixed frames
+                x = self.preprocess(frame)
             with self.step("forward"):
                 out = self._module(x)
             with self.step("postprocess"):

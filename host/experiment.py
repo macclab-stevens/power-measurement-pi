@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import math
 import os
 import shlex
 import subprocess
@@ -131,13 +132,32 @@ def recorder_status() -> dict:
 
 
 def halted_current(run_dir) -> tuple[float, float]:
-    """(mean, max) input current over the last 5 s of the recording."""
+    """(mean, max) input current over the last 5 s of the recording, finite samples only.
+    (nan, nan) when fewer than half the samples are finite; recover_pi then refuses to cycle."""
     import numpy as np
-    from store import open_samples
-    s = open_samples(run_dir)
+    import store
+    s = store.open_samples(run_dir)
     n = len(s)
     I = np.array(s[max(0, n - 25000):n], dtype=np.float64)[:, 0]
-    return float(np.nanmean(I)), float(np.nanmax(I))
+    fin = I[np.isfinite(I)]
+    if I.size == 0 or fin.size < 0.5 * I.size:
+        return float("nan"), float("nan")
+    return float(fin.mean()), float(fin.max())
+
+
+def halt_confirmed(mean_a: float, max_a: float) -> bool:
+    """True only for valid (finite, non-negative) readings below both halt limits. Fails closed."""
+    return (math.isfinite(mean_a) and math.isfinite(max_a) and mean_a >= 0 and max_a >= 0
+            and mean_a < HALT_MEAN_A and max_a < HALT_MAX_A)
+
+
+def exit_code(summary: dict) -> int:
+    """0 only when the matrix was not aborted and every cell is ok."""
+    return 0 if summary["aborted"] is None and summary["ok"] == summary["cells"] else 3
+
+
+class RecorderUnavailable(RuntimeError):
+    pass
 
 
 class Orchestrator:
@@ -178,11 +198,18 @@ class Orchestrator:
             return f"Pi unreachable for {PI_DOWN_S}s (auto power cycle disabled or used up)"
         if self.sh.ping():
             return "Pi answers ping but not ssh; not power-cycling"
-        st = self.status_fn()
-        mean_a, max_a = self.current_fn(st["run_dir"])
-        if mean_a >= HALT_MEAN_A or max_a >= HALT_MAX_A:
-            return (f"Pi unreachable but drawing {mean_a:.2f} A (max {max_a:.2f} A); "
-                    "not halted, not power-cycling")
+        try:
+            st = self.status_fn()
+            run_dir = st["run_dir"]
+        except (OSError, ValueError, KeyError) as e:
+            raise RecorderUnavailable(f"recorder unreachable during Pi recovery: {e}") from e
+        try:
+            mean_a, max_a = self.current_fn(run_dir)
+        except Exception as e:  # noqa: BLE001 - unreadable current means no power cycle
+            return f"halt current unreadable ({type(e).__name__}: {e}); not power-cycling"
+        if not halt_confirmed(mean_a, max_a):
+            return (f"Pi unreachable but current reads {mean_a:.2f} A (max {max_a:.2f} A); "
+                    "halt not confirmed, not power-cycling")
         self.cycles_left -= 1
         self.log(f"[power-cycle] Pi halted (I mean {mean_a:.3f} A, max {max_a:.3f} A); "
                  f"cycling Vout ({self.cycles_left} left)")
@@ -236,11 +263,17 @@ class Orchestrator:
             return fail("recorder", f"recorder unreachable: {e}")
         if not st.get("recording"):
             return fail("recorder", f"recorder not recording: {st}")
-        err = self.recover_pi()
+        try:
+            err = self.recover_pi()
+        except RecorderUnavailable as e:
+            return fail("recorder", str(e))
         if err:
             return fail("pi_down", err)
-        st = self.status_fn()          # a power cycle starts a new recording
-        res["recorder_dir"] = st["run_dir"]
+        try:
+            st = self.status_fn()      # a power cycle starts a new recording
+            res["recorder_dir"] = st["run_dir"]
+        except (OSError, ValueError, KeyError) as e:
+            return fail("recorder", f"recorder unreachable: {e}")
         err = self.thermal_gate()
         if err:
             return fail("thermal", err)
@@ -411,9 +444,13 @@ def main() -> None:  # pragma: no cover - CLI
                         verify_fn=lambda d, mhz: verify(d, mhz),
                         auto_power_cycle=a.auto_power_cycle, log=log)
     orch.provenance = {"git_host": host_head, "git_pi": pi_head}
-    summary = orch.run(manifest, a.max_attempts)
-    sh.ssh("sudo -n /usr/local/sbin/pi-power-pin restore", 60)
-    raise SystemExit(0 if summary["aborted"] is None else 3)
+    try:
+        summary = orch.run(manifest, a.max_attempts)
+    finally:
+        sh.ssh("sudo -n /usr/local/sbin/pi-power-pin restore", 60)
+    if summary["ok"] != summary["cells"]:
+        log(f"[matrix] incomplete: {summary['ok']}/{summary['cells']} cells ok")
+    raise SystemExit(exit_code(summary))
 
 
 if __name__ == "__main__":

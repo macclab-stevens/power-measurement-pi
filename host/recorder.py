@@ -46,10 +46,11 @@ def validate_args(vout: float, current_limit: float) -> None:
 
 # ---- live window stats -------------------------------------------------------
 def _clock(store):
-    """Clock fit over recent blocks, cached on the store for 1 s (refit as data arrives)."""
+    """Clock fit over recent blocks, cached on the store. Refit at most once per second, and only
+    when new blocks have arrived since the last fit (between fits the line extrapolates)."""
     now = time.monotonic()
     cached = getattr(store, "_clock_cache", None)
-    if cached is None or now - cached[0] > 1.0 or cached[2] != store.seq:
+    if cached is None or (now - cached[0] > 1.0 and cached[2] != store.seq):
         last_idx, host_ns = store.recent_blocks()
         if last_idx.size == 0:
             return None

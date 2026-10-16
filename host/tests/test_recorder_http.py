@@ -92,3 +92,29 @@ def test_window_rejects_huge_or_inverted_span(tmp_path):
         srv.shutdown()
         srv.server_close()
         s.close()
+
+
+def test_clock_fit_is_cached_while_blocks_arrive(tmp_path, monkeypatch):
+    import recorder
+    t0 = 1_800_000_000_000_000_000
+    s = _store_with_known_power(tmp_path, t0)
+    fits = []
+    real = recorder.fit_sample_clock
+    monkeypatch.setattr(recorder, "fit_sample_clock", lambda *a: fits.append(1) or real(*a))
+    now = [100.0]
+    monkeypatch.setattr(recorder.time, "monotonic", lambda: now[0])
+    recorder._clock(s)
+    for k in range(100, 110):                    # new blocks keep arriving within 1 s
+        last_idx = k * 50 + 49
+        s.append(np.full(50, 0.4), np.full(50, 5.0), host_ns=int(t0 + last_idx * 200_000),
+                 dropped_raw=0)
+        now[0] += 0.05
+        recorder._clock(s)
+    assert len(fits) == 1
+    now[0] += 1.0                                # cache expired and new data -> refit once
+    recorder._clock(s)
+    assert len(fits) == 2
+    now[0] += 2.0                                # expired but no new blocks -> keep the fit
+    recorder._clock(s)
+    assert len(fits) == 2
+    s.close()

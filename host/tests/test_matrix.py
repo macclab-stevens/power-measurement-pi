@@ -65,3 +65,15 @@ def test_probe_is_every_model_once():
     rows = matrix.cells(probe=True)
     assert [r["model_key"] for r in rows] == list(matrix.MODELS)
     assert all(r["cell_id"].startswith("probe_") and r["cpu_mhz"] == 2400 for r in rows)
+
+
+def test_only_applies_to_smoke_and_probe():
+    import pytest
+    probe = matrix.cells(probe=True, only=["lm16"])
+    assert [r["model_key"] for r in probe] == ["lm16"]
+    smoke = matrix.cells(smoke=True, only=["yolo11n"])
+    assert [r["model_key"] for r in smoke] == ["yolo11n"]
+    with pytest.raises(ValueError):
+        matrix.cells(probe=True, only=["nope"])
+    with pytest.raises(ValueError):
+        matrix.cells(smoke=True, only=["nope"])

@@ -39,13 +39,17 @@ def expected_steps(meta: dict) -> tuple[str, ...]:
 
 
 def phase_energy(df: pd.DataFrame, dt_s: float) -> pd.DataFrame:
-    """Energy per (phase, iter, step); ctx_read samples counted and flagged, not dropped."""
+    """Energy per (phase, iter, step); ctx_read samples counted and flagged, not dropped.
+
+    Missing (NaN) samples count toward the duration but add no energy (same policy as the
+    total), so E_mJ is the sum of the observed samples x dt and mean_P_W their mean."""
     g = df.groupby(["phase", "iter", "step"], sort=False, dropna=False)
-    out = g.agg(n_samples=("P_W", "size"), mean_P_W=("P_W", "mean"),
+    out = g.agg(n_samples=("P_W", "size"), n_finite=("P_W", "count"),
+                P_sum=("P_W", "sum"), mean_P_W=("P_W", "mean"),
                 ctx_read_frac=("ctx_read", "mean"),
                 t_start_s=("t_s", "min"), t_end_s=("t_s", "max")).reset_index()
     out["dur_ms"] = out["n_samples"] * dt_s * 1000.0
-    out["E_mJ"] = out["mean_P_W"] * out["dur_ms"]
+    out["E_mJ"] = out.pop("P_sum") * dt_s * 1000.0
     return out
 
 
@@ -86,7 +90,14 @@ def verify(run_dir, cpu_mhz: int | None = None, write: bool = True) -> dict:
     nan_frac = float(np.isnan(P).mean())
     if nan_frac > MAX_NAN_FRACTION:
         errors.append(f"NaN fraction {nan_frac:.3f} > {MAX_NAN_FRACTION}")
+    n_inf = int(np.isinf(P).sum())
+    if n_inf:
+        errors.append(f"{n_inf} infinite power samples")
     fin = P[np.isfinite(P)]
+    if fin.size == 0:
+        errors.append("no finite power samples")
+        res["ok"] = False
+        return res
     lo, hi = float(np.percentile(fin, 0.1)), float(np.percentile(fin, 99.9))
     if lo < P_MIN_W or hi > P_MAX_W:
         errors.append(f"power out of range: p0.1={lo:.2f} W p99.9={hi:.2f} W "
@@ -113,11 +124,11 @@ def verify(run_dir, cpu_mhz: int | None = None, write: bool = True) -> dict:
 
     dt_s = 1.0 / float(ali.get("slip_rate_hz") or 5000.0)
     pe = phase_energy(df, dt_s)
-    e_total = float(np.nansum(P)) * dt_s * 1000.0
+    e_total = float(fin.sum()) * dt_s * 1000.0
     e_sum = float(np.nansum(pe["E_mJ"]))
-    closure = abs(e_sum - e_total) / e_total if e_total else 1.0
-    if closure > ENERGY_CLOSURE:
-        errors.append(f"energy closure {closure:.4f} > {ENERGY_CLOSURE}")
+    closure = abs(e_sum - e_total) / e_total if e_total else float("nan")
+    if not np.isfinite(closure) or closure > ENERGY_CLOSURE:
+        errors.append(f"energy closure {closure:.4f} > {ENERGY_CLOSURE} (or undefined)")
     if write:
         pe.to_csv(run_dir / "phase_energy.csv", index=False)
 

@@ -280,6 +280,15 @@ class MonsoonSampler(PowerSampler):
                 self._ctx.append(row)
             self._stop.wait(CONTEXT_PERIOD_S)
 
+    def snapshot_env(self) -> tuple[float | None, int | None, int | None]:
+        """Base snapshot (three vcgencmd calls), bracketed by ctx_begin/ctx_end like the context
+        thread's reads, so align.py marks those samples ctx_read and they can be masked."""
+        self.events.edge("ctx_begin", "snapshot")
+        try:
+            return super().snapshot_env()
+        finally:
+            self.events.edge("ctx_end", "snapshot")
+
     def sync_pulse(self, tag: str) -> None:
         """Emit a sync-pulse train with context-thread reads paused."""
         self.ctx_pause.set()
