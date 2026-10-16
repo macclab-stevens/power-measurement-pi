@@ -252,7 +252,7 @@ ssh macc2026@192.168.0.11 'git -C power-measurement-pi log --oneline -1'
 `./lab` (the script `host/lab.py`) does a whole single measurement in one command: pre-flight
 checks, run.py on the Pi, copy back, align, verify, and a plain-English summary. Run it on the
 **EliteBook**, from `~/power-measurement-pi` (the recorder runs there). Every command has a
-detailed `--help`.
+detailed `--help`. Step-by-step instructions for every option: [INSTRUCTIONS.md](INSTRUCTIONS.md).
 
 ```bash
 cd ~/power-measurement-pi
