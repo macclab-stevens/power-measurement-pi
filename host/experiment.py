@@ -156,6 +156,16 @@ def exit_code(summary: dict) -> int:
     return 0 if summary["aborted"] is None and summary["ok"] == summary["cells"] else 3
 
 
+def parse_git_head(out: str) -> str | None:
+    """The commit hash line from `git rev-parse --short HEAD` output. ssh stdout and stderr are
+    merged, so warnings (e.g. the Pi's setlocale message) can come before or after it."""
+    for line in reversed(out.splitlines()):
+        line = line.strip()
+        if 7 <= len(line) <= 40 and all(c in "0123456789abcdef" for c in line):
+            return line
+    return None
+
+
 class RecorderUnavailable(RuntimeError):
     pass
 
@@ -435,8 +445,8 @@ def main() -> None:  # pragma: no cover - CLI
     sh = Shell()
     host_head = subprocess.run(["git", "-C", str(HERE), "rev-parse", "--short", "HEAD"],
                                capture_output=True, text=True).stdout.strip()
-    rc, pi_head = sh.ssh(f"git -C {PI_DIR} rev-parse --short HEAD", 30)
-    pi_head = pi_head.strip().splitlines()[-1] if rc == 0 and pi_head.strip() else None
+    rc, out = sh.ssh(f"git -C {PI_DIR} rev-parse --short HEAD", 30)
+    pi_head = parse_git_head(out) if rc == 0 else None
     if pi_head != host_head and not a.allow_git_mismatch:
         raise SystemExit(f"git mismatch: host {host_head} vs Pi {pi_head} "
                          "(pull both, or --allow-git-mismatch)")

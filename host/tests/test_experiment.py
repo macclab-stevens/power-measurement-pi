@@ -257,3 +257,10 @@ def test_exit_code_requires_every_cell_ok():
     assert ex.exit_code({"cells": 3, "ok": 2, "aborted": None}) != 0
     assert ex.exit_code({"cells": 3, "ok": 0, "aborted": None}) != 0
     assert ex.exit_code({"cells": 3, "ok": 3, "aborted": "pi_down: x"}) != 0
+
+
+def test_parse_git_head_ignores_ssh_warnings():
+    warn = "bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8)"
+    assert ex.parse_git_head(f"d2d6971\n{warn}\n") == "d2d6971"
+    assert ex.parse_git_head(f"{warn}\nd2d6971\n") == "d2d6971"
+    assert ex.parse_git_head(warn) is None
