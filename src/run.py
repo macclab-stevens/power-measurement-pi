@@ -190,10 +190,13 @@ def main():
             for f in range(args.frames):
                 prof.set_frame(f)
                 if f == 0:
-                    with profiler.profile(activities=[profiler.ProfilerActivity.CPU],
-                                          record_shapes=True) as p:
-                        task.run_one(mode)
-                    op_rows += _op_rows(p, mode)
+                    # torch.profiler start/stop takes ~1 s on the first mode; label it so it is
+                    # not mistaken for unexplained time (the task's own steps nest inside)
+                    with task.step("profiler"):
+                        with profiler.profile(activities=[profiler.ProfilerActivity.CPU],
+                                              record_shapes=True) as p:
+                            task.run_one(mode)
+                        op_rows += _op_rows(p, mode)
                 else:
                     task.run_one(mode)
             logger.info(f"  mode {mode}: {args.frames} iterations done")
