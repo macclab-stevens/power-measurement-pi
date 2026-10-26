@@ -1,0 +1,12 @@
+[project]
+name = "pi-power-host"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["monsoon==0.1.88", "pyusb", "numpy", "pandas", "pyarrow"]
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

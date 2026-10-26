@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+d="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"; exec "$HOME/.local/bin/uv" run --project "$d/host" python "$d/host/lab.py" "$@"

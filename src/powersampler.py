@@ -10,14 +10,21 @@ snapshot_env contract is the drop-in boundary for a future Monsoon backend.
 """
 from __future__ import annotations
 
+import json
 import subprocess
 import threading
 import time
+import urllib.request
 from collections import deque
+
+import syncpulse
+from eventlog import EventLog
 
 VCMD = "/usr/bin/vcgencmd"
 CONTEXT_PERIOD_S = 5.0
 MAX_SAMPLES = 2_000_000
+NOMINAL_HZ = 5000            # Monsoon HVPM sample rate
+MIN_WINDOW_FRACTION = 0.95   # a live window with fewer samples than this is not trusted
 
 
 def _read_core() -> tuple[float, float]:
@@ -171,16 +178,178 @@ class PowerSampler:
                 self._stop.set()
                 return
 
+    def _ctx_read(self) -> dict:
+        try:
+            return {
+                "t_ms": self._now(), "temp_C": _measure_temp(),
+                "arm_MHz": _measure_clock_arm() // 1_000_000,
+                "throttle_bits": _get_throttled(), "dump": _full_dump(),
+            }
+        except Exception as e:  # noqa: BLE001
+            return {"t_ms": self._now(), "error": f"{type(e).__name__}: {e}"}
+
     def _ctx_loop(self) -> None:  # pragma: no cover - thread body
         while not self._stop.is_set():
-            try:
-                row = {
-                    "t_ms": self._now(), "temp_C": _measure_temp(),
-                    "arm_MHz": _measure_clock_arm() // 1_000_000,
-                    "throttle_bits": _get_throttled(), "dump": _full_dump(),
-                }
-            except Exception as e:  # noqa: BLE001
-                row = {"t_ms": self._now(), "error": f"{type(e).__name__}: {e}"}
+            row = self._ctx_read()
             with self._lock:
                 self._ctx.append(row)
             self._stop.wait(CONTEXT_PERIOD_S)
+
+
+class MonsoonSampler(PowerSampler):
+    """Monsoon HVPM backend (EliteBook recorder). Same public contract as PowerSampler.
+
+    No PMIC fast loop (it burned CPU and polluted the trace); the 5 s context
+    thread stays. Markers go to an EventLog on the lab-synced wall clock.
+    window() asks the recorder for stats over the same wall-clock range.
+    """
+
+    def __init__(self, recorder_url: str, events: EventLog | None = None,
+                 timeout_s: float = 5.0) -> None:
+        super().__init__()
+        self.url = recorder_url.rstrip("/")
+        self.events = events or EventLog()
+        self._timeout = timeout_s
+        self._t0_ns = time.time_ns()
+        self._status: dict = {}
+        self.ctx_pause = threading.Event()
+        self.status_start: dict = {}
+        self.status_end: dict | None = None
+
+    def _get(self, path: str) -> dict:
+        with urllib.request.urlopen(self.url + path, timeout=self._timeout) as r:
+            return json.loads(r.read())
+
+    def recorder_status(self) -> dict:
+        self._status = self._get("/status")
+        return self._status
+
+    def _now(self) -> float:
+        return (time.time_ns() - self._t0_ns) / 1e6
+
+    def start(self) -> None:
+        try:
+            st = self.recorder_status()
+        except (OSError, ValueError) as e:
+            raise RuntimeError(f"Monsoon recorder unreachable at {self.url}: {e}") from e
+        if not st.get("recording"):
+            raise RuntimeError(f"Monsoon recorder at {self.url} is not recording: {st}")
+        self.status_start = dict(st)
+        self._t0 = time.monotonic()
+        self._t0_ns = time.time_ns()
+        self._stop.clear()
+        self._ctx_thread.start()
+
+    def check_recorder_continuity(self) -> list[str]:
+        """Compare the recorder's /status now with the one at start(); never raises."""
+        try:
+            st = self.recorder_status()
+        except (OSError, ValueError) as e:
+            self.status_end = None
+            return [f"recorder status unreachable at end of run: {e}"]
+        self.status_end = dict(st)
+        a, errs = self.status_start, []
+        if st.get("run_dir") != a.get("run_dir"):
+            errs.append(f"recorder run_dir changed: {a.get('run_dir')} -> {st.get('run_dir')}")
+        if st.get("serial") != a.get("serial"):
+            errs.append(f"recorder serial changed: {a.get('serial')} -> {st.get('serial')}")
+        if st.get("n_total", 0) < a.get("n_total", 0):
+            errs.append(f"recorder n_total decreased: {a.get('n_total')} -> {st.get('n_total')}")
+        if not st.get("recording"):
+            errs.append("recorder is not recording at end of run")
+        return errs
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._ctx_thread.is_alive():
+            self._ctx_thread.join(timeout=10)
+
+    def _ctx_loop(self) -> None:
+        """Base loop, but each read is bracketed by ctx_begin/ctx_end edges so the vcgencmd
+        subprocess power spikes can be masked offline (align.py ctx_read)."""
+        while not self._stop.is_set():
+            if self.ctx_pause.is_set():       # sync-pulse train running: no vcgencmd bursts
+                self._stop.wait(0.05)
+                continue
+            self.events.edge("ctx_begin", "ctx")
+            try:
+                row = self._ctx_read()
+            finally:
+                self.events.edge("ctx_end", "ctx")
+            with self._lock:
+                self._ctx.append(row)
+            self._stop.wait(CONTEXT_PERIOD_S)
+
+    def snapshot_env(self) -> tuple[float | None, int | None, int | None]:
+        """Base snapshot (three vcgencmd calls), bracketed by ctx_begin/ctx_end like the context
+        thread's reads, so align.py marks those samples ctx_read and they can be masked."""
+        self.events.edge("ctx_begin", "snapshot")
+        try:
+            return super().snapshot_env()
+        finally:
+            self.events.edge("ctx_end", "snapshot")
+
+    def sync_pulse(self, tag: str) -> None:
+        """Emit a sync-pulse train with context-thread reads paused."""
+        self.ctx_pause.set()
+        try:
+            time.sleep(0.1)                   # let an in-flight ctx read finish
+            syncpulse.emit(self.events, tag)
+        finally:
+            self.ctx_pause.clear()
+
+    def marker(self, name: str | None) -> None:
+        self.events.marker(name or "idle")
+        with self._lock:
+            self._phase = self.events.phase
+            self._window_id = self.events.window_id
+
+    def window(self, t0_ms: float, t1_ms: float) -> dict:
+        t0 = self._t0_ns + int(t0_ms * 1e6)
+        t1 = self._t0_ns + int(t1_ms * 1e6)
+        deadline = time.monotonic() + self._timeout
+        last_err: Exception | None = None
+        while True:
+            try:
+                w = self._get(f"/window?t0_ns={t0}&t1_ns={t1}")
+            except (OSError, ValueError) as e:
+                last_err = e
+                w = None
+            if w is not None:
+                if w.get("complete"):
+                    try:
+                        out = {"count": w["count"], "mean_P": w["mean_P"], "max_P": w["max_P"]}
+                    except KeyError as e:
+                        raise RuntimeError(f"recorder window response missing {e}: {w}") from e
+                    expected = (t1 - t0) * NOMINAL_HZ / 1e9
+                    if expected >= 50 and out["count"] < MIN_WINDOW_FRACTION * expected:
+                        raise RuntimeError(
+                            f"recorder window has {out['count']}/{expected:.0f} samples (<95%): "
+                            "dropped data or recorder restart")
+                    return out
+                last_err = None
+            if time.monotonic() > deadline:
+                if last_err is not None:
+                    raise RuntimeError(f"recorder window query failed: {last_err}") from last_err
+                raise RuntimeError(f"recorder window [{t0}, {t1}) ns still incomplete "
+                                   f"after {self._timeout}s: {w}")
+            time.sleep(0.05)
+
+    def rows(self) -> list[dict]:
+        return []
+
+    def achieved_hz(self) -> float:
+        try:
+            return float(self.recorder_status().get("sample_hz", 0.0))
+        except (OSError, ValueError):
+            return 0.0
+
+
+def make_sampler(kind: str, recorder_url: str | None):
+    if kind == "pmic":
+        return PowerSampler()
+    if kind == "monsoon":
+        if not recorder_url:
+            raise ValueError("--sampler monsoon needs --recorder-url")
+        return MonsoonSampler(recorder_url)
+    raise ValueError(f"unknown sampler '{kind}' (pmic | monsoon)")

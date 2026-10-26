@@ -30,14 +30,17 @@ import time
 import torch
 import torch.profiler as profiler
 
+import pinning
 from layers import LayerProfiler
 from microbench import bench_configs
-from powersampler import PowerSampler
+from powersampler import make_sampler
 from tasks import make_task
 
 BASELINE_W_MIN, BASELINE_W_MAX = 0.5, 8.0
 ACC_MIN_PD = 0.01   # per-op P_delta sanity (dominant op class)
 MIN_SAMPLES = 30
+MONSOON_MIN_HZ = 4900   # recorder sample_hz floor in monsoon mode (nominal 5000)
+PMIC_MIN_HZ = 50
 
 
 def _write_csv(path, header, rows):
@@ -65,7 +68,7 @@ def _op_rows(prof, mode: str) -> list[dict]:
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--task", default="image", help="image | lm (default image)")
+    ap.add_argument("--task", default="image", help="image | lm | train (default image)")
     ap.add_argument("--model", default="yolo11n.pt")
     ap.add_argument("--frames", type=int, default=30)
     ap.add_argument("--bench", type=float, default=3.0)
@@ -75,13 +78,29 @@ def main():
     ap.add_argument("--conf", type=float, default=0.25)
     ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--seq", type=int, default=64, help="LM context length (prefill)")
+    ap.add_argument("--batch", type=int, default=8, help="training batch size (--task train)")
+    ap.add_argument("--optimizer", default="sgd", choices=["sgd", "adam"],
+                    help="training optimizer (--task train)")
+    ap.add_argument("--no-bench", action="store_true",
+                    help="skip the per-op isolation benches (perop_power.csv header only)")
+    ap.add_argument("--serve", type=int, default=0,
+                    help="after the modes, N single requests with idle gaps (phase 'serve')")
+    ap.add_argument("--serve-gap-ms", type=float, default=200.0,
+                    help="idle time between serve requests (step 'idle_between_requests')")
     ap.add_argument("--check-image", default=None,
                     help="detection oracle: require object conf>=--conf on this image file")
     ap.add_argument("--live-camera", action="store_true",
                     help="feed real camera frames (cam.py) instead of synthetic fixtures")
-    ap.add_argument("--pin-freq", action="store_true",
-                    help="pin CPU to performance governor for consistent power measurements")
+    ap.add_argument("--cpu-mhz", type=int, default=None,
+                    help="pin all cores to this clock via pi-power-pin (1500..2400 step 100)")
+    ap.add_argument("--fan-full", action="store_true",
+                    help="force the fan to max state (constant fan power) via pi-power-pin")
+    ap.add_argument("--sampler", default="pmic", choices=["pmic", "monsoon"],
+                    help="power source: on-board PMIC (legacy) or EliteBook Monsoon recorder")
+    ap.add_argument("--recorder-url", default="http://192.168.0.11:8051",
+                    help="Monsoon recorder HTTP base URL (used with --sampler monsoon)")
     args = ap.parse_args()
+    bmin, bmax = (1.5, 8.0) if args.sampler == "monsoon" else (BASELINE_W_MIN, BASELINE_W_MAX)
 
     torch.set_num_threads(args.threads)
     ts = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
@@ -102,21 +121,43 @@ def main():
     logger.addHandler(_ch)
     logger.info(f"run {ts} -> {outdir}")
 
-    if args.pin_freq:
-        os.system("sudo cpupower frequency-set -g performance 2>/dev/null || "
-                  "sudo sh -c 'echo performance > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor'")
+    pin_status_start = pinning.status()   # before applying: exposes a stale pin from a prior run
+    logger.info(f"pin status at start: {pin_status_start}")
+    pin_status = pinning.apply(args.cpu_mhz, args.fan_full)
+    if args.fan_full:
+        pinning.wait_fan_full()
+    if pin_status:
+        logger.info(f"pinned: {pin_status}")
 
-    task = make_task(args.task, args.model, args)
-    prof = LayerProfiler(task.module)
-    modes = task.modes()
-    n_params = sum(p.numel() for p in task.module.parameters())
-    logger.info(f"task='{args.task}' model='{args.model}' modes={modes} | "
-                f"torch={torch.__version__} | hooked={len(prof._modules)} modules | "
-                f"params={n_params/1e6:.2f}M")
-
-    sampler = PowerSampler()
+    sampler = make_sampler(args.sampler, args.recorder_url)
+    monsoon = args.sampler == "monsoon"
     sampler.start()
+    thr0 = sampler.snapshot_env()[2]
+    task = None
     try:
+        # ---- lifecycle: model load and the first call of each mode are measured phases
+        sampler.marker("load_weights")
+        t_load = time.perf_counter()
+        task = make_task(args.task, args.model, args)
+        load_s = time.perf_counter() - t_load
+        prof = LayerProfiler(task.module)
+        modes = task.modes()
+        n_params = sum(p.numel() for p in task.module.parameters())
+        logger.info(f"task='{args.task}' model='{args.model}' modes={modes} | "
+                    f"torch={torch.__version__} | hooked={len(prof._modules)} modules | "
+                    f"params={n_params/1e6:.2f}M | load {load_s:.2f}s")
+        if monsoon:
+            prof.events = sampler.events
+            task.step = sampler.events.step
+        first_ms = {}
+        for m in modes:
+            sampler.marker(f"first:{m}")
+            prof.set_mode(f"first:{m}")
+            t1 = time.perf_counter()
+            task.run_one(m)
+            first_ms[m] = round((time.perf_counter() - t1) * 1000, 3)
+        logger.info(f"first call per mode (ms): {first_ms}")
+
         # ---- warm-up: sustained inference over ALL modes so temp/DVFS settle
         # before the idle baseline and timed measurements.
         if args.warmup > 0:
@@ -132,6 +173,8 @@ def main():
                         f"temp {env0[0]}->{env1[0]}C | arm {env0[1]}->{env1[1]}MHz")
 
         # ABAB global baseline, slice A (2 s) — slice B follows the forward loops
+        if monsoon:
+            sampler.sync_pulse("start")
         sampler.marker("baseline_A")
         tA0 = sampler.now_ms()
         time.sleep(2.0)
@@ -147,13 +190,28 @@ def main():
             for f in range(args.frames):
                 prof.set_frame(f)
                 if f == 0:
-                    with profiler.profile(activities=[profiler.ProfilerActivity.CPU],
-                                          record_shapes=True) as p:
-                        task.run_one(mode)
-                    op_rows += _op_rows(p, mode)
+                    # torch.profiler start/stop takes ~1 s on the first mode; label it so it is
+                    # not mistaken for unexplained time (the task's own steps nest inside)
+                    with task.step("profiler"):
+                        with profiler.profile(activities=[profiler.ProfilerActivity.CPU],
+                                              record_shapes=True) as p:
+                            task.run_one(mode)
+                        op_rows += _op_rows(p, mode)
                 else:
                     task.run_one(mode)
             logger.info(f"  mode {mode}: {args.frames} iterations done")
+
+        # ---- serve: isolated requests with idle gaps (race-to-idle transitions)
+        if args.serve > 0 and args.task != "train":
+            prof.set_mode("serve")
+            sampler.marker("serve")
+            for r in range(args.serve):
+                prof.set_frame(r)
+                for m in modes:
+                    task.run_one(m)
+                with task.step("idle_between_requests"):
+                    time.sleep(args.serve_gap_ms / 1000.0)
+            logger.info(f"serve: {args.serve} requests, gap {args.serve_gap_ms:.0f} ms")
 
         # ABAB global baseline, slice B (2 s); the run baseline is mean(A, B)
         sampler.marker("baseline_B")
@@ -163,9 +221,9 @@ def main():
         aP, bP = baseA["mean_P"], baseB["mean_P"]
         baseline_W = (aP + bP) / 2 if aP is not None and bP is not None else None
         baseline_drift_W = abs(aP - bP) if aP is not None and bP is not None else None
-        if baseline_W is None or not (BASELINE_W_MIN <= baseline_W <= BASELINE_W_MAX):
+        if baseline_W is None or not (bmin <= baseline_W <= bmax):
             raise SystemExit(f"baseline_W={baseline_W} outside "
-                             f"[{BASELINE_W_MIN}, {BASELINE_W_MAX}] - aborting")
+                             f"[{bmin}, {bmax}] - aborting")
         aS = f"{aP:.4f}" if aP is not None else "None"
         bS = f"{bP:.4f}" if bP is not None else "None"
         mS = f"{baseline_W:.4f}" if baseline_W is not None else "None"
@@ -199,8 +257,18 @@ def main():
 
         achieved_hz = sampler.achieved_hz()
         logger.info(f"per-op power benches ({achieved_hz:.0f} W-Hz sampling):")
-        perop = bench_configs(prof, sampler, baseline_W, args.bench,
-                              require_samples=MIN_SAMPLES, max_retries=2, log=logger.info)
+        saved_events, prof.events = prof.events, None   # benches are labeled by bench:<cid> phase markers
+        try:
+            if args.no_bench:
+                perop = []
+                logger.info("  skipped (--no-bench)")
+            else:
+                perop = bench_configs(prof, sampler, baseline_W, args.bench,
+                                      require_samples=MIN_SAMPLES, max_retries=2,
+                                      log=logger.info)
+        finally:
+            prof.events = saved_events
+        thr1 = sampler.snapshot_env()[2]
         _write_csv(os.path.join(outdir, "perop_power.csv"),
                    ["config_id", "class", "config_json", "input_kind",
                     "input_shapes", "input_dtypes", "macs", "bytes_moved",
@@ -210,10 +278,24 @@ def main():
                     "E_per_call_mJ", "temp_start_C", "temp_end_C",
                     "freq_start_MHz", "freq_end_MHz", "samples_used", "SKIPPED",
                     "skip_reason", "error"], perop)
+        if monsoon:
+            sampler.sync_pulse("end")
+            sampler.marker("done")
+            sampler.events.write_csv(os.path.join(outdir, "events.csv"))
+
+        continuity = sampler.check_recorder_continuity() if monsoon else []
+        pin_status_end = pinning.status()
+        fan_end = None
+        if args.fan_full:
+            try:
+                fan_end = pinning._read_fan()
+            except (OSError, ValueError, RuntimeError) as e:
+                logger.error(f"fan state unreadable at end: {e}")
 
         srows = sampler.rows()
-        _write_csv(os.path.join(outdir, "samples.csv"),
-                   ["t_ms", "phase", "window_id", "I_A", "V_V", "P_W"], srows)
+        if not monsoon:
+            _write_csv(os.path.join(outdir, "samples.csv"),
+                       ["t_ms", "phase", "window_id", "I_A", "V_V", "P_W"], srows)
         ctx = sampler.context()
         flat = []
         rail_keys: list[str] = []
@@ -245,6 +327,13 @@ def main():
         meta = {
             "task": args.task, "model": args.model, "modes": modes,
             "imgsz": args.imgsz, "conf": args.conf, "seq_len": args.seq,
+            "batch": args.batch if args.task == "train" else 1,
+            "optimizer": args.optimizer if args.task == "train" else None,
+            "train_loss": [round(v, 5) for v in getattr(task, "losses", [])] or None,
+            "bench_skipped": args.no_bench,
+            "serve_requests": args.serve if args.task != "train" else 0,
+            "serve_gap_ms": args.serve_gap_ms,
+            "load_weights_s": round(load_s, 4), "first_call_ms": first_ms,
             "threads": args.threads, "frames_per_mode": args.frames,
             "warmup_passes": args.warmup, "params_M": round(n_params / 1e6, 3),
             "mean_fps": None,
@@ -252,7 +341,17 @@ def main():
             "baseline_A_W": round(aP, 6) if aP is not None else None,
             "baseline_B_W": round(bP, 6) if bP is not None else None,
             "baseline_drift_W": round(baseline_drift_W, 6) if baseline_drift_W is not None else None,
-            "schema_version": 3,
+            "schema_version": 4 if monsoon else 3,
+            "sampler": args.sampler,
+            "recorder_url": args.recorder_url if monsoon else None,
+            "recorder_status_start": sampler.status_start if monsoon else None,
+            "recorder_status_end": sampler.status_end if monsoon else None,
+            "recorder_continuity_errors": continuity if monsoon else None,
+            "throttled_start": thr0, "throttled_end": thr1,
+            "pin_status_start": pin_status_start, "pin_status_end": pin_status_end,
+            "t0_real_ns": getattr(sampler, "_t0_ns", None),
+            "sync_tags": ["start", "end"] if monsoon else [],
+            "cpu_mhz_pinned": args.cpu_mhz, "fan_full": args.fan_full, "pin_status": pin_status,
             "achieved_sample_hz": round(achieved_hz, 1),
             "throttle_bits": ctx[-1].get("throttle_bits") if ctx else None,
             "arch_fingerprint": arch,
@@ -266,7 +365,9 @@ def main():
                              "E_mJ = P_W * t_ms; P_delta = P_mean - baseline_W",
             "methodology": "steady-state isolation microbench (deepcopy leaf, "
                            "dtype-aware cache-hot inputs, VDD_CORE PMIC rail); "
-                           "per-op power is attributed, not instantaneous",
+                           "per-op power is attributed, not instantaneous"
+                           + (" | monsoon: 5 V input power @5 kHz, events on lab PTP wall clock, "
+                              "aligned offline by sync pulses (host/align.py)" if monsoon else ""),
         }
         with open(os.path.join(outdir, "run_meta.json"), "w") as f:
             json.dump(meta, f, indent=2)
@@ -297,9 +398,10 @@ def main():
                         errors.append(f"{dom} {r['config_id']}: samples={r['samples_used']}<{MIN_SAMPLES}")
         if not op_rows:
             errors.append("op_table empty")
-        if achieved_hz < 50:
-            errors.append(f"achieved sample Hz={achieved_hz:.1f} < 50")
-        if baseline_W is None or not (BASELINE_W_MIN <= baseline_W <= BASELINE_W_MAX):
+        min_hz = MONSOON_MIN_HZ if monsoon else PMIC_MIN_HZ
+        if achieved_hz < min_hz:
+            errors.append(f"achieved sample Hz={achieved_hz:.1f} < {min_hz}")
+        if baseline_W is None or not (bmin <= baseline_W <= bmax):
             errors.append(f"baseline_W={baseline_W} out of range")
         if baseline_drift_W is None:
             errors.append("baseline drift unknown (empty A/B window)")
@@ -308,6 +410,20 @@ def main():
         thr = ctx[-1].get("throttle_bits") if ctx else None
         if thr is not None and (thr & 0x1) != 0:
             errors.append(f"throttled during run (throttle_bits=0x{thr:x})")
+        if args.cpu_mhz is not None:
+            errors += pinning.clock_errors(ctx, args.cpu_mhz)
+        if monsoon:
+            if args.cpu_mhz is None:
+                errors += pinning.throttle_errors(ctx)   # clock_errors already covers pinned runs
+            if thr0 is None or thr1 is None:
+                errors.append("throttle state unreadable at start/end (vcgencmd snapshot failed)")
+            elif pinning.new_undervoltage(thr0, thr1):
+                errors.append(f"under-voltage occurred during run "
+                              f"(throttled 0x{thr0:x} -> 0x{thr1:x})")
+            errors += continuity
+        if args.fan_full:
+            if fan_end is None or fan_end[0] < fan_end[1]:
+                errors.append("fan not at max at end of run")
         if not task.oracle():
             extra = getattr(task, "_checked", None)
             oracle_note = f" (best_conf={extra:.3f})" if extra is not None else ""
@@ -327,11 +443,10 @@ def main():
     finally:
         sampler.stop()
         try:
-            task.stop_camera()
+            if task is not None:
+                task.stop_camera()
         except AttributeError:
             pass
-        if args.pin_freq:
-            os.system("sudo sh -c 'echo ondemand > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor' 2>/dev/null")
 
 if __name__ == "__main__":
     main()
