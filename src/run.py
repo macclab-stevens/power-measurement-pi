@@ -30,6 +30,7 @@ import time
 import torch
 import torch.profiler as profiler
 
+import perfcounters
 import pinning
 from layers import LayerProfiler
 from microbench import bench_configs
@@ -100,6 +101,11 @@ def main():
                     help="power source: on-board PMIC (legacy) or EliteBook Monsoon recorder")
     ap.add_argument("--recorder-url", default="http://192.168.0.11:8051",
                     help="Monsoon recorder HTTP base URL (used with --sampler monsoon)")
+    ap.add_argument("--perf-counters", default="on", choices=["on", "off"],
+                    help="hardware counters via perf stat -I (counters.csv); forced off with "
+                         "--sampler pmic")
+    ap.add_argument("--perf-interval-ms", type=int, default=100, choices=[100, 200],
+                    help="perf stat sampling interval (100 = 10 Hz, 200 = 5 Hz)")
     args = ap.parse_args()
     bmin, bmax = (1.5, 8.0) if args.sampler == "monsoon" else (BASELINE_W_MIN, BASELINE_W_MAX)
 
@@ -134,6 +140,11 @@ def main():
     monsoon = args.sampler == "monsoon"
     sampler.start()
     sysfs = SysfsSampler()
+    perf_on = args.perf_counters == "on" and monsoon
+    if args.perf_counters == "on" and not monsoon:
+        logger.info("perf counters forced off (--sampler pmic)")
+    perf = perfcounters.PerfStat(os.getpid(), interval_ms=args.perf_interval_ms,
+                                 out_path=os.path.join(outdir, "counters.raw.txt"))
     phase = {"name": "init"}   # current phase, recorded in thermal_abort.json
 
     def _check_thermal():
@@ -195,6 +206,15 @@ def main():
             prof.exec_order.clear()  # op_sequence reflects measured modes only
             logger.info(f"warm-up: {args.warmup}x {modes} passes | "
                         f"temp {env0[0]}->{env1[0]}C | arm {env0[1]}->{env1[1]}MHz")
+
+        # perf attaches (-p) only to threads that exist, so start it after warm-up
+        if perf_on:
+            phase["name"] = "perf_start"
+            if perf.start():
+                logger.info(f"perf stat started: {args.perf_interval_ms} ms, "
+                            f"{len(perf.events)} events")
+            else:
+                logger.error(f"perf counters unavailable, continuing without: {perf.error}")
 
         # ABAB global baseline, slice A (2 s) — slice B follows the forward loops
         if monsoon:
@@ -314,6 +334,15 @@ def main():
                     "skip_reason", "error"], perop)
         if monsoon:
             sampler.sync_pulse("end")
+            if perf_on:
+                perf.stop()
+                try:
+                    perfcounters.write_counters_csv(os.path.join(outdir, "counters.csv"),
+                                                    perf.wide_rows(), perf.events)
+                except OSError as e:
+                    logger.error(f"counters.csv not written: {e}")
+                if perf.error:
+                    logger.error(f"perf counters: {perf.error}")
             sampler.marker("done")
             sampler.events.write_csv(os.path.join(outdir, "events.csv"))
 
@@ -382,6 +411,7 @@ def main():
             "recorder_status_start": sampler.status_start if monsoon else None,
             "recorder_status_end": sampler.status_end if monsoon else None,
             "recorder_continuity_errors": continuity if monsoon else None,
+            "perf_counters": perf.meta(perf_on, perfcounters.read_paranoid()),
             "sysfs_period_s": sysfs.period_s, "max_temp_C": sysfs.max_temp_C(),
             "thermal_abort": None,
             "throttled_start": thr0, "throttled_end": thr1,
@@ -485,6 +515,10 @@ def main():
             sys.exit(_thermal_exit(sysfs.thermal_abort))
         raise
     finally:
+        try:
+            perf.stop()   # best effort, idempotent: an abort or crash must not leave perf running
+        except Exception as e:
+            logger.error(f"perf stop failed: {e}")
         sysfs.stop()
         try:
             sysfs.write_csv(os.path.join(outdir, "sysfs.csv"))
