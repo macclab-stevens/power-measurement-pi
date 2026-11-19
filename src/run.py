@@ -335,7 +335,11 @@ def main():
         if monsoon:
             sampler.sync_pulse("end")
             if perf_on:
-                perf.stop()
+                try:
+                    perf.stop()
+                except Exception as e:   # counters must never crash a measurement
+                    logger.error(f"perf stop failed: {e}")
+                    perf.note_error(f"perf stop failed: {e}")
                 try:
                     perfcounters.write_counters_csv(os.path.join(outdir, "counters.csv"),
                                                     perf.wide_rows(), perf.events)
@@ -519,6 +523,7 @@ def main():
             perf.stop()   # best effort, idempotent: an abort or crash must not leave perf running
         except Exception as e:
             logger.error(f"perf stop failed: {e}")
+            perf.note_error(f"perf stop failed: {e}")
         sysfs.stop()
         try:
             sysfs.write_csv(os.path.join(outdir, "sysfs.csv"))

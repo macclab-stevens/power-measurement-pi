@@ -1,51 +1,39 @@
-# perf stat -I 100 -x, -o <file> -e <14 DEFAULT_EVENTS> -p <busy python pid>   (perf 6.18.60, Pi 5, paranoid=2)
-# Captured on the Pi 2026-11-19. Intervals 1-3 are real output; in interval 3 the LLC-loads and
-# LLC-load-misses lines were edited to the real `<not counted>` / `<not supported>` forms
-# (seen on this PMU when 11+ hardware events multiplex).
-# started on Thu Nov 19 18:33:26 2026
+# perf stat -I 100 -x, -o <file> -e <10 DEFAULT_EVENTS> -p <busy python pid>   (perf 6.18.60, Pi 5, paranoid=2)
+# Captured on the Pi 2026-11-19. Intervals 1-3 are real output (every event ran 100 % of the time);
+# in interval 3 the branch-misses and LLC-load-misses lines were edited to the real
+# `<not supported>` / `<not counted>` forms (seen on this PMU when events multiplex).
+# started on Thu Nov 19 18:39:53 2026
 
-0.100109388,239930879,,cycles:u,59897517,59.00,2.396,GHz
-0.100109388,403854045,,instructions:u,63890611,63.00,1.68,insn per cycle
-0.100109388,,,,,,0.12,stalled cycles per insn
-0.100109388,115393928,,cache-references:u,67887019,67.00,1.152,G/sec
-0.100109388,16,,cache-misses:u,68149260,68.00,0.00,of all cache refs
-0.100109388,0,,branch-misses:u,68147593,68.00,,
-0.100109388,47435212,,stalled-cycles-backend:u,68146167,68.00,19.77,backend cycles idle
-0.100109388,115395308,,L1-dcache-loads:u,68143445,68.00,1.152,G/sec
-0.100109388,17,,L1-dcache-load-misses:u,52269759,52.00,0.00,of all L1-dcache accesses
-0.100109388,0,,LLC-loads:u,48271629,48.00,0.000,/sec
-0.100109388,0,,LLC-load-misses:u,48000499,47.00,,
-0.100109388,240017807,,bus-cycles:u,48001221,47.00,2.397,G/sec
-0.100109388,100130259,,task-clock:u,100130092,100.00,1.001,CPUs utilized
-0.100109388,0,,context-switches:u,100129074,100.00,0.000,/sec
-0.100109388,0,,page-faults:u,100128333,100.00,0.000,/sec
-0.200303830,240103588,,cycles:u,60455871,60.00,2.397,GHz
-0.200303830,404123337,,instructions:u,56457204,56.00,1.68,insn per cycle
-0.200303830,,,,,,0.12,stalled cycles per insn
-0.200303830,115474667,,cache-references:u,56000852,55.00,1.153,G/sec
-0.200303830,11,,cache-misses:u,59736573,59.00,0.00,of all cache refs
-0.200303830,0,,branch-misses:u,63717425,63.00,,
-0.200303830,47474739,,stalled-cycles-backend:u,67715777,67.00,19.77,backend cycles idle
-0.200303830,115449094,,L1-dcache-loads:u,68174591,68.00,1.152,G/sec
-0.200303830,19,,L1-dcache-load-misses:u,60175166,60.00,0.00,of all L1-dcache accesses
-0.200303830,0,,LLC-loads:u,60174962,60.00,0.000,/sec
-0.200303830,1,,LLC-load-misses:u,56446797,56.00,,
-0.200303830,240077517,,bus-cycles:u,52465742,52.00,2.397,G/sec
-0.200303830,100176610,,task-clock:u,100176703,100.00,1.002,CPUs utilized
-0.200303830,0,,context-switches:u,100176592,100.00,0.000,/sec
-0.200303830,0,,page-faults:u,100176555,100.00,0.000,/sec
-0.300467810,240007998,,cycles:u,68164073,68.00,2.397,GHz
-0.300467810,403946266,,instructions:u,68163797,68.00,1.68,insn per cycle
-0.300467810,,,,,,0.12,stalled cycles per insn
-0.300467810,115420369,,cache-references:u,64622184,64.00,1.153,G/sec
-0.300467810,18,,cache-misses:u,60592353,60.00,0.00,of all cache refs
-0.300467810,0,,branch-misses:u,56593631,56.00,,
-0.300467810,47425013,,stalled-cycles-backend:u,55969889,55.00,19.76,backend cycles idle
-0.300467810,115401121,,L1-dcache-loads:u,59509353,59.00,1.152,G/sec
-0.300467810,21,,L1-dcache-load-misses:u,55508056,55.00,0.00,of all L1-dcache accesses
-0.300467810,<not counted>,,LLC-loads:u,0,0.00,,
-0.300467810,<not supported>,,LLC-load-misses:u,0,100.00,,
-0.300467810,240001459,,bus-cycles:u,60163463,60.00,2.397,G/sec
-0.300467810,100132853,,task-clock:u,100132890,100.00,1.001,CPUs utilized
-0.300467810,0,,context-switches:u,100132853,100.00,0.000,/sec
-0.300467810,0,,page-faults:u,100132871,100.00,0.000,/sec
+0.100109271,239637235,,cycles:u,100057703,100.00,2.395,GHz
+0.100109271,403327456,,instructions:u,100054073,100.00,1.68,insn per cycle
+0.100109271,,,,,,0.12,stalled cycles per insn
+0.100109271,115237881,,cache-references:u,100052795,100.00,1.152,G/sec
+0.100109271,22,,cache-misses:u,100051592,100.00,0.00,of all cache refs
+0.100109271,1,,branch-misses:u,100050221,100.00,,
+0.100109271,47355958,,stalled-cycles-backend:u,100048591,100.00,19.76,backend cycles idle
+0.100109271,14,,LLC-load-misses:u,100046647,100.00,,
+0.100109271,100044573,,task-clock:u,100044517,100.00,1.000,CPUs utilized
+0.100109271,0,,context-switches:u,100043166,100.00,0.000,/sec
+0.100109271,0,,page-faults:u,100042388,100.00,0.000,/sec
+0.200292207,239853465,,cycles:u,100133075,100.00,2.395,GHz
+0.200292207,403681852,,instructions:u,100132946,100.00,1.68,insn per cycle
+0.200292207,,,,,,0.12,stalled cycles per insn
+0.200292207,115338413,,cache-references:u,100132576,100.00,1.152,G/sec
+0.200292207,8,,cache-misses:u,100132482,100.00,0.00,of all cache refs
+0.200292207,0,,branch-misses:u,100132575,100.00,,
+0.200292207,47406856,,stalled-cycles-backend:u,100132594,100.00,19.76,backend cycles idle
+0.200292207,0,,LLC-load-misses:u,100132686,100.00,,
+0.200292207,100132575,,task-clock:u,100132576,100.00,1.001,CPUs utilized
+0.200292207,0,,context-switches:u,100132556,100.00,0.000,/sec
+0.200292207,0,,page-faults:u,100132538,100.00,0.000,/sec
+0.300448125,240092214,,cycles:u,100156481,100.00,2.397,GHz
+0.300448125,404107715,,instructions:u,100156518,100.00,1.68,insn per cycle
+0.300448125,,,,,,0.12,stalled cycles per insn
+0.300448125,115460207,,cache-references:u,100156592,100.00,1.153,G/sec
+0.300448125,3,,cache-misses:u,100156611,100.00,0.00,of all cache refs
+0.300448125,<not supported>,,branch-misses:u,0,100.00,,
+0.300448125,47445752,,stalled-cycles-backend:u,100156537,100.00,19.76,backend cycles idle
+0.300448125,<not counted>,,LLC-load-misses:u,0,0.00,,
+0.300448125,100156481,,task-clock:u,100156462,100.00,1.002,CPUs utilized
+0.300448125,0,,context-switches:u,100156537,100.00,0.000,/sec
+0.300448125,0,,page-faults:u,100156388,100.00,0.000,/sec

@@ -5,8 +5,10 @@ interval: `time,count,unit,event,run_time_ns,pct_running[,metric,metric_unit]`. 
 since perf started counting; `PerfStat.start()` records `t0_ns = time.time_ns()` (the lab wall
 clock) immediately before spawning perf, so every interval end becomes
 `t_end_ns = t0_ns + time*1e9` and counters.csv joins to power_trace.parquet on `t_pi_ns` with
-pandas.merge_asof. perf only begins counting after it has initialised (~30 ms measured on the Pi),
-so t_end_ns can run that much early; the join does not correct for it.
+pandas.merge_asof. perf only starts its interval clock after it has initialised (~33 ms measured
+on the Pi), so start() polls the raw file until the first complete interval line appears and
+derives `offset_ns = t_first_seen - t0 - first_time` (>= 0); all timestamps are then
+`t0_ns + offset_ns + time*1e9`. If no line shows up within 2 s, offset_ns is 0 (method "none").
 
 Facts about perf on the Pi 5 (6.18.60, perf_event_paranoid=2 => user-space only, events print as
 `cycles:u`): the PMU multiplexes the 14 default events, so each interval reports `pct_running`
@@ -24,17 +26,25 @@ Tests drive everything through the injectable `popen`, `clock` and `which`.
 from __future__ import annotations
 
 import csv
+import os
 import re
 import shutil
 import signal
 import subprocess
 import time
 
+# The A76 PMU has the cycle counter plus 6 programmable counters. These 7 hardware events run
+# 100 % of the time with no multiplexing (measured on the Pi); an 8th hardware event (LLC-loads)
+# drops every event to 71-90 %, which would break the 95 % coverage gate. L1-dcache-loads and
+# L1-dcache-load-misses counted identically to cache-references / cache-misses on this core
+# (duplicates), so they are dropped, as are LLC-loads and bus-cycles.
 DEFAULT_EVENTS = ("cycles", "instructions", "cache-references", "cache-misses",
-                  "branch-misses", "stalled-cycles-backend", "L1-dcache-loads",
-                  "L1-dcache-load-misses", "LLC-loads", "LLC-load-misses", "bus-cycles",
+                  "branch-misses", "stalled-cycles-backend", "LLC-load-misses",
                   "task-clock", "context-switches", "page-faults")
+SOFTWARE_EVENTS = ("task-clock", "context-switches", "page-faults")   # always 100 % running
 STOP_TIMEOUT_S = 5.0
+FIRST_LINE_POLL_S = 0.002       # how often start() looks for perf's first interval line
+FIRST_LINE_GIVE_UP_S = 2.0
 PARANOID_PATH = "/proc/sys/kernel/perf_event_paranoid"
 _CLEAN_EXIT = (0, -signal.SIGINT, 128 + signal.SIGINT)   # perf re-raises SIGINT after flushing
 
@@ -147,13 +157,41 @@ def read_paranoid(path: str = PARANOID_PATH) -> int | None:
         return None
 
 
+def min_pct_running(rows: list[dict]) -> float | None:
+    """Lowest pct_running over all hardware-event cells (None if there is no data).
+
+    A `<not counted>` cell reports 0 %, so multiplexing and gaps show up here.
+    """
+    pcts = [r["pct_running"] for r in rows
+            if r["event"] not in SOFTWARE_EVENTS and r["pct_running"] is not None]
+    return min(pcts) if pcts else None
+
+
+def first_line_time_s(text: str) -> float | None:
+    """Time field (seconds) of the first COMPLETE (newline-terminated) interval line, else None."""
+    complete = text[:text.rfind("\n") + 1]
+    rows = parse_interval_csv(complete, 0)
+    return rows[0]["t_end_ns"] / 1e9 if rows else None
+
+
+def _read_file(path: str) -> str:
+    try:
+        with open(path) as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
 def counters_meta(enabled: bool, available: bool, interval_ms: int, events, t0_ns: int | None,
-                  error: str | None, paranoid: int | None) -> dict:
+                  error: str | None, paranoid: int | None, offset_ns: int | None = None,
+                  offset_method: str | None = None,
+                  min_pct: float | None = None) -> dict:
     """The run_meta.json `perf_counters` block."""
     scope = None if paranoid is None else ("user" if paranoid >= 2 else "user+kernel")
     return {"enabled": enabled, "available": available, "interval_ms": interval_ms,
-            "events": list(events), "t0_ns": t0_ns, "error": error,
-            "paranoid": paranoid, "scope": scope}
+            "events": list(events), "t0_ns": t0_ns, "offset_ns": offset_ns,
+            "offset_method": offset_method, "error": error,
+            "paranoid": paranoid, "scope": scope, "min_pct_running": min_pct}
 
 
 class PerfStat:
@@ -161,7 +199,7 @@ class PerfStat:
 
     def __init__(self, pid: int, events=DEFAULT_EVENTS, interval_ms: int = 100,
                  out_path: str = "counters.raw.txt", popen=subprocess.Popen,
-                 clock=time.time_ns, which=shutil.which):
+                 clock=time.time_ns, which=shutil.which, sleep=time.sleep, read_text=_read_file):
         self.pid = pid
         self.events = tuple(events)
         self.interval_ms = interval_ms
@@ -169,31 +207,56 @@ class PerfStat:
         self._popen = popen
         self._clock = clock
         self._which = which
-        self.t0_ns: int | None = None
+        self._sleep = sleep
+        self._read_text = read_text
+        self.t0_ns: int | None = None         # lab clock just before perf was spawned
+        self.offset_ns: int | None = None     # perf's time zero minus t0_ns (see module docstring)
+        self.offset_method: str | None = None  # "first-line" | "none"
+        self._min_pct: float | None = None
         self.error: str | None = None
         self._proc = None
 
     def available(self) -> bool:
         return self._which("perf") is not None
 
-    def _note(self, msg: str) -> None:
+    def note_error(self, msg: str) -> None:
+        """Append to `.error` (reported in run_meta); callers use it for failures around perf."""
         self.error = msg if self.error is None else f"{self.error}; {msg}"
 
     def start(self) -> bool:
         """Spawn perf; True if it was launched. t0_ns is taken immediately before the spawn."""
         if not self.available():
-            self._note("perf not found on PATH")
+            self.note_error("perf not found on PATH")
             return False
         argv = ["perf", "stat", "-I", str(self.interval_ms), "-x", ",", "-o", self.out_path,
                 "-e", ",".join(self.events), "-p", str(self.pid)]
+        try:
+            os.remove(self.out_path)   # a stale file would fake the first-line detection
+        except OSError:
+            pass
         self.t0_ns = self._clock()
         try:
             self._proc = self._popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                                      text=True)
         except OSError as e:
-            self._note(f"perf failed to start: {e}")
+            self.note_error(f"perf failed to start: {e}")
             return False
+        self._measure_offset()
         return True
+
+    def _measure_offset(self) -> None:
+        """Poll the raw file (<= 2 s) for perf's first interval line to find perf's time zero."""
+        self.offset_ns, self.offset_method = 0, "none"
+        for _ in range(round(FIRST_LINE_GIVE_UP_S / FIRST_LINE_POLL_S)):
+            first_s = first_line_time_s(self._read_text(self.out_path))
+            if first_s is not None:
+                seen_ns = self._clock()
+                self.offset_ns = max(0, seen_ns - self.t0_ns - round(first_s * 1e9))
+                self.offset_method = "first-line"
+                return
+            if self._proc.poll() is not None:   # perf died; stop() reports why
+                return
+            self._sleep(FIRST_LINE_POLL_S)
 
     def stop(self) -> None:
         """SIGINT perf (it flushes the last interval), wait <= 5 s, then kill. Idempotent."""
@@ -202,7 +265,7 @@ class PerfStat:
             return
         if p.poll() is not None:
             _, err = p.communicate()
-            self._note(f"perf exited early (rc={p.returncode}): {(err or '').strip()[-300:]}")
+            self.note_error(f"perf exited early (rc={p.returncode}): {(err or '').strip()[-300:]}")
             return
         p.send_signal(signal.SIGINT)
         try:
@@ -210,10 +273,10 @@ class PerfStat:
         except subprocess.TimeoutExpired:
             p.kill()
             p.communicate()
-            self._note(f"perf did not exit within {STOP_TIMEOUT_S:g} s of SIGINT; killed")
+            self.note_error(f"perf did not exit within {STOP_TIMEOUT_S:g} s of SIGINT; killed")
             return
         if p.returncode not in _CLEAN_EXIT:
-            self._note(f"perf exited with rc={p.returncode}: {(err or '').strip()[-300:]}")
+            self.note_error(f"perf exited with rc={p.returncode}: {(err or '').strip()[-300:]}")
 
     def wide_rows(self) -> list[dict]:
         """Parse the raw file (call after stop()). [] if perf never started or wrote nothing."""
@@ -223,10 +286,13 @@ class PerfStat:
             with open(self.out_path) as f:
                 text = f.read()
         except OSError as e:
-            self._note(f"raw counters unreadable: {e}")
+            self.note_error(f"raw counters unreadable: {e}")
             return []
-        return to_wide(parse_interval_csv(text, self.t0_ns), self.events)
+        rows = parse_interval_csv(text, self.t0_ns + self.offset_ns)
+        self._min_pct = min_pct_running(rows)
+        return to_wide(rows, self.events)
 
     def meta(self, enabled: bool, paranoid: int | None = None) -> dict:
         return counters_meta(enabled, self.available(), self.interval_ms, self.events,
-                             self.t0_ns, self.error, paranoid)
+                             self.t0_ns, self.error, paranoid, self.offset_ns,
+                             self.offset_method, self._min_pct)
