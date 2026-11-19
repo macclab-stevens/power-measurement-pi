@@ -167,8 +167,12 @@ exit-code mapping by calling a small pure helper (factor one out, e.g.
 fixture `tests/fixtures/perf_interval_sample.txt`.
 
 `DEFAULT_EVENTS = ("cycles", "instructions", "cache-references", "cache-misses",
-"branch-misses", "stalled-cycles-backend", "L1-dcache-loads", "L1-dcache-load-misses",
-"LLC-loads", "LLC-load-misses", "bus-cycles", "task-clock", "context-switches", "page-faults")`.
+"branch-misses", "stalled-cycles-backend", "LLC-load-misses", "task-clock",
+"context-switches", "page-faults")` — 7 hardware events fit the A76 PMU (cycle counter + 6
+programmable) without multiplexing (measured 100 % running on the Pi). Not in the default set:
+`L1-dcache-loads` / `L1-dcache-load-misses` (identical counts to `cache-references` /
+`cache-misses` on the A76), `LLC-loads`, `bus-cycles` (an 8th hardware event multiplexes all of
+them to 71-90 %). (Ruling R13; changed after the Task 3 first pass.)
 
 - `PerfStat(pid, events=DEFAULT_EVENTS, interval_ms=100, out_path=..., popen=subprocess.Popen,
   clock=time.time_ns, which=shutil.which)`. `available()` → False if `perf` is not on PATH.
