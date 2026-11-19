@@ -69,23 +69,55 @@ def _op_rows(prof, mode: str) -> list[dict]:
 
 # v2 flags and their v1 (default) values. getattr is used for each so a flag added by a later
 # task (--quant, --prune, --concurrent) joins the rule by existing on args; adjust the default
-# here if that task's default is not None. --perf-counters is deliberately absent: it is on
-# by default and a counters-only run is still a v1-shaped dataset. threads/batch/imgsz never
-# count by themselves.
+# here if that task's default is not None. Special cases handled in dataset_version():
+# --holdout (v2 whenever given at all, even "none"), --fan (only auto/off count; "full" is the
+# legacy --fan-full). --perf-counters is deliberately absent: it is on by default and a
+# counters-only run is still a v1-shaped dataset. threads/batch/imgsz never count by themselves.
 V2_FLAG_DEFAULTS = {
-    "holdout": "none", "governor": "pinned", "fan": None, "serve_fps": None,
-    "soak_minutes": None, "frames_source": "repeat", "input_image": None,
+    "governor": "pinned", "serve_fps": None, "soak_minutes": None,
+    "frames_source": "repeat", "input_image": None,
     "quant": None, "prune": None, "concurrent": None,
 }
+V2_FAN_MODES = ("auto", "off")
 
 
 def dataset_version(args) -> int:
-    """2 if any v2 workload flag is set to a non-default value, else 1."""
+    """2 if --holdout was given (any value) or any other v2 workload flag is non-default."""
+    if getattr(args, "holdout", None) is not None:
+        return 2
+    if getattr(args, "fan", None) in V2_FAN_MODES:
+        return 2
     for name, default in V2_FLAG_DEFAULTS.items():
         v = getattr(args, name, default)
         if v is not None and v != default:
             return 2
     return 1
+
+
+def restore_fan_if_off(fan_mode: str, apply_mode=pinning.apply_mode, log=None) -> None:
+    """A fan-off cell must never leave the fan off: back to auto, best effort (errors logged)."""
+    if fan_mode != "off":
+        return
+    log = log or logging.getLogger("powcap").error
+    try:
+        apply_mode(None, "auto", "pinned")
+    except Exception as e:
+        log(f"fan not restored to auto: {e}")
+
+
+def sync_pulse_pinned(sampler, tag: str, governor: str, cpu_mhz: int | None,
+                      pin=pinning.pin, unpin=pinning.unpin, sleep=time.sleep) -> None:
+    """Emit a sync-pulse train. With --governor ondemand the clock is pinned to cpu_mhz only
+    around the train (pin, settle 0.5 s, pulses, unpin - unpin runs even if the pulses raise)."""
+    if governor != "ondemand":
+        sampler.sync_pulse(tag)
+        return
+    pin(cpu_mhz)
+    try:
+        sleep(0.5)   # settle at the pinned clock before the pulses
+        sampler.sync_pulse(tag)
+    finally:
+        unpin()
 
 
 def resolve_fan_mode(fan: str | None, fan_full: bool) -> str:
@@ -217,8 +249,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--governor", default="pinned", choices=["pinned", "ondemand"],
                     help="pinned: --cpu-mhz held all run. ondemand: DVFS for the workload, "
                          "--cpu-mhz (required) pinned only around the sync-pulse trains")
-    ap.add_argument("--holdout", default="none", choices=["primary-s", "secondary-m", "none"],
-                    help="holdout tag recorded in run_meta (v2 datasets)")
+    ap.add_argument("--holdout", default=None, choices=["primary-s", "secondary-m", "none"],
+                    help="holdout tag recorded in run_meta; giving --holdout at all (even "
+                         "'none') marks the run dataset_version 2")
     ap.add_argument("--sampler", default="pmic", choices=["pmic", "monsoon"],
                     help="power source: on-board PMIC (legacy) or EliteBook Monsoon recorder")
     ap.add_argument("--recorder-url", default="http://192.168.0.11:8051",
@@ -293,14 +326,6 @@ def main():
     if soak:
         logger.info(f"--soak-minutes {args.soak_minutes}: per-op benches forced off")
 
-    def _restore_fan():
-        """A fan-off cell must never leave the fan off (best effort)."""
-        if fan_mode == "off":
-            try:
-                pinning.apply_mode(None, "auto", "pinned")
-            except Exception as e:
-                logger.error(f"fan not restored to auto: {e}")
-
     try:
         pin_status = pinning.apply_mode(args.cpu_mhz, fan_mode, args.governor)
         if fan_mode == "full":
@@ -318,7 +343,7 @@ def main():
         perf = perfcounters.PerfStat(os.getpid(), interval_ms=args.perf_interval_ms,
                                      out_path=os.path.join(outdir, "counters.raw.txt"))
     except BaseException:
-        _restore_fan()   # the main try/finally below is not entered yet
+        restore_fan_if_off(fan_mode)   # the main try/finally below is not entered yet
         raise
     phase = {"name": "init"}   # current phase, recorded in thermal_abort.json
 
@@ -335,18 +360,6 @@ def main():
         logger.error(f"THERMAL {rec['level'].upper()}: {rec['temp_C']} C in phase "
                      f"'{rec['phase']}' (limits 85 abort / 90 hard stop)")
         return thermal_exit_code(details)
-
-    def _sync_pulse(tag):
-        """Sync pulse train; with --governor ondemand the clock is pinned only around it."""
-        if args.governor != "ondemand":
-            sampler.sync_pulse(tag)
-            return
-        pinning.pin(args.cpu_mhz)
-        try:
-            time.sleep(0.5)   # settle at the pinned clock before the pulses
-            sampler.sync_pulse(tag)
-        finally:
-            pinning.unpin()
 
     thr0 = sampler.snapshot_env()[2]
     task = None
@@ -405,7 +418,7 @@ def main():
 
         # ABAB global baseline, slice A (2 s) — slice B follows the forward loops
         if monsoon:
-            _sync_pulse("start")
+            sync_pulse_pinned(sampler, "start", args.governor, args.cpu_mhz)
         phase["name"] = "baseline_A"
         sampler.marker("baseline_A")
         tA0 = sampler.now_ms()
@@ -530,7 +543,7 @@ def main():
                     "freq_start_MHz", "freq_end_MHz", "samples_used", "SKIPPED",
                     "skip_reason", "error"], perop)
         if monsoon:
-            _sync_pulse("end")
+            sync_pulse_pinned(sampler, "end", args.governor, args.cpu_mhz)
             if perf_on:
                 try:
                     perf.stop()
@@ -613,7 +626,7 @@ def main():
             "latency_ms_per_frame": lat_stats,
             "latency_ms_per_image": lat_img,
             "inputs": inputs,
-            "holdout": None if args.holdout == "none" else args.holdout,
+            "holdout": None if args.holdout in (None, "none") else args.holdout,
             "dataset_version": dataset_version(args),
             "governor": args.governor,
             "fan_mode": fan_mode,
@@ -738,23 +751,26 @@ def main():
             sys.exit(_thermal_exit(sysfs.thermal_abort))
         raise
     finally:
-        try:
-            perf.stop()   # best effort, idempotent: an abort or crash must not leave perf running
-        except Exception as e:
-            logger.error(f"perf stop failed: {e}")
-            perf.note_error(f"perf stop failed: {e}")
-        sysfs.stop()
-        try:
-            sysfs.write_csv(os.path.join(outdir, "sysfs.csv"))
-        except OSError as e:
-            logger.error(f"sysfs.csv not written: {e}")
-        sampler.stop()
-        try:
-            if task is not None:
-                task.stop_camera()
-        except AttributeError:
-            pass
-        _restore_fan()
+        try:   # whatever below raises, a fan-off cell must get its fan back
+            try:
+                perf.stop()   # best effort, idempotent: an abort or crash must not leave perf running
+            except Exception as e:
+                logger.error(f"perf stop failed: {e}")
+                perf.note_error(f"perf stop failed: {e}")
+            sysfs.stop()
+            try:
+                sysfs.write_csv(os.path.join(outdir, "sysfs.csv"))
+            except OSError as e:
+                logger.error(f"sysfs.csv not written: {e}")
+            sampler.stop()
+            try:
+                if task is not None:
+                    task.stop_camera()
+            except AttributeError:
+                pass
+        finally:
+            restore_fan_if_off(fan_mode, log=logger.error)
+
 
 if __name__ == "__main__":
     main()

@@ -26,7 +26,7 @@ def _err(capsys, *argv):
 def test_v1_defaults_unchanged():
     a = _parse()
     assert (a.threads, a.batch, a.governor, a.fan, a.fan_full) == (4, None, "pinned", None, False)
-    assert (a.holdout, a.serve_fps, a.soak_minutes, a.input_image) == ("none", None, None, None)
+    assert (a.holdout, a.serve_fps, a.soak_minutes, a.input_image) == (None, None, None, None)
     assert (a.frames_source, a.stream_dir) == ("repeat", "inputs/stream50")
 
 
@@ -73,13 +73,23 @@ def test_dataset_version_v1_command_lines_stay_v1():
     assert run.dataset_version(_parse("--perf-counters", "off")) == 1
 
 
+def test_explicit_fan_full_alone_is_not_v2():
+    assert run.dataset_version(_parse("--fan", "full")) == 1
+    assert run.dataset_version(_parse("--fan", "full", "--fan-full")) == 1
+
+
 @pytest.mark.parametrize("argv", [
-    ["--holdout", "primary-s"], ["--holdout", "secondary-m"],
+    ["--holdout", "primary-s"], ["--holdout", "secondary-m"], ["--holdout", "none"],
     ["--governor", "ondemand", "--cpu-mhz", "2400"], ["--fan", "auto"], ["--fan", "off"],
     ["--serve", "5", "--serve-fps", "5"], ["--soak-minutes", "30"],
     ["--frames-source", "stream"], ["--input-image", "bus.jpg"]])
 def test_dataset_version_v2_flags(argv):
     assert run.dataset_version(_parse(*argv)) == 2
+
+
+def test_holdout_none_is_v2_but_writes_null():
+    a = _parse("--holdout", "none")
+    assert a.holdout == "none" and run.dataset_version(a) == 2
 
 
 def test_dataset_version_counts_flags_added_by_later_tasks():
@@ -88,7 +98,79 @@ def test_dataset_version_counts_flags_added_by_later_tasks():
         assert run.dataset_version(a) == 1
         b = SimpleNamespace(**vars(a), **{name: value})
         assert run.dataset_version(b) == 2
-    assert run.dataset_version(SimpleNamespace(holdout=None)) == 1   # bare namespace: v1
+    assert run.dataset_version(SimpleNamespace()) == 1   # bare namespace: v1
+    assert run.dataset_version(SimpleNamespace(holdout=None)) == 1
+
+
+# ---- DVFS sync wrapper and fan restore (injected fakes) ----------------------------------------
+class _FakeSampler:
+    def __init__(self, calls, fail=False):
+        self.calls, self.fail = calls, fail
+
+    def sync_pulse(self, tag):
+        self.calls.append(("pulse", tag))
+        if self.fail:
+            raise RuntimeError("pulse failed")
+
+
+def _sync(calls, governor, fail=False, tag="start"):
+    run.sync_pulse_pinned(
+        _FakeSampler(calls, fail), tag, governor, 2400,
+        pin=lambda mhz: calls.append(("pin", mhz)),
+        unpin=lambda: calls.append(("unpin",)),
+        sleep=lambda s: calls.append(("sleep", s)))
+
+
+def test_ondemand_sync_pins_settles_pulses_then_unpins():
+    calls = []
+    _sync(calls, "ondemand", tag="end")
+    assert calls == [("pin", 2400), ("sleep", 0.5), ("pulse", "end"), ("unpin",)]
+
+
+def test_ondemand_sync_unpins_even_when_pulse_raises():
+    calls = []
+    with pytest.raises(RuntimeError, match="pulse failed"):
+        _sync(calls, "ondemand", fail=True)
+    assert calls == [("pin", 2400), ("sleep", 0.5), ("pulse", "start"), ("unpin",)]
+
+
+def test_ondemand_sync_pin_failure_does_not_pulse_or_unpin():
+    calls = []
+
+    def bad_pin(mhz):
+        raise RuntimeError("pin failed")
+    with pytest.raises(RuntimeError, match="pin failed"):
+        run.sync_pulse_pinned(_FakeSampler(calls), "start", "ondemand", 2400, pin=bad_pin,
+                              unpin=lambda: calls.append("unpin"), sleep=lambda s: None)
+    assert calls == []
+
+
+def test_pinned_governor_sync_has_no_pin_unpin_or_sleep():
+    calls = []
+    _sync(calls, "pinned")
+    assert calls == [("pulse", "start")]
+
+
+@pytest.mark.parametrize("mode", ["full", "auto", "none"])
+def test_restore_fan_only_for_off(mode):
+    calls = []
+    run.restore_fan_if_off(mode, apply_mode=lambda *a: calls.append(a), log=calls.append)
+    assert calls == []
+
+
+def test_restore_fan_off_goes_back_to_auto_leaving_clock_alone():
+    calls = []
+    run.restore_fan_if_off("off", apply_mode=lambda *a: calls.append(a), log=calls.append)
+    assert calls == [(None, "auto", "pinned")]
+
+
+def test_restore_fan_errors_are_logged_not_raised():
+    logged = []
+
+    def boom(*a):
+        raise RuntimeError("sudo failed")
+    run.restore_fan_if_off("off", apply_mode=boom, log=logged.append)
+    assert len(logged) == 1 and "sudo failed" in logged[0]
 
 
 # ---- serve scheduling -----------------------------------------------------------------------
