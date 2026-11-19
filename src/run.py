@@ -67,7 +67,103 @@ def _op_rows(prof, mode: str) -> list[dict]:
     return rows
 
 
-def main():
+# v2 flags and their v1 (default) values. getattr is used for each so a flag added by a later
+# task (--quant, --prune, --concurrent) joins the rule by existing on args; adjust the default
+# here if that task's default is not None. --perf-counters is deliberately absent: it is on
+# by default and a counters-only run is still a v1-shaped dataset. threads/batch/imgsz never
+# count by themselves.
+V2_FLAG_DEFAULTS = {
+    "holdout": "none", "governor": "pinned", "fan": None, "serve_fps": None,
+    "soak_minutes": None, "frames_source": "repeat", "input_image": None,
+    "quant": None, "prune": None, "concurrent": None,
+}
+
+
+def dataset_version(args) -> int:
+    """2 if any v2 workload flag is set to a non-default value, else 1."""
+    for name, default in V2_FLAG_DEFAULTS.items():
+        v = getattr(args, name, default)
+        if v is not None and v != default:
+            return 2
+    return 1
+
+
+def resolve_fan_mode(fan: str | None, fan_full: bool) -> str:
+    """Fan mode for pinning.apply_mode: --fan wins; legacy --fan-full means full; else none."""
+    if fan is not None:
+        return fan
+    return "full" if fan_full else "none"
+
+
+def resolve_batch(task: str, batch: int | None) -> int:
+    """Effective batch: the given value, else 8 for training and 1 for everything else."""
+    if batch is not None:
+        return batch
+    return 8 if task == "train" else 1
+
+
+def apply_threads(n: int) -> dict:
+    """Make --threads drive torch, OpenCV and OpenMP; returns what each reports back."""
+    import cv2
+    os.environ["OMP_NUM_THREADS"] = str(n)   # before the first torch parallel op
+    torch.set_num_threads(n)
+    cv2.setNumThreads(n)
+    return {"torch": torch.get_num_threads(), "opencv": cv2.getNumThreads(),
+            "omp_env": os.environ["OMP_NUM_THREADS"]}
+
+
+def serve_wait(t_serve0: float, k: int, fps: float, now: float) -> tuple[float, bool]:
+    """Before request k (k >= 1) due at t_serve0 + k/fps: (seconds to idle, missed deadline).
+
+    A request that is already late gets no idle time and counts as missed."""
+    remaining = t_serve0 + k / fps - now
+    return max(0.0, remaining), remaining < 0.0
+
+
+def latency_stats(ms: list[float]) -> dict | None:
+    """mean / median / p95 (linear interpolation) of per-iteration wall times, or None."""
+    if not ms:
+        return None
+    xs = sorted(ms)
+    pos = 0.95 * (len(xs) - 1)
+    lo = int(pos)
+    p95 = xs[lo] + (xs[min(lo + 1, len(xs) - 1)] - xs[lo]) * (pos - lo)
+    mid = len(xs) // 2
+    median = xs[mid] if len(xs) % 2 else (xs[mid - 1] + xs[mid]) / 2
+    return {"mean": round(sum(xs) / len(xs), 3), "median": round(median, 3),
+            "p95": round(p95, 3), "n": len(xs)}
+
+
+def measured_loop(task, prof, mode, frames, soak_minutes, check_thermal,
+                  clock=time.perf_counter):
+    """One measured mode: frame 0 under the op profiler, then frames 1.. timed one by one.
+
+    Runs `frames` iterations, or (soak_minutes given) until that many minutes have elapsed.
+    Returns (frames_done, per-iteration ms for frames >= 1, aten op rows)."""
+    op_rows: list[dict] = []
+    lat_ms: list[float] = []
+    deadline = None if soak_minutes is None else clock() + soak_minutes * 60.0
+    f = 0
+    while f < frames if deadline is None else (f == 0 or clock() < deadline):
+        check_thermal()
+        prof.set_frame(f)
+        if f == 0:
+            # torch.profiler start/stop takes ~1 s on the first mode; label it so it is
+            # not mistaken for unexplained time (the task's own steps nest inside)
+            with task.step("profiler"):
+                with profiler.profile(activities=[profiler.ProfilerActivity.CPU],
+                                      record_shapes=True) as p:
+                    task.run_one(mode)
+                op_rows += _op_rows(p, mode)
+        else:
+            t = clock()
+            task.run_one(mode)
+            lat_ms.append((clock() - t) * 1000.0)
+        f += 1
+    return f, lat_ms, op_rows
+
+
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--task", default="image", help="image | lm | train (default image)")
@@ -76,11 +172,14 @@ def main():
     ap.add_argument("--bench", type=float, default=3.0)
     ap.add_argument("--warmup", type=int, default=10)
     ap.add_argument("--out", default=None)
-    ap.add_argument("--threads", type=int, default=4)
+    ap.add_argument("--threads", type=int, default=4,
+                    help="sets torch, OpenCV and OMP_NUM_THREADS (default 4)")
     ap.add_argument("--conf", type=float, default=0.25)
     ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--seq", type=int, default=64, help="LM context length (prefill)")
-    ap.add_argument("--batch", type=int, default=8, help="training batch size (--task train)")
+    ap.add_argument("--batch", type=int, default=None,
+                    help="batch size: train default 8; image default 1 (B stacked frames per "
+                         "forward); ignored by lm")
     ap.add_argument("--optimizer", default="sgd", choices=["sgd", "adam"],
                     help="training optimizer (--task train)")
     ap.add_argument("--no-bench", action="store_true",
@@ -89,14 +188,37 @@ def main():
                     help="after the modes, N single requests with idle gaps (phase 'serve')")
     ap.add_argument("--serve-gap-ms", type=float, default=200.0,
                     help="idle time between serve requests (step 'idle_between_requests')")
+    ap.add_argument("--serve-fps", type=float, default=None,
+                    help="with --serve: request k is due at t0 + k/F (the gap is the time left; "
+                         "a late request starts at once and counts as a missed deadline); "
+                         "replaces --serve-gap-ms")
+    ap.add_argument("--soak-minutes", type=float, default=None,
+                    help="image task: loop the measured forward mode for M minutes instead of "
+                         "--frames (forces --no-bench)")
     ap.add_argument("--check-image", default=None,
                     help="detection oracle: require object conf>=--conf on this image file")
+    ap.add_argument("--input-image", default=None,
+                    help="frame fed to the model (default: --check-image); the oracle still "
+                         "uses --check-image")
+    ap.add_argument("--frames-source", default="repeat", choices=["repeat", "stream"],
+                    help="repeat one frame, or cycle through the sorted *.jpg of --stream-dir "
+                         "(decoded once at load)")
+    ap.add_argument("--stream-dir", default="inputs/stream50",
+                    help="image folder for --frames-source stream")
     ap.add_argument("--live-camera", action="store_true",
                     help="feed real camera frames (cam.py) instead of synthetic fixtures")
     ap.add_argument("--cpu-mhz", type=int, default=None,
                     help="pin all cores to this clock via pi-power-pin (1500..2400 step 100)")
     ap.add_argument("--fan-full", action="store_true",
-                    help="force the fan to max state (constant fan power) via pi-power-pin")
+                    help="force the fan to max state (constant fan power); same as --fan full")
+    ap.add_argument("--fan", default=None, choices=["full", "auto", "off"],
+                    help="fan mode via pi-power-pin: full | auto (stock trips) | off (85 C "
+                         "backstop). Default: untouched unless --fan-full")
+    ap.add_argument("--governor", default="pinned", choices=["pinned", "ondemand"],
+                    help="pinned: --cpu-mhz held all run. ondemand: DVFS for the workload, "
+                         "--cpu-mhz (required) pinned only around the sync-pulse trains")
+    ap.add_argument("--holdout", default="none", choices=["primary-s", "secondary-m", "none"],
+                    help="holdout tag recorded in run_meta (v2 datasets)")
     ap.add_argument("--sampler", default="pmic", choices=["pmic", "monsoon"],
                     help="power source: on-board PMIC (legacy) or EliteBook Monsoon recorder")
     ap.add_argument("--recorder-url", default="http://192.168.0.11:8051",
@@ -106,10 +228,48 @@ def main():
                          "--sampler pmic")
     ap.add_argument("--perf-interval-ms", type=int, default=100, choices=[100, 200],
                     help="perf stat sampling interval (100 = 10 Hz, 200 = 5 Hz)")
-    args = ap.parse_args()
+    return ap
+
+
+def parse_args(argv=None):
+    """build_parser().parse_args(argv) plus the cross-flag checks (argparse errors, exit 2)."""
+    ap = build_parser()
+    args = ap.parse_args(argv)
+    if args.fan_full and args.fan not in (None, "full"):
+        ap.error(f"--fan-full conflicts with --fan {args.fan}")
+    if args.governor == "ondemand":
+        if args.cpu_mhz is None:
+            ap.error("--governor ondemand needs --cpu-mhz (the clock pinned around sync pulses)")
+        if args.cpu_mhz not in pinning.ALLOWED_MHZ:
+            ap.error(f"--cpu-mhz {args.cpu_mhz} not in "
+                     f"{pinning.ALLOWED_MHZ[0]}..{pinning.ALLOWED_MHZ[-1]} step 100")
+    if args.serve_fps is not None:
+        if args.serve_fps <= 0:
+            ap.error("--serve-fps must be > 0")
+        if args.serve <= 0:
+            ap.error("--serve-fps needs --serve N")
+    if args.soak_minutes is not None:
+        if args.soak_minutes <= 0:
+            ap.error("--soak-minutes must be > 0")
+        if args.task != "image":
+            ap.error("--soak-minutes is only supported with --task image")
+    if args.batch is not None and args.batch < 1:
+        ap.error("--batch must be >= 1")
+    if args.frames_source == "stream" and (args.live_camera or args.input_image):
+        ap.error("--frames-source stream conflicts with --live-camera / --input-image")
+    return args
+
+
+def main():
+    args = parse_args()
     bmin, bmax = (1.5, 8.0) if args.sampler == "monsoon" else (BASELINE_W_MIN, BASELINE_W_MAX)
 
-    torch.set_num_threads(args.threads)
+    threads_detail = apply_threads(args.threads)
+    args.batch = resolve_batch(args.task, args.batch)
+    fan_mode = resolve_fan_mode(args.fan, args.fan_full)
+    soak = args.soak_minutes is not None
+    if soak:
+        args.no_bench = True   # benches would make a soak cell unbounded
     ts = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
     outdir = args.out or f"runs/{ts}"
     os.makedirs(outdir, exist_ok=True)
@@ -130,21 +290,36 @@ def main():
 
     pin_status_start = pinning.status()   # before applying: exposes a stale pin from a prior run
     logger.info(f"pin status at start: {pin_status_start}")
-    pin_status = pinning.apply(args.cpu_mhz, args.fan_full)
-    if args.fan_full:
-        pinning.wait_fan_full()
-    if pin_status:
-        logger.info(f"pinned: {pin_status}")
+    if soak:
+        logger.info(f"--soak-minutes {args.soak_minutes}: per-op benches forced off")
 
-    sampler = make_sampler(args.sampler, args.recorder_url)
-    monsoon = args.sampler == "monsoon"
-    sampler.start()
-    sysfs = SysfsSampler()
-    perf_on = args.perf_counters == "on" and monsoon
-    if args.perf_counters == "on" and not monsoon:
-        logger.info("perf counters forced off (--sampler pmic)")
-    perf = perfcounters.PerfStat(os.getpid(), interval_ms=args.perf_interval_ms,
-                                 out_path=os.path.join(outdir, "counters.raw.txt"))
+    def _restore_fan():
+        """A fan-off cell must never leave the fan off (best effort)."""
+        if fan_mode == "off":
+            try:
+                pinning.apply_mode(None, "auto", "pinned")
+            except Exception as e:
+                logger.error(f"fan not restored to auto: {e}")
+
+    try:
+        pin_status = pinning.apply_mode(args.cpu_mhz, fan_mode, args.governor)
+        if fan_mode == "full":
+            pinning.wait_fan_full()
+        if pin_status:
+            logger.info(f"pinned: {pin_status}")
+
+        sampler = make_sampler(args.sampler, args.recorder_url)
+        monsoon = args.sampler == "monsoon"
+        sampler.start()
+        sysfs = SysfsSampler()
+        perf_on = args.perf_counters == "on" and monsoon
+        if args.perf_counters == "on" and not monsoon:
+            logger.info("perf counters forced off (--sampler pmic)")
+        perf = perfcounters.PerfStat(os.getpid(), interval_ms=args.perf_interval_ms,
+                                     out_path=os.path.join(outdir, "counters.raw.txt"))
+    except BaseException:
+        _restore_fan()   # the main try/finally below is not entered yet
+        raise
     phase = {"name": "init"}   # current phase, recorded in thermal_abort.json
 
     def _check_thermal():
@@ -160,6 +335,18 @@ def main():
         logger.error(f"THERMAL {rec['level'].upper()}: {rec['temp_C']} C in phase "
                      f"'{rec['phase']}' (limits 85 abort / 90 hard stop)")
         return thermal_exit_code(details)
+
+    def _sync_pulse(tag):
+        """Sync pulse train; with --governor ondemand the clock is pinned only around it."""
+        if args.governor != "ondemand":
+            sampler.sync_pulse(tag)
+            return
+        pinning.pin(args.cpu_mhz)
+        try:
+            time.sleep(0.5)   # settle at the pinned clock before the pulses
+            sampler.sync_pulse(tag)
+        finally:
+            pinning.unpin()
 
     thr0 = sampler.snapshot_env()[2]
     task = None
@@ -218,7 +405,7 @@ def main():
 
         # ABAB global baseline, slice A (2 s) — slice B follows the forward loops
         if monsoon:
-            sampler.sync_pulse("start")
+            _sync_pulse("start")
         phase["name"] = "baseline_A"
         sampler.marker("baseline_A")
         tA0 = sampler.now_ms()
@@ -229,39 +416,49 @@ def main():
 
         # ---- per-mode measurement -------------------------------------------
         op_rows = []
+        frames_done: dict[str, int] = {}
+        lat_ms: list[float] = []
         for mode in modes:
             logger.info(f"== mode: {mode} ==")
             prof.set_mode(mode)
-            phase["name"] = mode
+            phase["name"] = "soak" if soak else mode
             sampler.marker(mode)  # tag phase so samples.csv carries measured mean-P
-            for f in range(args.frames):
-                _check_thermal()
-                prof.set_frame(f)
-                if f == 0:
-                    # torch.profiler start/stop takes ~1 s on the first mode; label it so it is
-                    # not mistaken for unexplained time (the task's own steps nest inside)
-                    with task.step("profiler"):
-                        with profiler.profile(activities=[profiler.ProfilerActivity.CPU],
-                                              record_shapes=True) as p:
-                            task.run_one(mode)
-                        op_rows += _op_rows(p, mode)
-                else:
-                    task.run_one(mode)
-            logger.info(f"  mode {mode}: {args.frames} iterations done")
+            n_done, mode_lat, mode_ops = measured_loop(
+                task, prof, mode, args.frames, args.soak_minutes, _check_thermal)
+            op_rows += mode_ops
+            lat_ms += mode_lat
+            frames_done[mode] = n_done
+            logger.info(f"  mode {mode}: {n_done} iterations done")
 
         # ---- serve: isolated requests with idle gaps (race-to-idle transitions)
+        serve_missed = None
+        serve_wall_s = None
         if args.serve > 0 and args.task != "train":
             prof.set_mode("serve")
             phase["name"] = "serve"
             sampler.marker("serve")
+            serve_missed = 0 if args.serve_fps is not None else None
+            t_serve0 = time.monotonic()
             for r in range(args.serve):
                 _check_thermal()
                 prof.set_frame(r)
                 for m in modes:
                     task.run_one(m)
-                with task.step("idle_between_requests"):
-                    time.sleep(args.serve_gap_ms / 1000.0)
-            logger.info(f"serve: {args.serve} requests, gap {args.serve_gap_ms:.0f} ms")
+                if args.serve_fps is None:
+                    with task.step("idle_between_requests"):
+                        time.sleep(args.serve_gap_ms / 1000.0)
+                elif r + 1 < args.serve:
+                    idle_s, missed = serve_wait(t_serve0, r + 1, args.serve_fps, time.monotonic())
+                    serve_missed += missed
+                    if idle_s > 0:
+                        with task.step("idle_between_requests"):
+                            time.sleep(idle_s)
+            serve_wall_s = round(time.monotonic() - t_serve0, 3)
+            if args.serve_fps is None:
+                logger.info(f"serve: {args.serve} requests, gap {args.serve_gap_ms:.0f} ms")
+            else:
+                logger.info(f"serve: {args.serve} requests at {args.serve_fps} fps, "
+                            f"{serve_missed} missed deadlines, {serve_wall_s} s")
 
         # ABAB global baseline, slice B (2 s); the run baseline is mean(A, B)
         phase["name"] = "baseline_B"
@@ -333,7 +530,7 @@ def main():
                     "freq_start_MHz", "freq_end_MHz", "samples_used", "SKIPPED",
                     "skip_reason", "error"], perop)
         if monsoon:
-            sampler.sync_pulse("end")
+            _sync_pulse("end")
             if perf_on:
                 try:
                     perf.stop()
@@ -353,7 +550,7 @@ def main():
         continuity = sampler.check_recorder_continuity() if monsoon else []
         pin_status_end = pinning.status()
         fan_end = None
-        if args.fan_full:
+        if fan_mode == "full":
             try:
                 fan_end = pinning._read_fan()
             except (OSError, ValueError, RuntimeError) as e:
@@ -392,17 +589,37 @@ def main():
                 arch[r["class"]] = arch.get(r["class"], 0) + 1
 
         _check_thermal()   # a late crossing must not be reported as a clean run
+        # per-frame latency is only well defined for a single measured mode (image, train)
+        lat_stats = latency_stats(lat_ms) if len(modes) == 1 else None
+        lat_img = ({k: (round(v / args.batch, 3) if k != "n" else v)
+                    for k, v in lat_stats.items()} if lat_stats else None)
+        inputs = (task.input_identity() if hasattr(task, "input_identity")
+                  else {"source": "synthetic", "files": []})
         meta = {
             "task": args.task, "model": args.model, "modes": modes,
             "imgsz": args.imgsz, "conf": args.conf, "seq_len": args.seq,
-            "batch": args.batch if args.task == "train" else 1,
+            "batch": args.batch if args.task in ("train", "image") else 1,
             "optimizer": args.optimizer if args.task == "train" else None,
             "train_loss": [round(v, 5) for v in getattr(task, "losses", [])] or None,
             "bench_skipped": args.no_bench,
+            "bench_forced_off_by_soak": soak,
             "serve_requests": args.serve if args.task != "train" else 0,
             "serve_gap_ms": args.serve_gap_ms,
+            "serve_fps": args.serve_fps,
+            "serve_missed_deadlines": serve_missed,
+            "serve_wall_s": serve_wall_s,
+            "soak_minutes": args.soak_minutes,
+            "frames_done": frames_done,
+            "latency_ms_per_frame": lat_stats,
+            "latency_ms_per_image": lat_img,
+            "inputs": inputs,
+            "holdout": None if args.holdout == "none" else args.holdout,
+            "dataset_version": dataset_version(args),
+            "governor": args.governor,
+            "fan_mode": fan_mode,
             "load_weights_s": round(load_s, 4), "first_call_ms": first_ms,
-            "threads": args.threads, "frames_per_mode": args.frames,
+            "threads": args.threads, "threads_detail": threads_detail,
+            "frames_per_mode": args.frames,
             "warmup_passes": args.warmup, "params_M": round(n_params / 1e6, 3),
             "mean_fps": None,
             "baseline_W": round(baseline_W, 6) if baseline_W is not None else None,
@@ -422,7 +639,7 @@ def main():
             "pin_status_start": pin_status_start, "pin_status_end": pin_status_end,
             "t0_real_ns": getattr(sampler, "_t0_ns", None),
             "sync_tags": ["start", "end"] if monsoon else [],
-            "cpu_mhz_pinned": args.cpu_mhz, "fan_full": args.fan_full, "pin_status": pin_status,
+            "cpu_mhz_pinned": args.cpu_mhz, "fan_full": fan_mode == "full", "pin_status": pin_status,
             "achieved_sample_hz": round(achieved_hz, 1),
             "throttle_bits": ctx[-1].get("throttle_bits") if ctx else None,
             "arch_fingerprint": arch,
@@ -481,7 +698,9 @@ def main():
         thr = ctx[-1].get("throttle_bits") if ctx else None
         if thr is not None and (thr & 0x1) != 0:
             errors.append(f"throttled during run (throttle_bits=0x{thr:x})")
-        if args.cpu_mhz is not None:
+        if args.governor == "ondemand":
+            errors += pinning.clock_range_errors(sysfs.rows()) + pinning.throttle_errors(ctx)
+        elif args.cpu_mhz is not None:
             errors += pinning.clock_errors(ctx, args.cpu_mhz)
         if monsoon:
             if args.cpu_mhz is None:
@@ -492,7 +711,7 @@ def main():
                 errors.append(f"under-voltage occurred during run "
                               f"(throttled 0x{thr0:x} -> 0x{thr1:x})")
             errors += continuity
-        if args.fan_full:
+        if fan_mode == "full":
             if fan_end is None or fan_end[0] < fan_end[1]:
                 errors.append("fan not at max at end of run")
         if not task.oracle():
@@ -535,6 +754,7 @@ def main():
                 task.stop_camera()
         except AttributeError:
             pass
+        _restore_fan()
 
 if __name__ == "__main__":
     main()

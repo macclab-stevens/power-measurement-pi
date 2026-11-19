@@ -21,7 +21,9 @@ Adding a new model family later = one small adapter file; no data-plane change.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import math
+import os
 
 import torch
 import torch.nn as nn
@@ -77,6 +79,40 @@ class TaskAdapter:
 
 
 # --------------------------------------------------------------------------
+# Input frames (image task)
+# --------------------------------------------------------------------------
+def sha256_file(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def read_rgb(path: str):
+    """Decode an image file to a contiguous uint8 HWC RGB array; ValueError if unreadable."""
+    import cv2
+    import numpy as np
+    bgr = cv2.imread(path)
+    if bgr is None:
+        raise ValueError(f"cannot read image {path!r}")
+    return np.ascontiguousarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+
+
+def load_stream_frames(stream_dir: str) -> list[tuple[str, object]]:
+    """Decode every *.jpg in stream_dir (sorted by name) once: [(path, uint8 HWC RGB), ...].
+
+    Decoding happens at load time so file I/O is never inside the measured loop."""
+    if not os.path.isdir(stream_dir):
+        raise ValueError(f"--stream-dir {stream_dir!r} is not a directory")
+    paths = sorted(os.path.join(stream_dir, n) for n in os.listdir(stream_dir)
+                   if n.lower().endswith(".jpg"))
+    if not paths:
+        raise ValueError(f"--stream-dir {stream_dir!r} has no *.jpg images")
+    return [(p, read_rgb(p)) for p in paths]
+
+
+# --------------------------------------------------------------------------
 # Image task (classification + detection)
 # --------------------------------------------------------------------------
 class ImageTask(TaskAdapter):
@@ -92,8 +128,12 @@ class ImageTask(TaskAdapter):
         self._live = False
         self._cam = None
         self._frame_iter = None
-        self._frame = None          # fixed uint8 HWC RGB source frame (non-live)
+        self._frame = None          # fixed uint8 HWC RGB source frame (non-live, repeat)
         self._model_name = ""
+        self._batch = 1
+        self._input_image = None    # --input-image (model input); None = the check image
+        self._stream = None         # [(path, frame)] when --frames-source stream
+        self._k = 0                 # stream cursor
 
     def load(self, model: str, opt):
         self._model_name = model
@@ -101,6 +141,10 @@ class ImageTask(TaskAdapter):
         self._conf = opt.conf
         self._check_image = opt.check_image
         self._live = getattr(opt, "live_camera", False)
+        self._batch = getattr(opt, "batch", None) or 1
+        self._input_image = getattr(opt, "input_image", None)
+        if getattr(opt, "frames_source", "repeat") == "stream":
+            self._stream = load_stream_frames(getattr(opt, "stream_dir", "inputs/stream50"))
         # torchvision models (e.g. torchvision:efficientnet_b0)
         if model.startswith(("torchvision:", "tv:")):
             import torchvision.models as tvm
@@ -134,11 +178,14 @@ class ImageTask(TaskAdapter):
         return ["forward"]
 
     def _source_frame(self):
-        """uint8 HWC RGB frame: the check image if given, else a fixed synthetic 640x480."""
+        """uint8 HWC RGB frame: --input-image if given (must be readable), else the check
+        image, else a fixed synthetic 640x480."""
         if self._frame is None:
             import numpy as np
             img = None
-            if self._check_image:
+            if self._input_image:
+                img = read_rgb(self._input_image)
+            elif self._check_image:
                 import cv2
                 bgr = cv2.imread(self._check_image)
                 if bgr is not None:
@@ -171,6 +218,37 @@ class ImageTask(TaskAdapter):
             t = (t - mean) / std
         return t.unsqueeze(0)
 
+    def input_identity(self) -> dict:
+        """What was fed to the model, for run_meta["inputs"]: source + file paths and sha256."""
+        if self._live:
+            return {"source": "camera", "files": []}
+        if self._stream is not None:
+            paths = [p for p, _ in self._stream]
+            return {"source": "stream",
+                    "files": [{"path": p, "sha256": sha256_file(p)} for p in paths]}
+        path = self._input_image or self._check_image
+        files = ([{"path": path, "sha256": sha256_file(path)}]
+                 if path and os.path.isfile(path) else [])
+        return {"source": "repeat", "files": files}
+
+    def _batch_input(self):
+        """Bx3xSxS model input. Repeat: B copies of the one preprocessed frame. Stream: B
+        consecutive stream images (cycling). Camera: B fresh captures."""
+        B = self._batch
+        if self._live:
+            with self.step("camera_capture"):
+                frames = [self._camera_frame() for _ in range(B)]
+            with self.step("preprocess"):
+                return torch.cat([self.preprocess(f) for f in frames], dim=0)
+        with self.step("preprocess"):
+            if self._stream is not None:
+                n = len(self._stream)
+                xs = [self.preprocess(self._stream[(self._k + i) % n][1]) for i in range(B)]
+                self._k = (self._k + B) % n
+                return torch.cat(xs, dim=0)
+            x = self.preprocess(self._source_frame())
+            return x.repeat(B, 1, 1, 1) if B > 1 else x
+
     def postprocess(self, out):
         """Detection: NMS (conf 0.25, IoU 0.45). Classification: softmax + top-5."""
         if self._is_detection:
@@ -192,13 +270,7 @@ class ImageTask(TaskAdapter):
 
     def run_one(self, mode: str):
         with torch.no_grad():
-            if self._live:
-                with self.step("camera_capture"):
-                    frame = self._camera_frame()
-            else:
-                frame = self._source_frame()
-            with self.step("preprocess"):           # same path for camera and fixed frames
-                x = self.preprocess(frame)
+            x = self._batch_input()   # same preprocess for camera, fixed and stream frames
             with self.step("forward"):
                 out = self._module(x)
             with self.step("postprocess"):
@@ -370,7 +442,8 @@ class TrainTask(TaskAdapter):
         self.losses: list[float] = []
 
     def load(self, model: str, opt):
-        self._batch = getattr(opt, "batch", 8)
+        b = getattr(opt, "batch", None)
+        self._batch = 8 if b is None else b
         self._imgsz = opt.imgsz
         self._seq = opt.seq
         if self._batch < 2:
