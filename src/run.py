@@ -134,7 +134,6 @@ def main():
     monsoon = args.sampler == "monsoon"
     sampler.start()
     sysfs = SysfsSampler()
-    sysfs.start()
     phase = {"name": "init"}   # current phase, recorded in thermal_abort.json
 
     def _check_thermal():
@@ -154,6 +153,7 @@ def main():
     thr0 = sampler.snapshot_env()[2]
     task = None
     try:
+        sysfs.start()   # first statement in the try: a hard stop on the very first read is handled
         # ---- lifecycle: model load and the first call of each mode are measured phases
         phase["name"] = "load_weights"
         sampler.marker("load_weights")
