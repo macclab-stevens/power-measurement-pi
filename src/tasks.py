@@ -99,6 +99,17 @@ def read_rgb(path: str):
     return np.ascontiguousarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
 
 
+def _to_float32(x):
+    """Floating tensors (also inside lists/tuples/dicts) cast to float32; everything else as is."""
+    if isinstance(x, torch.Tensor):
+        return x.float() if x.is_floating_point() else x
+    if isinstance(x, (list, tuple)):
+        return type(x)(_to_float32(y) for y in x)
+    if isinstance(x, dict):
+        return {k: _to_float32(v) for k, v in x.items()}
+    return x
+
+
 def load_stream_frames(stream_dir: str) -> list[tuple[str, object]]:
     """Decode every *.jpg in stream_dir (sorted by name) once: [(path, uint8 HWC RGB), ...].
 
@@ -134,6 +145,12 @@ class ImageTask(TaskAdapter):
         self._input_image = None    # --input-image (model input); None = the check image
         self._stream = None         # [(path, frame)] when --frames-source stream
         self._k = 0                 # stream cursor
+        self._half = False          # --quant fp16: float16 module and input, float32 NMS
+        self._variant_oracle = False  # non-fp32 / pruned: the oracle must test the EXECUTED module
+        # what run.py records in run_meta (see yolo_variants.py); quantized_modules is None
+        # unless an int8 variant was loaded
+        self.variant = {"quant": "fp32", "prune": None, "prune_ratio": None,
+                        "quant_weights_sha256": None, "quantized_modules": None}
 
     def load(self, model: str, opt):
         self._model_name = model
@@ -160,6 +177,7 @@ class ImageTask(TaskAdapter):
             self._module = yolo.model            # the DetectionModel nn.Module
             self._is_detection = True
             self._yolo = yolo
+            self._apply_variant(model, opt)
         else:
             # generic classification / any nn.Module weights
             from torch.serialization import add_safe_globals  # not needed
@@ -168,7 +186,60 @@ class ImageTask(TaskAdapter):
             if not isinstance(self._module, nn.Module):
                 raise TypeError(f"{model} did not load to an nn.Module")
             self._module.eval()
+        if not self._is_detection and (getattr(opt, "quant", "fp32") != "fp32"
+                                       or getattr(opt, "prune", None)):
+            raise ValueError("--quant / --prune are only supported for ultralytics YOLO models")
         return self
+
+    def _apply_variant(self, model: str, opt) -> None:
+        """--quant / --quant-weights / --prune: replace the module that is executed.
+
+        fp32 (the default) changes nothing. The ultralytics YOLO object is kept only for the v1
+        oracle; a variant is checked through the executed module (oracle)."""
+        import yolo_variants as yv
+        quant = getattr(opt, "quant", "fp32") or "fp32"
+        prune = getattr(opt, "prune", None)
+        qweights = getattr(opt, "quant_weights", None)
+        if quant not in yv.QUANT_CHOICES:
+            raise ValueError(f"unknown --quant {quant!r}; valid: {list(yv.QUANT_CHOICES)}")
+        if prune and quant != "fp32":
+            raise ValueError("--prune cannot be combined with --quant other than fp32")
+        if qweights and quant != "int8-static":
+            raise ValueError("--quant-weights is only used with --quant int8-static")
+        self.variant["quant"] = quant
+        if prune:
+            art = yv.load_artifact(prune, yv.PRUNED_FORMAT)
+            self._check_base_model(art, model, prune)
+            ratio = art.get("ratio")
+            if not isinstance(ratio, (int, float)) or not 0.0 < ratio < 1.0:
+                raise ValueError(f"{prune}: artifact 'ratio' must be a number in (0, 1), got {ratio!r}")
+            self._module = art["model"].eval()
+            self.variant["prune"] = {"path": prune, "ratio": float(ratio), "sha256": sha256_file(prune)}
+            self.variant["prune_ratio"] = float(ratio)
+        elif quant == "int8-static":
+            import torch
+            if not qweights:
+                raise ValueError("--quant int8-static needs --quant-weights PATH")
+            torch.backends.quantized.engine = "qnnpack"
+            art = yv.load_artifact(qweights, yv.INT8S_FORMAT)
+            self._check_base_model(art, model, qweights)
+            self._module = art["model"].eval()   # replaces yolo.model for the forward
+            self.variant["quant_weights_sha256"] = sha256_file(qweights)
+            self.variant["quantized_modules"] = yv.count_quantized_modules(self._module)
+        elif quant == "int8-dynamic":
+            self._module, self.variant["quantized_modules"] = yv.quantize_dynamic_counted(self._module)
+            self._module.eval()
+        elif quant == "fp16":
+            self._module = self._module.half()
+            self._half = True
+        self._variant_oracle = quant != "fp32" or bool(prune)
+
+    @staticmethod
+    def _check_base_model(art: dict, model: str, path: str) -> None:
+        base = art.get("base_model")
+        if base is not None and os.path.basename(base) != os.path.basename(model):
+            raise ValueError(f"{path}: artifact was made from base_model {base!r}, "
+                             f"but --model is {model!r}")
 
     @property
     def module(self) -> nn.Module:
@@ -210,6 +281,7 @@ class ImageTask(TaskAdapter):
             canvas[top:top + nh, left:left + nw] = cv2.resize(frame, (nw, nh),
                                                               interpolation=cv2.INTER_LINEAR)
             t = torch.from_numpy(canvas).permute(2, 0, 1).contiguous().float() / 255.0
+            return (t.half() if self._half else t).unsqueeze(0)
         else:
             img = cv2.resize(frame, (S, S), interpolation=cv2.INTER_LINEAR)
             t = torch.from_numpy(img).permute(2, 0, 1).contiguous().float() / 255.0
@@ -253,6 +325,8 @@ class ImageTask(TaskAdapter):
         """Detection: NMS (conf 0.25, IoU 0.45). Classification: softmax + top-5."""
         if self._is_detection:
             from ultralytics.utils.nms import non_max_suppression
+            if self._half:
+                out = _to_float32(out)
             return non_max_suppression(out, conf_thres=self._conf, iou_thres=0.45)
         logits = out[0] if isinstance(out, (list, tuple)) else out
         return torch.softmax(logits, dim=-1).topk(min(5, logits.shape[-1]), dim=-1)
@@ -283,7 +357,19 @@ class ImageTask(TaskAdapter):
             self._cam = None
             self._frame_iter = None
 
+    def _executed_max_conf(self) -> float:
+        """Max NMS confidence of the executed module on the check image (same preprocess ->
+        forward -> NMS path as run_one, batch 1)."""
+        with torch.no_grad():
+            dets = self.postprocess(self._module(self.preprocess(read_rgb(self._check_image))))
+        return max((float(d[:, 4].max()) for d in dets if len(d)), default=0.0)
+
     def oracle(self) -> bool:
+        if self._is_detection and self._check_image and self._variant_oracle:
+            # a variant's own forward: yolo.predict would test the untouched FP32 model
+            r = self._executed_max_conf()
+            self._checked = r
+            return r >= self._conf
         if self._is_detection and self._check_image:
             from detector import Detector
             r = Detector.max_conf(self._yolo.predict(self._check_image,

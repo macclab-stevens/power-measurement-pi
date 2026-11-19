@@ -96,7 +96,7 @@ def test_dataset_version_counts_flags_added_by_later_tasks():
     a = _parse()
     for name, value in [("quant", "int8s"), ("prune", 0.3), ("concurrent", "conc2")]:
         assert run.dataset_version(a) == 1
-        b = SimpleNamespace(**vars(a), **{name: value})
+        b = SimpleNamespace(**{**vars(a), name: value})   # quant/prune exist since Task 5
         assert run.dataset_version(b) == 2
     assert run.dataset_version(SimpleNamespace()) == 1   # bare namespace: v1
     assert run.dataset_version(SimpleNamespace(holdout=None)) == 1

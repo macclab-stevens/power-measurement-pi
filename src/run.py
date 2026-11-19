@@ -32,6 +32,7 @@ import torch.profiler as profiler
 
 import perfcounters
 import pinning
+import yolo_variants
 from layers import LayerProfiler
 from microbench import bench_configs
 from powersampler import make_sampler
@@ -43,6 +44,8 @@ ACC_MIN_PD = 0.01   # per-op P_delta sanity (dominant op class)
 MIN_SAMPLES = 30
 MONSOON_MIN_HZ = 4900   # recorder sample_hz floor in monsoon mode (nominal 5000)
 PMIC_MIN_HZ = 50
+MAP_REFERENCE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data",
+                                  "map_reference.json")
 
 
 def _write_csv(path, header, rows):
@@ -68,15 +71,15 @@ def _op_rows(prof, mode: str) -> list[dict]:
 
 
 # v2 flags and their v1 (default) values. getattr is used for each so a flag added by a later
-# task (--quant, --prune, --concurrent) joins the rule by existing on args; adjust the default
-# here if that task's default is not None. Special cases handled in dataset_version():
+# task (--concurrent) joins the rule by existing on args; adjust the default here if that task's
+# default is not None. Special cases handled in dataset_version():
 # --holdout (v2 whenever given at all, even "none"), --fan (only auto/off count; "full" is the
 # legacy --fan-full). --perf-counters is deliberately absent: it is on by default and a
 # counters-only run is still a v1-shaped dataset. threads/batch/imgsz never count by themselves.
 V2_FLAG_DEFAULTS = {
     "governor": "pinned", "serve_fps": None, "soak_minutes": None,
     "frames_source": "repeat", "input_image": None,
-    "quant": None, "prune": None, "concurrent": None,
+    "quant": "fp32", "prune": None, "concurrent": None,
 }
 V2_FAN_MODES = ("auto", "off")
 
@@ -239,6 +242,15 @@ def build_parser() -> argparse.ArgumentParser:
                     help="image folder for --frames-source stream")
     ap.add_argument("--live-camera", action="store_true",
                     help="feed real camera frames (cam.py) instead of synthetic fixtures")
+    ap.add_argument("--quant", default="fp32", choices=list(yolo_variants.QUANT_CHOICES),
+                    help="precision variant of a YOLO model: fp32 (default) | int8-dynamic "
+                         "(Linear layers only, qnnpack) | int8-static (needs --quant-weights) | "
+                         "fp16 (module and input .half(); executed dtype verified)")
+    ap.add_argument("--quant-weights", default=None,
+                    help="int8-static artifact (pi-power-int8s/1 dict from tools/quantize.py)")
+    ap.add_argument("--prune", default=None,
+                    help="pruned model artifact (pi-power-pruned/1 dict from tools/prune.py); "
+                         "cannot be combined with --quant other than fp32")
     ap.add_argument("--cpu-mhz", type=int, default=None,
                     help="pin all cores to this clock via pi-power-pin (1500..2400 step 100)")
     ap.add_argument("--fan-full", action="store_true",
@@ -288,6 +300,14 @@ def parse_args(argv=None):
             ap.error("--soak-minutes is only supported with --task image")
     if args.batch is not None and args.batch < 1:
         ap.error("--batch must be >= 1")
+    if args.quant == "int8-static" and not args.quant_weights:
+        ap.error("--quant int8-static needs --quant-weights PATH")
+    if args.quant_weights and args.quant != "int8-static":
+        ap.error("--quant-weights is only used with --quant int8-static")
+    if args.prune and args.quant != "fp32":
+        ap.error("--prune cannot be combined with --quant other than fp32")
+    if (args.prune or args.quant != "fp32") and args.task != "image":
+        ap.error("--quant / --prune are only supported with --task image")
     if args.frames_source == "stream" and (args.live_camera or args.input_image):
         ap.error("--frames-source stream conflicts with --live-camera / --input-image")
     return args
@@ -303,6 +323,10 @@ def main():
     soak = args.soak_minutes is not None
     if soak:
         args.no_bench = True   # benches would make a soak cell unbounded
+    bench_forced_off = None
+    if args.quant != "fp32":
+        args.no_bench = True   # isolation benches deep-copy leaves and synthesize fp32 inputs
+        bench_forced_off = "quant"
     ts = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
     outdir = args.out or f"runs/{ts}"
     os.makedirs(outdir, exist_ok=True)
@@ -325,6 +349,8 @@ def main():
     logger.info(f"pin status at start: {pin_status_start}")
     if soak:
         logger.info(f"--soak-minutes {args.soak_minutes}: per-op benches forced off")
+    if bench_forced_off:
+        logger.info(f"--quant {args.quant}: per-op benches forced off")
 
     try:
         pin_status = pinning.apply_mode(args.cpu_mhz, fan_mode, args.governor)
@@ -371,6 +397,10 @@ def main():
         t_load = time.perf_counter()
         task = make_task(args.task, args.model, args)
         load_s = time.perf_counter() - t_load
+        variant = getattr(task, "variant", None) or {}
+        if variant.get("quantized_modules") == 0:
+            logger.error(f"--quant {args.quant}: 0 quantized modules, this run will fail "
+                         "acceptance (float32 must not be labelled INT8)")
         prof = LayerProfiler(task.module)
         modes = task.modes()
         n_params = sum(p.numel() for p in task.module.parameters())
@@ -500,6 +530,7 @@ def main():
                     "leaf", "params", "macs", "bytes_moved", "arith_intensity",
                     "t_eff", "seq_len",
                     "count", "lat_mean_ms", "lat_median_ms", "lat_std_ms"], layer_rows)
+        executed_dtype = yolo_variants.executed_conv_dtype(layer_rows)
         logger.info(f"layer profile: {len(layer_rows)} sites; "
                     f"{sum(1 for r in layer_rows if r['leaf'])} leaf configs")
         for r in layer_rows:
@@ -606,6 +637,8 @@ def main():
         lat_stats = latency_stats(lat_ms) if len(modes) == 1 else None
         lat_img = ({k: (round(v / args.batch, 3) if k != "n" else v)
                     for k, v in lat_stats.items()} if lat_stats else None)
+        variant_name = yolo_variants.variant_id(args.model, args.quant, variant.get("prune_ratio"))
+        map_ref = yolo_variants.lookup_map_reference(MAP_REFERENCE_PATH, variant_name, args.imgsz)
         inputs = (task.input_identity() if hasattr(task, "input_identity")
                   else {"source": "synthetic", "files": []})
         meta = {
@@ -616,6 +649,14 @@ def main():
             "train_loss": [round(v, 5) for v in getattr(task, "losses", [])] or None,
             "bench_skipped": args.no_bench,
             "bench_forced_off_by_soak": soak,
+            "bench_forced_off": bench_forced_off,
+            "variant": variant_name,
+            "quant": args.quant,
+            "prune": variant.get("prune"),
+            "quant_weights_sha256": variant.get("quant_weights_sha256"),
+            "quantized_modules": variant.get("quantized_modules"),
+            "executed_dtype": executed_dtype,
+            "map_reference": map_ref,
             "serve_requests": args.serve if args.task != "train" else 0,
             "serve_gap_ms": args.serve_gap_ms,
             "serve_fps": args.serve_fps,
@@ -727,6 +768,9 @@ def main():
         if fan_mode == "full":
             if fan_end is None or fan_end[0] < fan_end[1]:
                 errors.append("fan not at max at end of run")
+        errors += yolo_variants.quant_count_errors(args.quant, variant.get("quantized_modules"))
+        if args.quant == "fp16":
+            errors += yolo_variants.fp16_errors(layer_rows)
         if not task.oracle():
             extra = getattr(task, "_checked", None)
             oracle_note = f" (best_conf={extra:.3f})" if extra is not None else ""
