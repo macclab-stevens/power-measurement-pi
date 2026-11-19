@@ -7,7 +7,7 @@ baseline, then for every work mode runs N iterations while recording:
   - per-op steady-state power/energy via isolated microbenchmarks on the PMIC.
 
 Outputs (runs/<ts>/): layer_table.csv, perop_power.csv, op_table.csv,
-samples.csv, context.csv, run_meta.json. Same join contract as before, now
+samples.csv, context.csv, sysfs.csv, run_meta.json. Same join contract as before, now
 with generalized measurement identity (config_id = op+attrs+shapes+dtype) and
 structural columns (path/callsite, mode) kept separate.
 
@@ -34,6 +34,7 @@ import pinning
 from layers import LayerProfiler
 from microbench import bench_configs
 from powersampler import make_sampler
+from sysfs_sampler import SysfsSampler, ThermalAbort, thermal_exit_code
 from tasks import make_task
 
 BASELINE_W_MIN, BASELINE_W_MAX = 0.5, 8.0
@@ -132,10 +133,29 @@ def main():
     sampler = make_sampler(args.sampler, args.recorder_url)
     monsoon = args.sampler == "monsoon"
     sampler.start()
+    sysfs = SysfsSampler()
+    sysfs.start()
+    phase = {"name": "init"}   # current phase, recorded in thermal_abort.json
+
+    def _check_thermal():
+        """Frame/pass/request-boundary check: raise if the 1 Hz watchdog saw >= 85 C."""
+        if sysfs.thermal_abort is not None:
+            raise ThermalAbort(sysfs.thermal_abort)
+
+    def _thermal_exit(details):
+        """Record thermal_abort.json and return the exit code (3 abort / 4 hard stop)."""
+        rec = dict(details, phase=phase["name"])
+        with open(os.path.join(outdir, "thermal_abort.json"), "w") as f:
+            json.dump(rec, f, indent=2)
+        logger.error(f"THERMAL {rec['level'].upper()}: {rec['temp_C']} C in phase "
+                     f"'{rec['phase']}' (limits 85 abort / 90 hard stop)")
+        return thermal_exit_code(details)
+
     thr0 = sampler.snapshot_env()[2]
     task = None
     try:
         # ---- lifecycle: model load and the first call of each mode are measured phases
+        phase["name"] = "load_weights"
         sampler.marker("load_weights")
         t_load = time.perf_counter()
         task = make_task(args.task, args.model, args)
@@ -151,6 +171,8 @@ def main():
             task.step = sampler.events.step
         first_ms = {}
         for m in modes:
+            phase["name"] = f"first:{m}"
+            _check_thermal()
             sampler.marker(f"first:{m}")
             prof.set_mode(f"first:{m}")
             t1 = time.perf_counter()
@@ -161,10 +183,12 @@ def main():
         # ---- warm-up: sustained inference over ALL modes so temp/DVFS settle
         # before the idle baseline and timed measurements.
         if args.warmup > 0:
+            phase["name"] = "warmup"
             sampler.marker("warmup")
             env0 = sampler.snapshot_env()
             prof.set_mode("warmup")
             for _ in range(args.warmup):
+                _check_thermal()
                 for m in modes:
                     task.run_one(m)
             env1 = sampler.snapshot_env()
@@ -175,9 +199,11 @@ def main():
         # ABAB global baseline, slice A (2 s) — slice B follows the forward loops
         if monsoon:
             sampler.sync_pulse("start")
+        phase["name"] = "baseline_A"
         sampler.marker("baseline_A")
         tA0 = sampler.now_ms()
         time.sleep(2.0)
+        _check_thermal()
         baseA = sampler.window(tA0, sampler.now_ms())
         logger.info(f"baseline_A = {baseA['mean_P']} W ({baseA['count']} samples)")
 
@@ -186,8 +212,10 @@ def main():
         for mode in modes:
             logger.info(f"== mode: {mode} ==")
             prof.set_mode(mode)
+            phase["name"] = mode
             sampler.marker(mode)  # tag phase so samples.csv carries measured mean-P
             for f in range(args.frames):
+                _check_thermal()
                 prof.set_frame(f)
                 if f == 0:
                     # torch.profiler start/stop takes ~1 s on the first mode; label it so it is
@@ -204,8 +232,10 @@ def main():
         # ---- serve: isolated requests with idle gaps (race-to-idle transitions)
         if args.serve > 0 and args.task != "train":
             prof.set_mode("serve")
+            phase["name"] = "serve"
             sampler.marker("serve")
             for r in range(args.serve):
+                _check_thermal()
                 prof.set_frame(r)
                 for m in modes:
                     task.run_one(m)
@@ -214,9 +244,11 @@ def main():
             logger.info(f"serve: {args.serve} requests, gap {args.serve_gap_ms:.0f} ms")
 
         # ABAB global baseline, slice B (2 s); the run baseline is mean(A, B)
+        phase["name"] = "baseline_B"
         sampler.marker("baseline_B")
         tB0 = sampler.now_ms()
         time.sleep(2.0)
+        _check_thermal()
         baseB = sampler.window(tB0, sampler.now_ms())
         aP, bP = baseA["mean_P"], baseB["mean_P"]
         baseline_W = (aP + bP) / 2 if aP is not None and bP is not None else None
@@ -258,6 +290,7 @@ def main():
         achieved_hz = sampler.achieved_hz()
         logger.info(f"per-op power benches ({achieved_hz:.0f} W-Hz sampling):")
         saved_events, prof.events = prof.events, None   # benches are labeled by bench:<cid> phase markers
+        phase["name"] = "bench"
         try:
             if args.no_bench:
                 perop = []
@@ -268,6 +301,7 @@ def main():
                                       log=logger.info)
         finally:
             prof.events = saved_events
+        _check_thermal()
         thr1 = sampler.snapshot_env()[2]
         _write_csv(os.path.join(outdir, "perop_power.csv"),
                    ["config_id", "class", "config_json", "input_kind",
@@ -324,6 +358,7 @@ def main():
             if r["leaf"]:
                 arch[r["class"]] = arch.get(r["class"], 0) + 1
 
+        _check_thermal()   # a late crossing must not be reported as a clean run
         meta = {
             "task": args.task, "model": args.model, "modes": modes,
             "imgsz": args.imgsz, "conf": args.conf, "seq_len": args.seq,
@@ -347,6 +382,8 @@ def main():
             "recorder_status_start": sampler.status_start if monsoon else None,
             "recorder_status_end": sampler.status_end if monsoon else None,
             "recorder_continuity_errors": continuity if monsoon else None,
+            "sysfs_period_s": sysfs.period_s, "max_temp_C": sysfs.max_temp_C(),
+            "thermal_abort": None,
             "throttled_start": thr0, "throttled_end": thr1,
             "pin_status_start": pin_status_start, "pin_status_end": pin_status_end,
             "t0_real_ns": getattr(sampler, "_t0_ns", None),
@@ -440,7 +477,19 @@ def main():
                 logger.error(f"  ACCEPTANCE: {e}")
             raise SystemExit("ACCEPTANCE FAILED (see run.log)")
         logger.info(f"[ok] dataset written to {outdir}")
+    except ThermalAbort as e:
+        sys.exit(_thermal_exit(e.details))
+    except KeyboardInterrupt:
+        # only the sysfs watchdog's hard stop is special; any other Ctrl-C behaves as before
+        if sysfs.thermal_abort is not None and sysfs.thermal_abort["level"] == "hard_stop":
+            sys.exit(_thermal_exit(sysfs.thermal_abort))
+        raise
     finally:
+        sysfs.stop()
+        try:
+            sysfs.write_csv(os.path.join(outdir, "sysfs.csv"))
+        except OSError as e:
+            logger.error(f"sysfs.csv not written: {e}")
         sampler.stop()
         try:
             if task is not None:
