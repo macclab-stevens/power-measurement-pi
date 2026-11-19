@@ -4,8 +4,11 @@
 # maccpi in /etc/sudoers.d/pi-power-pin. Accepts only the fixed commands below.
 #
 #   pi-power-pin pin <MHz>      lock all 4 cores at MHz (1500..2400, step 100)
+#   pi-power-pin unpin          ondemand 1500-2400 MHz; fan trips untouched
 #   pi-power-pin fan full       force the fan to max step (lower fan trip points)
-#   pi-power-pin restore        ondemand 1500-2400 MHz + stock fan trips (50/60/67.5/75 C)
+#   pi-power-pin fan auto       stock fan trips (50/60/67.5/75 C)
+#   pi-power-pin fan off        fan trips at 85-88 C: fan stays off below 85 C
+#   pi-power-pin restore        unpin + stock fan trips
 #   pi-power-pin status         print governor, clocks, fan state/RPM, temp
 set -eu
 CPU=/sys/devices/system/cpu/cpufreq/policy0
@@ -13,8 +16,12 @@ TZ=/sys/class/thermal/thermal_zone0
 FAN=/sys/class/thermal/cooling_device0
 STOCK_TRIPS="50000 60000 67500 75000"
 FULL_TRIPS="20000 21000 22000 23000"
+# Fan off: the trips sit at/above 85 C, the same point at which run.py aborts a run
+# (THERMAL_ABORT_C), so the fan stays off for the whole measurement but still comes
+# back as a backstop if the SoC reaches the abort temperature.
+OFF_TRIPS="85000 86000 87000 88000"
 
-usage() { echo "usage: pi-power-pin pin <1500..2400 step 100> | fan full | restore | status" >&2; exit 2; }
+usage() { echo "usage: pi-power-pin pin <1500..2400 step 100> | unpin | fan full | fan auto | fan off | restore | status" >&2; exit 2; }
 
 set_trips() {
     i=1
@@ -38,9 +45,16 @@ case "${1:-}" in
         khz=$(( $2 * 1000 ))
         set_freq performance "$khz" "$khz"
         ;;
+    unpin)
+        set_freq ondemand 1500000 2400000
+        ;;
     fan)
-        [ "${2:-}" = full ] || usage
-        set_trips "$FULL_TRIPS"
+        case "${2:-}" in
+            full) set_trips "$FULL_TRIPS" ;;
+            auto) set_trips "$STOCK_TRIPS" ;;
+            off) set_trips "$OFF_TRIPS" ;;
+            *) usage ;;
+        esac
         ;;
     restore)
         set_freq ondemand 1500000 2400000
