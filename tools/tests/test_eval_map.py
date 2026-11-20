@@ -60,11 +60,61 @@ def test_no_labels_at_all_is_zero_not_a_crash():
 
 
 # ---- keys, entries, merge ---------------------------------------------------------------------
+PI = {"hostname": "pi", "machine": "aarch64", "torch": "2.14.0", "quantized_engine": "qnnpack"}
+
+
+def test_measured_on_describes_this_process():
+    import platform
+    m = em.measured_on()
+    assert set(m) == {"hostname", "machine", "torch", "quantized_engine"}
+    assert m["machine"] == platform.machine() and m["torch"] == torch.__version__
+    assert m["quantized_engine"] == torch.backends.quantized.engine
+
+
+def test_artifact_entry_records_sha256_and_file_sha256_is_correct(tmp_path):
+    import hashlib
+    f = tmp_path / "a.pt"
+    f.write_bytes(b"x" * 3_000_000)
+    sha = em.file_sha256(str(f))
+    assert sha == hashlib.sha256(b"x" * 3_000_000).hexdigest()
+    e = em.make_entry(0.4, 0.5, 500, "abc", "2026-11-20", PI, artifact_sha256=sha)
+    assert e["artifact_sha256"] == sha
+    assert "artifact_sha256" not in em.make_entry(0.4, 0.5, 500, "abc", "2026-11-20", PI)
+
+
+def test_already_measured_needs_aarch64_and_a_matching_artifact_hash():
+    pi = em.make_entry(0.4, 0.5, 500, "abc", "2026-11-20", PI)
+    nuc = {**pi, "measured_on": {**PI, "machine": "x86_64"}}
+    assert em.already_measured(pi)
+    assert not em.already_measured(nuc)
+    assert not em.already_measured({"map50_95": 0.4})            # provisional NUC entry: no measured_on
+    assert not em.already_measured(None)
+    art = {**pi, "artifact_sha256": "aa"}
+    assert em.already_measured(art, "aa")
+    assert not em.already_measured(art, "bb")                    # artifact regenerated
+    assert not em.already_measured(pi, "aa")                     # entry predates artifact hashing
+
+
+def test_main_skip_existing_only_skips_entries_measured_on_aarch64(tmp_path, monkeypatch):
+    table = tmp_path / "m.json"
+    pi = em.make_entry(0.4, 0.5, 500, "abc", "2026-11-20", PI)
+    table.write_text(json.dumps({"a@640": pi, "b@640": {**pi, "measured_on": {**PI, "machine": "x86_64"}},
+                                 "c@640": {"map50_95": 0.1}}))
+    jobs = [em.Job(v, f"/w/{v}.pt", 640) for v in "abc"]
+    monkeypatch.setattr(em, "all_jobs", lambda root, artifacts: jobs)
+    ran = []
+    monkeypatch.setattr(em, "run_job", lambda job, *a, **k: ran.append((job.variant, a[-1])) or {})
+    assert em.main(["--all", "--skip-existing", "--out", str(table), "--tool-version", "v9"]) == 0
+    assert ran == [("b", "v9"), ("c", "v9")]       # a is a Pi entry; the NUC/provisional ones are redone
+
+
 def test_key_format_matches_what_run_py_looks_up(tmp_path):
     import yolo_variants as yv
     assert em.entry_key("yolo11n", 640) == "yolo11n@640"
-    entry = em.make_entry(0.4, 0.55, 500, tool_version="abc1234", measured="2026-11-19")
+    entry = em.make_entry(0.4, 0.55, 500, tool_version="abc1234", measured="2026-11-19",
+                          measured_on=PI)
     assert set(entry) == set(yv.MAP_REFERENCE_FIELDS)
+    assert entry["measured_on"] == PI
     assert entry["dataset"] == "coco-val2017-first500"
     f = tmp_path / "m.json"
     em.merge_entry(str(f), em.entry_key("yolo11n_int8s", 480), entry)

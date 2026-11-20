@@ -2,7 +2,12 @@
 
 Writes ../data/map_reference.json entries keyed "<variant_id>@<imgsz>" (src/yolo_variants.py
 `variant_id`); src/run.py looks them up and copies them into every cell's run_meta["map_reference"].
-Entry: {map50_95, map50, n_images, dataset, tool_version (git short hash, '-dirty' if tracked files other than this table were modified), measured (ISO date)}.
+Entry: {map50_95, map50, n_images, dataset, tool_version (git short hash, '-dirty' if tracked files other than this table were modified), measured (ISO date), measured_on {hostname, machine, torch, quantized_engine}} plus artifact_sha256 for a models/*.pt artifact.
+
+Accuracy is measured ON THE PI (machine "aarch64"): INT8 (qnnpack) and FP16 run different kernels
+there than on x86, so the NUC only builds weights and prepares data. host/verify_cell.py warns for
+a cell whose entry was not measured on aarch64. The NUC can still run this tool (smoke tests,
+`--sanity`), but its entries are x86_64 and are not skipped by `--skip-existing`.
 
 Every entry is measured by ONE custom loop so FP32, fp16, INT8 and pruned variants are comparable:
 the Pi's own preprocess (src/tasks.py ImageTask.preprocess: square letterbox, pad 114, centred, /255),
@@ -11,25 +16,33 @@ the model forward, ultralytics NMS (conf 0.001, IoU 0.7, multi-label, max 300 de
 0.50:0.05:0.95. `--sanity` runs an FP32 model through this loop AND through ultralytics `.val()`
 and checks mAP50-95 agrees within 0.01.
 
-  cd tools
-  uv run python eval_map.py --model ../yolo11n.pt --imgsz 640
-  uv run python eval_map.py --model ../yolo11n.pt --quant fp16 --imgsz 640
-  uv run python eval_map.py --model ../yolo11n.pt --artifact ../models/yolo11n_int8s.pt --imgsz 640
-  uv run python eval_map.py --model ../yolo11n.pt --imgsz 640 --sanity      # loop vs .val(), writes nothing
-  uv run python eval_map.py --all [--skip-existing]
+Only the repo-root (Pi) project environment is needed (torch, ultralytics, opencv):
+
+  cd ~/Desktop/power-measurement-pi            # on the Pi; or a copy with the weights, models/ and
+                                               # tools/data/coco500 in place (--data-dir)
+  uv run --frozen --offline python tools/eval_map.py --model yolo11n.pt --imgsz 640
+  uv run --frozen --offline python tools/eval_map.py --model yolo11n.pt --quant fp16 --imgsz 640
+  uv run --frozen --offline python tools/eval_map.py --model yolo11n.pt --artifact models/yolo11n_int8s.pt
+  uv run --frozen --offline python tools/eval_map.py --model yolo11n.pt --imgsz 640 --sanity  # vs .val(), writes nothing
+  uv run --frozen --offline python tools/eval_map.py --all [--skip-existing]
 
 `--all`: FP32 n/s/m of both generations at 640; yolo11 n/s/m at 320, 480, 960; fp16 yolo11n@640; and
-every ../models/*.pt artifact (INT8 static, pruned) at 640. int8-dynamic is not in `--all`: it
+every models/*.pt artifact (INT8 static, pruned) at 640. int8-dynamic is not in `--all`: it
 quantizes 0 modules on YOLO, so its mAP would be FP32's (`--quant int8-dynamic` still works and
 prints the quantized-module count). A single evaluation is aborted (exit 2) if the projected time
-exceeds --budget-min; the table is merged after every evaluation, so reruns can `--skip-existing`.
+exceeds --budget-min; the table is merged after every evaluation, so reruns can `--skip-existing`
+(which skips only entries already measured on aarch64, and for an artifact only when its
+artifact_sha256 still matches). --tool-version overrides the git lookup (a copy without .git).
 """
 from __future__ import annotations
 
 import argparse
 import datetime
 import json
+import hashlib
 import os
+import platform
+import socket
 import subprocess
 import sys
 import tempfile
@@ -53,6 +66,7 @@ CONF_THRES, IOU_THRES, MAX_DET = 0.001, 0.7, 300
 SANITY_TOLERANCE = 0.01
 DEFAULT_BUDGET_MIN = 40.0
 PROBE_IMAGES = 20
+TARGET_MACHINE = "aarch64"          # entries measured here are the ones run_meta/verify accept
 GEN_N_S_M = [f"{g}{s}" for g in ("yolo11", "yolov8") for s in "nsm"]
 
 
@@ -89,12 +103,40 @@ def tool_version(run=subprocess.run) -> str:
         return "unknown"
 
 
-def make_entry(map50_95: float, map50: float, n_images: int, tool_version: str, measured: str) -> dict:
+def measured_on() -> dict:
+    """Where this process measures: the Pi's accuracy is what the table needs (see module docstring)."""
+    return {"hostname": socket.gethostname(), "machine": platform.machine(),
+            "torch": torch.__version__, "quantized_engine": torch.backends.quantized.engine}
+
+
+def file_sha256(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def make_entry(map50_95: float, map50: float, n_images: int, tool_version: str, measured: str,
+               measured_on: dict, artifact_sha256: str | None = None) -> dict:
     entry = {"map50_95": round(float(map50_95), 5), "map50": round(float(map50), 5),
              "n_images": int(n_images), "dataset": DATASET, "tool_version": tool_version,
-             "measured": measured}
+             "measured": measured, "measured_on": dict(measured_on)}
     assert set(entry) == set(yv.MAP_REFERENCE_FIELDS)
+    if artifact_sha256:
+        entry["artifact_sha256"] = artifact_sha256
+        assert set(entry) - set(yv.MAP_REFERENCE_FIELDS) == set(yv.MAP_REFERENCE_ARTIFACT_FIELDS)
     return entry
+
+
+def already_measured(entry: dict | None, artifact_sha256: str | None = None) -> bool:
+    """--skip-existing: True only for an entry measured on the target machine (aarch64) and, for an
+    artifact, still describing the same file (a regenerated artifact is re-measured)."""
+    if not isinstance(entry, dict):
+        return False
+    if (entry.get("measured_on") or {}).get("machine") != TARGET_MACHINE:
+        return False
+    return artifact_sha256 is None or entry.get("artifact_sha256") == artifact_sha256
 
 
 def load_table(path: str) -> dict:
@@ -324,7 +366,8 @@ def load_job_module(job: Job) -> tuple[torch.nn.Module, bool, int | None]:
     return module, False, None
 
 
-def run_job(job: Job, data_dir: str, table_path: str | None, budget_s: float, log=print) -> dict:
+def run_job(job: Job, data_dir: str, table_path: str | None, budget_s: float, log=print,
+            version: str | None = None) -> dict:
     """Evaluate one job, merge its entry into table_path (when given) and return a result row."""
     key = entry_key(job.variant, job.imgsz)
     log(f"[{key}] start")
@@ -339,8 +382,9 @@ def run_job(job: Job, data_dir: str, table_path: str | None, budget_s: float, lo
     wall = time.perf_counter() - t0
     row = {"key": key, **res, "wall_s": round(wall, 1), "quantized_modules": nq}
     if table_path:
-        entry = make_entry(res["map50_95"], res["map50"], res["n_images"], tool_version(),
-                           datetime.date.today().isoformat())
+        entry = make_entry(res["map50_95"], res["map50"], res["n_images"], version or tool_version(),
+                           datetime.date.today().isoformat(), measured_on(),
+                           file_sha256(job.artifact) if job.artifact else None)
         merge_entry(table_path, key, entry)
     log(f"RESULT {key} mAP50-95={res['map50_95']:.4f} mAP50={res['map50']:.4f} "
         f"n={res['n_images']} wall={wall:.0f}s")
@@ -369,7 +413,10 @@ def main(argv=None) -> int:
     ap.add_argument("--artifact", help="Task 8/9 artifact (models/*.pt); variant id comes from it")
     ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--all", action="store_true", help="the plan's full set (see module docstring)")
-    ap.add_argument("--skip-existing", action="store_true", help="skip keys already in the table")
+    ap.add_argument("--skip-existing", action="store_true",
+                    help="skip keys already measured on aarch64 (artifacts: with the same sha256)")
+    ap.add_argument("--tool-version", help="tool_version to record (default: git short hash of this "
+                    "checkout; use it for a copy without .git)")
     ap.add_argument("--sanity", action="store_true", help="FP32 loop vs ultralytics .val(); writes nothing")
     ap.add_argument("--out", default=MAP_REFERENCE_PATH)
     ap.add_argument("--data-dir", default=DATA_DIR)
@@ -393,15 +440,17 @@ def main(argv=None) -> int:
     existing = load_table(args.out)
     rc = 0
     for job in jobs:
-        if args.skip_existing and entry_key(job.variant, job.imgsz) in existing:
-            log(f"[{entry_key(job.variant, job.imgsz)}] already in table, skipped")
+        key = entry_key(job.variant, job.imgsz)
+        if args.skip_existing and already_measured(
+                existing.get(key), file_sha256(job.artifact) if job.artifact else None):
+            log(f"[{key}] already measured on {TARGET_MACHINE}, skipped")
             continue
         try:
             if args.sanity:
                 ensure_weights(job.model)
                 rc = rc or (0 if sanity(job, args.data_dir, budget_s, log)["ok"] else 1)
             else:
-                run_job(job, args.data_dir, args.out, budget_s, log)
+                run_job(job, args.data_dir, args.out, budget_s, log, args.tool_version)
         except TooSlow as e:
             log(f"[{entry_key(job.variant, job.imgsz)}] STOPPED: {e}")
             return 2

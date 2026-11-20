@@ -32,7 +32,12 @@ QUANT_CHOICES = ("fp32", "int8-dynamic", "int8-static", "fp16")
 QUANT_SUFFIX = {"fp32": "", "int8-dynamic": "int8d", "int8-static": "int8s", "fp16": "fp16"}
 INT8S_FORMAT = "pi-power-int8s/1"
 PRUNED_FORMAT = "pi-power-pruned/1"
-MAP_REFERENCE_FIELDS = ("map50_95", "map50", "n_images", "dataset", "tool_version", "measured")
+# data/map_reference.json entry. `measured_on` = {hostname, machine (platform.machine()), torch,
+# quantized_engine}: host/verify_cell.py warns unless machine == "aarch64" (the Pi). Entries for a
+# weights artifact (models/*.pt) also carry `artifact_sha256`, so a regenerated artifact is detected.
+MAP_REFERENCE_FIELDS = ("map50_95", "map50", "n_images", "dataset", "tool_version", "measured",
+                        "measured_on")
+MAP_REFERENCE_ARTIFACT_FIELDS = ("artifact_sha256",)
 
 
 def _repair_quantized_conv_unpickling() -> None:
