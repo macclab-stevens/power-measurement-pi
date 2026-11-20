@@ -25,7 +25,12 @@ def test_every_cell_parses_with_run_parse_args(which):
     assert rows
     for r in rows:
         a = run.parse_args(r["args"])
-        assert a.sampler == "monsoon" and a.perf_counters == "on"
+        assert a.sampler == "monsoon"
+        if r["family"] == "ref":                                # v1 args: dataset_version 1
+            assert (a.holdout, a.perf_counters, run.dataset_version(a)) == (None, "off", 1)
+            assert a.fan_full and a.fan is None and a.governor == "pinned"
+            continue
+        assert a.perf_counters == "on"
         assert a.holdout == (r["holdout"] or "none")            # always set => dataset_version 2
         assert a.cpu_mhz == r["cpu_mhz"] and a.task == "image"
         assert a.governor == ("ondemand" if "_dvfs_" in r["cell_id"] else "pinned")

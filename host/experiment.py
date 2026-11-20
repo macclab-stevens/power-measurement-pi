@@ -2,7 +2,7 @@
 """SP3 experiment orchestrator (EliteBook). Resumable: one manifest, one append-only results log.
 
     uv run python experiment.py plan [--smoke|--probe] [--only yolo11n,lm64] --out ../runs/matrix/manifest.jsonl
-    uv run python experiment.py plan --v2 {A,A-input,B,C,D,soak,all,pilot} [--include-fp16]
+    uv run python experiment.py plan --v2 {A,A-input,B,C,D,soak,ref,all,pilot} [--include-fp16]
         [--include-optional] [--include-concurrent] [--include-int8d] [--include-prune] --out ...
     uv run python experiment.py run --manifest ../runs/matrix/manifest.jsonl [--auto-power-cycle 3]
     uv run python experiment.py status --manifest ../runs/matrix/manifest.jsonl

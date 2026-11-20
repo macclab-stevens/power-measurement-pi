@@ -8,6 +8,10 @@ is a `src/run.py` argument list that passes `--holdout` (so run_meta gets datase
     cells(which="all", seed=7, include_fp16=False, ...) -> rows in round order
     pilot(seed=7, ...)                                     -> one cell per configuration group
 
+Family `ref` re-runs the v1 presets (yolo11n, yolov8n at 1500/2000/2400 MHz x 3) with the v1 args
+unchanged plus `--perf-counters off` and no `--holdout`, so they stay dataset_version 1: a kernel
+(6.18.50 -> 6.18.60) cross-check against the 224 v1 cells (Ruling R26). Ids `v1ref_<key>_<mhz>_rNN`.
+
 Cell id: `{model}[_{variant}][_{condition}]_{imgsz}_t{threads}[_b{batch}]_{clock}_r{repeat:02d}`
 with `clock` = pinned MHz or `dvfs`; pilot ids carry the prefix `pilot_`.
 
@@ -28,8 +32,13 @@ THREADS = 4
 IMGSZ = 640
 SOAK_EXTRA_S = 20 * 60          # soak timeout = soak length + this
 FRAMES_NS, FRAMES_M = 30, 20    # measured frames for n/s models, for m models
-FAMILIES = ("A", "A-input", "B", "C", "D", "soak")
+DEFAULT_TIMEOUT_S = 40 * 60     # experiment.RUN_TIMEOUT_S; timeout_s is set only above this
+CONFIG_FAMILIES = ("A", "A-input", "B", "C", "D", "soak")
+FAMILIES = (*CONFIG_FAMILIES, "ref")
 CHOICES = (*FAMILIES, "all", "pilot")
+REF_KEYS = ("yolo11n", "yolov8n")
+REF_MHZ = (1500, 2000, 2400)
+REF_REPEATS = 3
 
 
 @dataclass(frozen=True)
@@ -77,7 +86,11 @@ def cell_id(cfg: Config, repeat: int, prefix: str = "") -> str:
 
 
 def timeout_s(cfg: Config) -> int | None:
-    return cfg.soak_minutes * 60 + SOAK_EXTRA_S if cfg.soak_minutes else None
+    """Soak length + 20 min, only when that exceeds the orchestrator's default timeout."""
+    if not cfg.soak_minutes:
+        return None
+    t = cfg.soak_minutes * 60 + SOAK_EXTRA_S
+    return t if t > DEFAULT_TIMEOUT_S else None
 
 
 def args_for(cfg: Config) -> list[str]:
@@ -176,11 +189,20 @@ def configs_soak() -> list[Config]:
             for m in ("yolo11n", "yolo11m")]
 
 
+def ref_row(key: str, mhz: int, repeat: int, prefix: str = "") -> dict:
+    """A v1 preset cell (args identical to matrix._cell) with perf counters off, no --holdout."""
+    import matrix
+    v1 = matrix._cell(key, mhz, repeat, repeat)
+    return {"cell_id": f"{prefix}v1ref_{key}_{mhz}_r{repeat:02d}", "family": "ref",
+            "model_key": key, "cpu_mhz": mhz, "repeat": repeat, "round": repeat, "holdout": None,
+            "args": [*v1["args"], "--perf-counters", "off"]}
+
+
 def configs(which: str, *, include_fp16=False, include_optional=False, include_concurrent=False,
             include_int8d=False, include_prune=False) -> list[Config]:
     """Configuration groups of one family, or of all six."""
     if which == "all":
-        return [c for f in FAMILIES for c in configs(
+        return [c for f in CONFIG_FAMILIES for c in configs(
             f, include_fp16=include_fp16, include_optional=include_optional,
             include_concurrent=include_concurrent, include_int8d=include_int8d,
             include_prune=include_prune)]
@@ -211,17 +233,23 @@ def _in_rounds(rows: list[dict], seed: int) -> list[dict]:
 
 
 def cells(which: str = "all", seed: int = 7, **include) -> list[dict]:
-    """Manifest rows for family `which` (A, A-input, B, C, D, soak, all) or the pilot."""
+    """Manifest rows for family `which` (A, A-input, B, C, D, soak, ref, all) or the pilot."""
     if which == "pilot":
         return pilot(seed, **include)
-    rows = [row(c, rep) for c in configs(which, **include) for rep in range(c.repeats)]
+    rows = []
+    if which != "ref":
+        rows = [row(c, rep) for c in configs(which, **include) for rep in range(c.repeats)]
+    if which in ("ref", "all"):
+        rows += [ref_row(k, mhz, rep) for k in REF_KEYS for mhz in REF_MHZ
+                 for rep in range(REF_REPEATS)]
     return _in_rounds(rows, seed)
 
 
 # ---- pilot -----------------------------------------------------------------------------------
 def pilot(seed: int = 7, *, include_fp16=False, include_optional=False, include_concurrent=False,
           include_int8d=False, include_prune=False) -> list[dict]:
-    """One cell per distinct configuration group (two DVFS repeats), plus a 5-minute soak.
+    """One cell per distinct configuration group (two DVFS repeats), a 5-minute soak, and one v1ref
+    cell per key at 2400 MHz.
 
     `include_optional` is accepted for CLI symmetry; the optional C cells add no pilot group."""
     del include_optional
@@ -239,5 +267,6 @@ def pilot(seed: int = 7, *, include_fp16=False, include_optional=False, include_
                if (c.model, c.condition) not in (("yolo11s", ""), ("yolo11n", "serve5"))]
     groups.append(Config("soak", "yolo11n", 1, condition="soak5", fan="auto", soak_minutes=5))
     rows = [row(c, rep, prefix="pilot_") for c in groups for rep in range(c.repeats)]
+    rows += [ref_row(k, MAIN_MHZ, 0, prefix="pilot_") for k in REF_KEYS]
     return _in_rounds(rows, seed)
 

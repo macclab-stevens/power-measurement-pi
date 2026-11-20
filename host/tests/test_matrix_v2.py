@@ -9,12 +9,18 @@ from pathlib import Path
 
 import pytest
 
+import experiment
+import matrix
 import matrix_v2 as m
 
 ID_RE = re.compile(
-    r"^(pilot_)?(yolo(?:v8|11)[nsm])(_(?:int8d|int8s|fp16|p30|p50))?"
+    r"^(pilot_)?(v1ref_yolo(?:v8|11)n_(?:1500|2000|2400)_r\d\d$|(yolo(?:v8|11)[nsm])(_(?:int8d|int8s|fp16|p30|p50))?"
     r"(_(?:fanauto|fanoff|soak30|soak5|serve1|serve5|serve15|stream|empty|crowded|conc2|concspin))?"
-    r"_(\d+)_t(\d)(_b\d+)?_(2400|2000|1500|dvfs)_r(\d\d)$")
+    r"_(\d+)_t(\d)(_b\d+)?_(2400|2000|1500|dvfs)_r(\d\d)$)")
+def v2_only(rows):
+    return [r for r in rows if r["family"] != "ref"]
+
+
 ALL_FLAGS = dict(include_fp16=True, include_optional=True, include_concurrent=True,
                  include_int8d=True, include_prune=True)
 
@@ -40,8 +46,9 @@ def test_family_counts():
     assert len(m.cells("D")) == 28
     assert len(m.cells("D", include_concurrent=True)) == 34
     assert len(m.cells("soak")) == 2
-    assert len(m.cells("all")) == 44 + 6 + 12 + 60 + 28 + 2
-    assert len(m.cells("all", **ALL_FLAGS)) == 44 + 6 + 30 + 66 + 34 + 2
+    assert len(m.cells("ref")) == 18
+    assert len(m.cells("all")) == 44 + 6 + 12 + 60 + 28 + 2 + 18
+    assert len(m.cells("all", **ALL_FLAGS)) == 44 + 6 + 30 + 66 + 34 + 2 + 18
 
 
 @pytest.mark.parametrize("which", [*m.FAMILIES, "all", "pilot"])
@@ -66,10 +73,10 @@ def test_naming_examples_from_the_plan():
 
 
 def test_row_fields_and_arg_consistency():
-    for r in m.cells("all", **ALL_FLAGS):
+    for r in v2_only(m.cells("all", **ALL_FLAGS)):
         assert {"cell_id", "family", "model_key", "cpu_mhz", "repeat", "round", "holdout",
                 "args"} <= set(r)
-        assert r["family"] in m.FAMILIES and r["round"] == r["repeat"]
+        assert r["family"] in m.CONFIG_FAMILIES and r["round"] == r["repeat"]
         assert isinstance(r["cpu_mhz"], int) and arg(r, "--cpu-mhz") == str(r["cpu_mhz"])
         assert arg(r, "--model") == r["model_key"] + ".pt"
         assert arg(r, "--perf-counters") == "on"
@@ -80,7 +87,7 @@ def test_row_fields_and_arg_consistency():
 
 
 def test_holdout_tags():
-    for r in m.cells("all", **ALL_FLAGS):
+    for r in v2_only(m.cells("all", **ALL_FLAGS)):
         mk = r["model_key"]
         want = "primary-s" if mk in ("yolo11s", "yolov8s") else (
             "secondary-m" if mk in ("yolo11m", "yolov8m") else None)
@@ -218,10 +225,35 @@ def test_soak_cells():
         assert r["family"] == "soak" and r["cpu_mhz"] == 2400 and r["timeout_s"] == 3000
         assert arg(r, "--soak-minutes") == "30" and arg(r, "--fan") == "auto"
     assert all("timeout_s" not in r for r in m.cells("all") if r["family"] != "soak")
+    assert m.DEFAULT_TIMEOUT_S == experiment.RUN_TIMEOUT_S
 
+
+def test_timeout_only_when_above_default():
+    soak = lambda mins: m.Config("soak", "yolo11n", 1, soak_minutes=mins)  # noqa: E731
+    assert m.timeout_s(soak(30)) == 50 * 60
+    assert m.timeout_s(soak(20)) is None                   # 40 min is not above the default
+    assert m.timeout_s(soak(5)) is None
+    assert m.timeout_s(m.Config("A", "yolo11s", 1)) is None
+
+
+def test_ref_family_is_v1_args_with_counters_off():
+    rows = m.cells("ref")
+    assert Counter((r["model_key"], r["cpu_mhz"]) for r in rows) == {
+        (k, mhz): 3 for k in ("yolo11n", "yolov8n") for mhz in (1500, 2000, 2400)}
+    for r in rows:
+        v1 = matrix._cell(r["model_key"], r["cpu_mhz"], r["repeat"], r["round"])
+        assert r["args"] == [*v1["args"], "--perf-counters", "off"]
+        assert "--holdout" not in r["args"] and "--fan-full" in r["args"]
+        assert r["cell_id"] == f"v1ref_{r['model_key']}_{r['cpu_mhz']}_r{r['repeat']:02d}"
+        assert (r["family"], r["holdout"], r["round"]) == ("ref", None, r["repeat"])
+        assert "timeout_s" not in r
+    assert [r["round"] for r in rows] == sorted(r["round"] for r in rows)
+    assert m.cells("ref", seed=3) == m.cells("ref", seed=3)
+    assert {r["cell_id"] for r in m.cells("all") if r["family"] == "ref"} == \
+        {r["cell_id"] for r in rows}
 
 def test_fan_full_unless_overridden():
-    for r in m.cells("all", **ALL_FLAGS):
+    for r in v2_only(m.cells("all", **ALL_FLAGS)):
         want = "auto" if r["family"] == "soak" or "_fanauto_" in r["cell_id"] else (
             "off" if "_fanoff_" in r["cell_id"] else "full")
         assert arg(r, "--fan") == want, r["cell_id"]
@@ -246,21 +278,24 @@ def test_unknown_family():
 
 def test_pilot():
     rows = m.cells("pilot")
-    assert 25 <= len(rows) <= 32 and len(rows) == 27
+    assert len(rows) == 29
     assert all(r["cell_id"].startswith("pilot_") for r in rows)
     fams = Counter(r["family"] for r in rows)
-    assert fams == {"A": 6, "A-input": 2, "B": 3, "C": 8, "D": 7, "soak": 1}
+    assert fams == {"A": 6, "A-input": 2, "B": 3, "C": 8, "D": 7, "soak": 1, "ref": 2}
     dv = [r for r in rows if "_dvfs_" in r["cell_id"]]
     assert sorted(r["repeat"] for r in dv) == [0, 1]
     soak = by(rows, family="soak")[0]
     assert soak["cell_id"] == "pilot_yolo11n_soak5_640_t4_2400_r00"
-    assert arg(soak, "--soak-minutes") == "5" and soak["timeout_s"] == 25 * 60
+    assert arg(soak, "--soak-minutes") == "5" and "timeout_s" not in soak
+    refs = by(rows, family="ref")
+    assert sorted(r["cell_id"] for r in refs) == ["pilot_v1ref_yolo11n_2400_r00",
+                                                  "pilot_v1ref_yolov8n_2400_r00"]
     # one per configuration group: no repeated id stem except the 2 DVFS repeats
     stems = Counter(r["cell_id"][:-4] for r in rows)
     assert [s for s, n in stems.items() if n > 1] == ["pilot_yolo11n_640_t4_dvfs"]
-    assert len(m.cells("pilot", **ALL_FLAGS)) == 27 + 3 + 3 + 2 + 0 + 0   # fp16, int8d x3, p30/p50, conc
-    assert len(m.cells("pilot", include_fp16=True)) == 28
-    assert len(m.cells("pilot", include_concurrent=True)) == 29
+    assert len(m.cells("pilot", **ALL_FLAGS)) == 29 + 3 + 3 + 2 + 0 + 0   # fp16, int8d x3, p30/p50, conc
+    assert len(m.cells("pilot", include_fp16=True)) == 30
+    assert len(m.cells("pilot", include_concurrent=True)) == 31
 
 
 def test_cli_plan_v2(tmp_path):
