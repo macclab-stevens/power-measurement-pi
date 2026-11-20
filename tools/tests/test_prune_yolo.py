@@ -1,4 +1,6 @@
 """Tests for tools/prune_yolo.py and the split-free blocks in src/yolo_variants.py (tiny random YOLO11)."""
+import copy
+
 import pytest
 import torch
 import torch.nn as nn
@@ -142,6 +144,11 @@ def test_build_artifact_has_the_task5_fields_and_measured_counts(tiny_yolo, prun
     assert art["ratio"] == 0.3 and art["params_after"] == py.count_params(pruned_30)
     assert art["params_after"] < art["params_before"] and art["macs_after"] < art["macs_before"]
     assert art["method"]["fine_tuned"] is False and art["method"]["split_free_replaced"] == {"C3k2": 8}
+    assert art["method"]["bn_recalibration"] == {"images": 0, "subset": "calib200",
+                                                 "momentum": "cumulative", "batch": 20}
+    assert "GroupMagnitudeImportance" in art["method"]["importance"]
+    art = py.build_artifact(pruned_30, "yolo11n.pt", 0.3, 1, 1, imgsz=64, bn_images=200)
+    assert art["method"]["bn_recalibration"]["images"] == 200
     assert yv.validate_artifact(art, yv.PRUNED_FORMAT)["ratio"] == 0.3
 
 
@@ -149,6 +156,66 @@ def test_build_artifact_has_the_task5_fields_and_measured_counts(tiny_yolo, prun
 def test_build_artifact_rejects_ratio_outside_0_1(pruned_30, ratio):
     with pytest.raises(ValueError, match=r"\(0, 1\)"):
         py.build_artifact(pruned_30, "yolo11n.pt", ratio, 1, 1, imgsz=64)
+
+
+# ---- BN recalibration -------------------------------------------------------------------------
+def _bn_buffers(model):
+    return {n: b.clone() for n, b in model.named_buffers()}
+
+
+def test_recalibrate_bn_changes_only_bn_buffers_and_no_weight(pruned_30):
+    model = _randomise_bn(copy.deepcopy(pruned_30))
+    params = {n: p.detach().clone() for n, p in model.named_parameters()}
+    buffers = _bn_buffers(model)
+    bns = [m for m in model.modules() if isinstance(m, nn.BatchNorm2d)]
+    momenta = [m.momentum for m in bns]
+    torch.manual_seed(5)
+    n = py.recalibrate_bn(model, [torch.rand(4, 3, 64, 64) for _ in range(3)])
+    assert n == 12
+    for name, p in model.named_parameters():                      # conv + BN weights and biases
+        assert torch.equal(p, params[name]), name
+    assert [m.momentum for m in bns] == momenta                   # restored
+    assert not any(m.training for m in model.modules())           # whole model back in eval
+    changed = {name for name, b in model.named_buffers() if not torch.equal(b, buffers[name])}
+    bn_buffers = {f"{name}.{b}" for name, m in model.named_modules() if isinstance(m, nn.BatchNorm2d)
+                  for b in ("running_mean", "running_var", "num_batches_tracked")}
+    assert changed and changed <= bn_buffers
+    assert all(m.num_batches_tracked.item() == 3 for m in bns)    # reset, then one per batch
+
+
+def test_recalibrate_bn_is_the_cumulative_average_of_the_batch_statistics():
+    torch.manual_seed(6)
+    net = nn.Sequential(nn.Conv2d(3, 4, 3, bias=False), nn.BatchNorm2d(4, momentum=0.1)).eval()
+    net[1].running_mean.fill_(99.0)                               # must be forgotten
+    batches = [torch.randn(5, 3, 8, 8) * (i + 1) for i in range(3)]
+    py.recalibrate_bn(net, batches)
+    ys = [net[0](b) for b in batches]
+    mean = torch.stack([y.mean((0, 2, 3)) for y in ys]).mean(0)
+    var = torch.stack([y.var((0, 2, 3), unbiased=True) for y in ys]).mean(0)
+    assert torch.allclose(net[1].running_mean, mean, atol=1e-6)
+    assert torch.allclose(net[1].running_var, var, rtol=1e-5)
+    assert net[1].momentum == 0.1 and not net.training
+
+
+def test_recalibrate_bn_restores_eval_and_momentum_when_a_forward_fails():
+    net = nn.Sequential(nn.Conv2d(3, 2, 1), nn.BatchNorm2d(2)).eval()
+    with pytest.raises(RuntimeError):
+        py.recalibrate_bn(net, [torch.zeros(2, 5, 4, 4)])         # wrong channel count
+    assert net[1].momentum == 0.1 and not any(m.training for m in net.modules())
+
+
+def test_recalibrate_bn_rejects_no_images():
+    with pytest.raises(ValueError, match="at least one image"):
+        py.recalibrate_bn(nn.Sequential(nn.Conv2d(3, 2, 1), nn.BatchNorm2d(2)), [])
+
+
+def test_calibration_batches_are_letterboxed_batches_of_the_sorted_images(tmp_path):
+    import cv2
+    import numpy as np
+    for i in range(5):
+        cv2.imwrite(str(tmp_path / f"{i}.jpg"), np.full((40, 60, 3), 40 * i, np.uint8))
+    shapes = [tuple(b.shape) for b in py.calibration_batches(str(tmp_path), imgsz=64, batch=2)]
+    assert shapes == [(2, 3, 64, 64), (2, 3, 64, 64), (1, 3, 64, 64)]
 
 
 def test_round_trip_and_fresh_process_load_with_only_src_on_the_path(tiny_yolo, pruned_30, tmp_path):

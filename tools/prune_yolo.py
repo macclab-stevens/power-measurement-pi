@@ -11,9 +11,11 @@ Each artifact is the Task 5 dict (src/yolo_variants.py PRUNED_FORMAT 'pi-power-p
     macs_before, macs_after (both at 640x640, batch 1; a MAC is one multiply-add), plus `method`.
 
 Method (the honest part, also written into the artifact's `method`):
-  * Importance: L2 norm of the conv weights of a channel group (torch-pruning GroupMagnitudeImportance,
-    p=2, mean group reduction and mean normalisation), on the UNFUSED Conv+BN model (the model the Pi
-    runs for FP32, so latency is comparable). No data is used.
+  * Importance: torch-pruning's GroupMagnitudeImportance(p=2): the L2 norm of every weight slice of a
+    dependency group (the conv output channels being removed, the BN gamma/beta of those channels and
+    the dependent input-channel slices of the next convs), mean group reduction and mean normalisation.
+    Computed on the UNFUSED Conv+BN model (the model the Pi runs for FP32, so latency is comparable).
+    No data is used.
   * Global channel ratio: `pruning_ratio` is the fraction of all prunable channels removed over the
     whole network (torch-pruning global_pruning), so layers are pruned unevenly. It is NOT a parameter
     ratio: removing channels shrinks the input and the output side of a conv, parameters fall roughly
@@ -21,7 +23,12 @@ Method (the honest part, also written into the artifact's `method`):
   * Ignored: the output convs of the Detect head (cv2[i][-1] box, cv3[i][-1] class, dfl) so the
     prediction layout (4 * reg_max + nc) is unchanged, and the self-attention blocks of C2PSA
     (`Attention` reshapes and splits qkv by fixed head widths).
-  * No fine-tuning: accuracy drops, the drop is recorded by tools/eval_map.py (data/map_reference.json).
+  * No fine-tuning: no weight is trained. After pruning the BatchNorm running statistics (running_mean /
+    running_var only) are re-estimated by forward passes over tools/data/calib200 (all 200 images, the
+    Pi's letterbox at 640, batches of 20, cumulative average, no gradients, momentum restored afterwards):
+    pruned channels change the feature statistics the stored BN statistics no longer match. Every
+    parameter is bit-identical before and after this step. The remaining accuracy drop is recorded by
+    tools/eval_map.py (data/map_reference.json).
   * C2f / C3k2 / C2PSA `chunk`/`split` the tensor at a fixed width `self.c`, which breaks channel
     pruning. Before pruning they are replaced by yolo_variants.C2fSplitFree / C2PSASplitFree (cv1 becomes
     two convs holding the two halves of the weights): outputs are identical, and the classes live in
@@ -49,7 +56,12 @@ import yolo_variants as yv  # noqa: E402  (artifact format, split-free classes, 
 MODELS_DIR = os.path.join(REPO, "models")
 IMGSZ = 640
 DEFAULT_RATIOS = (0.30, 0.50)
-IMPORTANCE = "GroupMagnitudeImportance(p=2): L2 norm of conv weights, mean group reduction, mean normaliser"
+IMPORTANCE = ("torch-pruning GroupMagnitudeImportance(p=2): L2 norm over the dependency group (conv output "
+              "channels, their BN gamma/beta and the dependent input-channel slices), mean group reduction, "
+              "mean normaliser")
+CALIB_SUBSET = "calib200"
+CALIB_DIR = os.path.join(HERE, "data", CALIB_SUBSET, "images")
+CALIB_BATCH = 20                      # 200 images = 10 equal batches (each batch counts once in the average)
 IGNORED = ("Detect output convs: cv2[i][-1] (box), cv3[i][-1] (class), dfl",
            "C2PSA Attention blocks (fixed-width qkv split and head reshape)")
 
@@ -119,8 +131,54 @@ def prune_model(split_free: nn.Module, ratio: float, imgsz: int = IMGSZ) -> nn.M
     return model.eval()
 
 
+def recalibrate_bn(model: nn.Module, batches) -> int:
+    """Re-estimate the BatchNorm running statistics of `model` in place from `batches` (an iterable of
+    float tensors Bx3xSxS); returns the number of images seen. Nothing is trained.
+
+    Every BN gets its running_mean / running_var / num_batches_tracked reset and momentum=None (a
+    cumulative average over the batches); only the BN modules are in train mode, everything else stays
+    eval, forwards run under torch.no_grad(); afterwards each BN's own momentum is restored and the whole
+    model is in eval mode. Parameters are untouched (BN train mode normalises with batch statistics but
+    only updates the buffers)."""
+    bns = [m for m in model.modules() if isinstance(m, nn.modules.batchnorm._BatchNorm)]
+    momentum = [m.momentum for m in bns]
+    model.eval()
+    n = 0
+    try:
+        for m in bns:
+            m.reset_running_stats()
+            m.momentum = None
+            m.train()
+        with torch.no_grad():
+            for x in batches:
+                model(x)
+                n += x.shape[0]
+    finally:
+        for m, mom in zip(bns, momentum):
+            m.momentum = mom
+        model.eval()
+    if n == 0:
+        raise ValueError("BN recalibration needs at least one image")
+    return n
+
+
+def calibration_batches(images_dir: str, imgsz: int = IMGSZ, batch: int = CALIB_BATCH, limit: int | None = None):
+    """Yield Bx3xSxS float batches of the calib200 images (sorted names), each through the Pi's own
+    ImageTask letterbox/preprocess (shared with quantize_yolo.calibration_inputs)."""
+    from quantize_yolo import calibration_inputs
+    buf = []
+    for x in calibration_inputs(images_dir, imgsz, limit):
+        buf.append(x)
+        if len(buf) == batch:
+            yield torch.cat(buf)
+            buf = []
+    if buf:
+        yield torch.cat(buf)
+
+
 def build_artifact(pruned: nn.Module, base_model: str, ratio: float, params_before: int,
-                   macs_before: int, imgsz: int = IMGSZ, split_counts: dict | None = None) -> dict:
+                   macs_before: int, imgsz: int = IMGSZ, split_counts: dict | None = None,
+                   bn_images: int = 0, bn_batch: int = CALIB_BATCH) -> dict:
     """The pi-power-pruned/1 dict (counts of the pruned model are measured here)."""
     import torch_pruning as tp
     if not 0.0 < ratio < 1.0:
@@ -130,6 +188,8 @@ def build_artifact(pruned: nn.Module, base_model: str, ratio: float, params_befo
             "macs_before": int(macs_before), "macs_after": count_macs(pruned, imgsz), "imgsz": imgsz,
             "method": {"library": f"torch-pruning {tp.__version__}", "importance": IMPORTANCE,
                        "global_pruning": True, "ignored": list(IGNORED), "fine_tuned": False,
+                       "bn_recalibration": {"images": bn_images, "subset": CALIB_SUBSET,
+                                            "momentum": "cumulative", "batch": bn_batch},
                        "split_free_replaced": split_counts or {}},
             "torch_version": torch.__version__}
 
@@ -175,9 +235,13 @@ def fp32_output_shape(model: nn.Module, imgsz: int = IMGSZ) -> list[int]:
 
 # ---- command line --------------------------------------------------------------------------------
 def prune_one(split_free: nn.Module, split_counts: dict, base_model: str, ratio: float,
-              out_dir: str, params_before: int, macs_before: int, log=print) -> str:
+              out_dir: str, params_before: int, macs_before: int, calib_dir: str = CALIB_DIR,
+              log=print) -> str:
     pruned = prune_model(split_free, ratio)
-    art = build_artifact(pruned, base_model, ratio, params_before, macs_before, split_counts=split_counts)
+    n = recalibrate_bn(pruned, calibration_batches(calib_dir))
+    log(f"ratio {ratio:.2f}: BN statistics re-estimated on {n} images ({calib_dir})")
+    art = build_artifact(pruned, base_model, ratio, params_before, macs_before, split_counts=split_counts,
+                         bn_images=n)
     path = artifact_path(base_model, ratio, out_dir)
     os.makedirs(out_dir, exist_ok=True)
     torch.save(art, path)
@@ -194,6 +258,7 @@ def main(argv=None) -> int:
     ap.add_argument("--ratios", type=float, nargs="+", default=list(DEFAULT_RATIOS),
                     help="global channel pruning ratios (default 0.30 0.50)")
     ap.add_argument("--out-dir", default=MODELS_DIR)
+    ap.add_argument("--calib-dir", default=CALIB_DIR, help="BN recalibration images (default calib200)")
     ap.add_argument("--verify-only", action="store_true",
                     help="only reload the existing artifacts in a fresh process and check them")
     args = ap.parse_args(argv)
@@ -213,7 +278,7 @@ def main(argv=None) -> int:
         before = (count_params(fp32), count_macs(fp32))
         print(f"{os.path.basename(args.model)}: params {before[0]:,}, MACs {before[1] / 1e9:.2f}G at {IMGSZ}")
         for ratio in args.ratios:
-            prune_one(split_free, counts, args.model, ratio, args.out_dir, *before)
+            prune_one(split_free, counts, args.model, ratio, args.out_dir, *before, calib_dir=args.calib_dir)
     for ratio in args.ratios:
         path = artifact_path(args.model, ratio, args.out_dir)
         print("verify (fresh process, only src/ on the path):", json.dumps(verify_artifact(path, shape)))
