@@ -68,6 +68,26 @@ def test_quantize_dynamic_on_conv_only_model_is_a_noop_with_count_zero():
     assert isinstance(q[0], nn.Conv2d)
 
 
+@pytest.mark.filterwarnings("ignore:TypedStorage is deprecated")
+def test_quantized_conv_artifact_survives_a_save_load_roundtrip(tmp_path):
+    """torch 2.14's quantized _ConvNd.__setstate__ never initialises nn.Module, so a loaded conv has
+    no _modules and .eval()/.modules()/FX unpickling raise. register() (run by load_artifact)
+    repairs it; the loaded model must traverse, switch to eval and give the same output."""
+    import torch.ao.nn.quantized as nnq
+    torch.backends.quantized.engine = "qnnpack"
+    conv = nnq.Conv2d(3, 4, 3)
+    conv.set_weight_bias(torch.quantize_per_tensor(torch.randn(4, 3, 3, 3), 0.1, 0, torch.qint8),
+                         torch.zeros(4))
+    conv.scale, conv.zero_point = 0.05, 3
+    net = nn.Sequential(nnq.Quantize(0.02, 0, torch.quint8), conv, nnq.DeQuantize()).eval()
+    p = _save(tmp_path, "q.pt", {"format": yv.INT8S_FORMAT, "model": net, "base_model": "yolo11n.pt"})
+    x = torch.randn(1, 3, 8, 8)
+    back = yv.load_artifact(p, yv.INT8S_FORMAT)["model"].eval()
+    assert yv.count_quantized_modules(back) == 1
+    assert len(list(back.modules())) == 4                      # traversal works on the loaded conv
+    assert torch.equal(back(x), net(x))
+
+
 def test_stubs_alone_are_not_quantized_compute():
     """R18: Quantize/DeQuantize stubs around float convs must not pass the int8-static gate."""
     import torch.ao.nn.quantized as nnq

@@ -262,6 +262,7 @@ def fp32_job(model_path: str, imgsz: int, quant: str = "fp32") -> Job:
 
 def artifact_job(path: str, root: str, imgsz: int, model: str | None = None) -> Job:
     """Identify a Task 8/9 artifact by its `format` (int8s / pruned) and its `base_model`."""
+    yv.register()                      # artifact unpickling repairs (quantized convs)
     obj = torch.load(path, map_location="cpu", weights_only=False)
     fmt = obj.get("format") if isinstance(obj, dict) else None
     if fmt not in (yv.INT8S_FORMAT, yv.PRUNED_FORMAT):

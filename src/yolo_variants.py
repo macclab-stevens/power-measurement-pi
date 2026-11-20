@@ -30,8 +30,31 @@ PRUNED_FORMAT = "pi-power-pruned/1"
 MAP_REFERENCE_FIELDS = ("map50_95", "map50", "n_images", "dataset", "tool_version", "measured")
 
 
+def _repair_quantized_conv_unpickling() -> None:
+    """torch 2.14: the quantized conv `_ConvNd.__setstate__` restores its attributes without ever
+    running nn.Module.__init__, so an unpickled quantized conv has no `_modules`/`_parameters`/hook
+    dicts and `.eval()`, `.modules()` or unpickling an FX GraphModule that holds one raises
+    AttributeError. Initialise the Module first. Idempotent; touches only unpickling."""
+    import torch.nn as nn
+    from torch.ao.nn.quantized.modules.conv import _ConvNd
+    orig = _ConvNd.__setstate__
+    if getattr(orig, "_pi_power_repaired", False):
+        return
+
+    def __setstate__(self, state):
+        nn.Module.__init__(self)
+        orig(self, state)
+
+    __setstate__._pi_power_repaired = True
+    _ConvNd.__setstate__ = __setstate__
+
+
 def register() -> None:
-    """Make the classes artifacts were pickled with importable. Nothing is needed yet."""
+    """Make artifacts loadable: run by load_artifact before torch.load (and by src/run.py).
+
+    Custom module classes would be imported here (none yet; FX graph modules pickle as code); the
+    one thing needed today is the quantized-conv unpickling repair."""
+    _repair_quantized_conv_unpickling()
 
 
 def variant_id(model_path: str, quant: str = "fp32", prune_ratio: float | None = None) -> str:
