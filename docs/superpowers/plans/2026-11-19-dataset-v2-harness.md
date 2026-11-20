@@ -511,7 +511,11 @@ for B, D and soak.
   3, 1500 × 3.
 - **A-input (6)**: yolo11n @2400 × 3 with `--input-image inputs/empty.jpg` (condition `empty`)
   and × 3 with `inputs/crowded.jpg` (`crowded`).
-- **B (30)**: int8-dynamic yolo11n/yolo11s/yolov8n × 3; int8-static yolo11n/yolo11s × 3
+- **B** — after Rulings R17 (int8-dynamic quantizes 0 modules on YOLO) and R23 (pruned yolo11n
+  detects nothing without fine-tuning, even after BN recalibration: mAP 0.0 at 30 %/50 %), the
+  default B is int8-static only: **12 cells** (+3 fp16 = 15). int8-dynamic (`include_int8d`) and
+  pruning (`include_prune`) stay buildable behind flags, default False. Full original list:
+  int8-dynamic yolo11n/yolo11s/yolov8n × 3; int8-static yolo11n/yolo11s × 3
   (`--quant-weights models/<m>_int8s.pt`); fp16 yolo11n × 3 (only with `include_fp16=True`;
   default False — §4 makes it probe-gated); pruned yolo11n p30/p50 × 3 (`--prune
   models/yolo11n_p30.pt`); int8-static yolo11n at 1500 and 2000 × 3. All 2400 MHz unless stated.
@@ -528,8 +532,8 @@ for B, D and soak.
 - **soak (2)**: `--soak-minutes 30` yolo11n, yolo11m, pinned 2400, `--fan auto`,
   `timeout_s = 30*60 + 20*60`.
 - **pilot**: exactly one cell per distinct configuration group: A per model @2400 (4) + yolo11s
-  @1500 + @2000 (2); A-input empty + crowded (2); B int8d yolo11n, int8s yolo11n, p30, p50,
-  int8s yolo11n@1500 (5, + fp16 if included); C imgsz 320 + 960 yolo11n, 960 yolo11m, batch 2, batch
+  @1500 + @2000 (2); A-input empty + crowded (2); B int8s yolo11n, int8s yolo11s, int8s yolo11n@1500 (3, + fp16 if included; + int8d / p30 / p50
+  only when their flags are on); C imgsz 320 + 960 yolo11n, 960 yolo11m, batch 2, batch
   8, threads 1, threads 2, threads 1 × 960 (8); D DVFS yolo11n × 2 repeats, fan auto, fan off,
   serve 1 fps, serve 15 fps, stream (7, + 2 concurrency when included); and one 5-minute soak
   of yolo11n (`soak5`, `--soak-minutes 5`). Cell ids get prefix `pilot_`.
@@ -539,7 +543,8 @@ for B, D and soak.
   [--include-optional] [--include-concurrent] --out manifest.jsonl` writes the rows. v1 `plan`
   options unchanged.
 
-Tests: exact counts per family (A 44, A-input 6, B 27 without fp16 / 30 with, C 60 / 66,
+Tests: exact counts per family (A 44, A-input 6, B 12 without fp16 / 15 with (27/30 with
+`include_int8d` and `include_prune`), C 60 / 66,
 D 28 without concurrency / 34 with, soak 2), cell-id uniqueness and format (regex), holdout tags,
 DVFS cells carry `--governor ondemand` and `--cpu-mhz 2400`, every cell has `--perf-counters on`,
 B cells have `--no-bench`, the args of an A cell parse with the Task 4/5 argparse (import
