@@ -13,15 +13,20 @@ torch is imported inside the functions that need it.
   fp16_errors(layer_rows)                      acceptance: --quant fp16 must really run float16
   lookup_map_reference(path, variant, imgsz)   data/map_reference.json entry or None
 
+  C2fSplitFree / C2PSASplitFree                split-free replacements of ultralytics C2f+C3k2 / C2PSA
+
 Artifacts are pickled nn.Modules (torch.load weights_only=False). Any custom module class a
-pruned/quantized artifact needs (Task 9: a split-free C2f replacement) must live in THIS module so
-the pickle resolves on the Pi; `register()` is the hook run.py calls before torch.load.
+pruned/quantized artifact needs (the split-free blocks below, which pruned artifacts contain) must
+live in THIS module so the pickle resolves on the Pi; `register()` is the hook run.py calls before
+torch.load. The block classes are built on first attribute access (module `__getattr__`), so
+importing this module still does not import torch.
 """
 from __future__ import annotations
 
 import json
 import os
 import re
+import sys
 
 QUANT_CHOICES = ("fp32", "int8-dynamic", "int8-static", "fp16")
 QUANT_SUFFIX = {"fp32": "", "int8-dynamic": "int8d", "int8-static": "int8s", "fp16": "fp16"}
@@ -49,11 +54,114 @@ def _repair_quantized_conv_unpickling() -> None:
     _ConvNd.__setstate__ = __setstate__
 
 
+def _split_conv(block, sizes):
+    """One ultralytics Conv block (conv [+ bn] + act) -> one block per output-channel slice of
+    `sizes`, each a deep copy holding that slice of the weights (and of the BN statistics), so
+    cat(split_blocks(x)) == block(x) exactly: the 'split' becomes two convs instead of a `chunk`."""
+    import copy
+    import torch
+    import torch.nn as nn
+    assert sum(sizes) == block.conv.out_channels, (sizes, block.conv.out_channels)
+    out, lo = [], 0
+    for n in sizes:
+        b = copy.deepcopy(block)
+        sl = slice(lo, lo + n)
+        b.conv.weight = nn.Parameter(block.conv.weight.detach()[sl].clone())
+        if block.conv.bias is not None:
+            b.conv.bias = nn.Parameter(block.conv.bias.detach()[sl].clone())
+        b.conv.out_channels = n
+        bn = getattr(b, "bn", None)           # fused blocks have no bn
+        if bn is not None:
+            src = block.bn
+            for name in ("weight", "bias"):
+                if getattr(src, name) is not None:
+                    setattr(bn, name, nn.Parameter(getattr(src, name).detach()[sl].clone()))
+            bn.running_mean = src.running_mean[sl].clone()
+            bn.running_var = src.running_var[sl].clone()
+            bn.num_features = n
+        out.append(b)
+        lo += n
+    return out
+
+
+_BLOCK_CLASSES = ("C2fSplitFree", "C2PSASplitFree")
+
+
+def _keep_layer_attrs(new, old) -> None:
+    """The attributes ultralytics' DetectionModel._predict_once reads off every layer."""
+    for k in ("f", "i", "type", "np"):
+        if hasattr(old, k):
+            setattr(new, k, getattr(old, k))
+
+
+def _build_block_classes() -> dict:
+    import torch
+    import torch.nn as nn
+
+    class C2fSplitFree(nn.Module):
+        """Ultralytics C2f / C3k2 without the fixed-width `chunk`: cv1 is two convs (cv1a, cv1b), one
+        per half, so every tensor's width is a property of a layer and channel pruning can resize it.
+
+        C3k2 is C2f with different bottlenecks in `m`, so one class covers both. `from_c2f` gives
+        bit-identical outputs (same weights, sliced)."""
+
+        def __init__(self, cv1a, cv1b, m, cv2):
+            super().__init__()
+            self.cv1a, self.cv1b, self.m, self.cv2 = cv1a, cv1b, m, cv2
+
+        @classmethod
+        def from_c2f(cls, c2f):
+            half = c2f.c
+            a, b = _split_conv(c2f.cv1, [half, half])
+            new = cls(a, b, c2f.m, c2f.cv2)
+            _keep_layer_attrs(new, c2f)
+            return new
+
+        def forward(self, x):
+            y = [self.cv1a(x), self.cv1b(x)]
+            y.extend(m(y[-1]) for m in self.m)
+            return self.cv2(torch.cat(y, 1))
+
+    class C2PSASplitFree(nn.Module):
+        """Ultralytics C2PSA with cv1 split into two convs instead of `.split((c, c), 1)`."""
+
+        def __init__(self, cv1a, cv1b, m, cv2):
+            super().__init__()
+            self.cv1a, self.cv1b, self.m, self.cv2 = cv1a, cv1b, m, cv2
+
+        @classmethod
+        def from_c2psa(cls, c2psa):
+            a, b = _split_conv(c2psa.cv1, [c2psa.c, c2psa.c])
+            new = cls(a, b, c2psa.m, c2psa.cv2)
+            _keep_layer_attrs(new, c2psa)
+            return new
+
+        def forward(self, x):
+            return self.cv2(torch.cat((self.cv1a(x), self.m(self.cv1b(x))), 1))
+
+    classes = {c.__name__: c for c in (C2fSplitFree, C2PSASplitFree)}
+    for c in classes.values():
+        c.__module__, c.__qualname__ = __name__, c.__name__
+    return classes
+
+
+def __getattr__(name):
+    """PEP 562: build the split-free block classes on first use (torch is imported only then) and
+    cache them as real module attributes, which is what pickle resolves on load."""
+    if name in _BLOCK_CLASSES:
+        globals().update(_build_block_classes())
+        return globals()[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 def register() -> None:
     """Make artifacts loadable: run by load_artifact before torch.load (and by src/run.py).
 
-    Custom module classes would be imported here (none yet; FX graph modules pickle as code); the
-    one thing needed today is the quantized-conv unpickling repair."""
+    Builds the split-free block classes a pruned artifact pickles (they must resolve as
+    `yolo_variants.<Class>`) and installs the quantized-conv unpickling repair (FX graph modules
+    pickle as code and need nothing else)."""
+    for name in _BLOCK_CLASSES:
+        getattr(sys.modules[__name__], name)
     _repair_quantized_conv_unpickling()
 
 
