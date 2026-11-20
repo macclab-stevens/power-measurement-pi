@@ -27,12 +27,25 @@ def no_real_shell(monkeypatch, tmp_path):
     monkeypatch.setattr(lab, "MATRIX_RESULTS", tmp_path / "runs" / "matrix" / "results.jsonl")
 
 
+def live_status():
+    """/status of a recorder that is sampling: n_total grows with every read (experiment.py
+    refuses to start a cell on a recorder whose n_total stands still)."""
+    n = {"v": STATUS["n_total"]}
+
+    def status():
+        n["v"] += 10000
+        return dict(STATUS, n_total=n["v"])
+    return status
+
+
 def default_rules():
     """(predicate, answer): predicate is a substring or a callable on the command text; answer is
     (rc, out), a callable(cmd) -> (rc, out), or a list of those used one after another."""
     return [
         (lambda c: c == "true", (0, "")),
         ("vcgencmd", (0, "temp=42.0'C\nthrottled=0x0")),
+        ("df -Pk", (0, "Filesystem 1024-blocks Used Available Capacity Mounted on\n"
+                       "/dev/sda2 500000000 1000 400000000 1% /home")),
         ("pi-power-pin status", (0, "governor=performance min_kHz=2400000 max_kHz=2400000 "
                                     "cur_kHz=2400000 fan_state=4/4 fan_rpm=7000 temp_mC=42000")),
         ("pi-power-pin restore", (0, "governor=ondemand")),
@@ -133,7 +146,7 @@ def _fakes(calls, verify_ok=True):
 def _run(argv, sh, calls=None, verify_ok=True):
     calls = {} if calls is None else calls
     align_fn, verify_fn = _fakes(calls, verify_ok)
-    return _rc(argv, sh=sh, status_fn=lambda: dict(STATUS), current_fn=lambda d: (0.29, 0.31),
+    return _rc(argv, sh=sh, status_fn=live_status(), current_fn=lambda d: (0.29, 0.31),
                align_fn=align_fn, verify_fn=verify_fn, now=lambda: NOW, sleep=lambda s: None)
 
 
@@ -303,7 +316,7 @@ def test_ctrl_c_reports_remote_state_and_exits_130(capsys):
 
     def align_fn(rec, pi, out):
         raise KeyboardInterrupt
-    rc = _rc(["run", "yolo11n"], sh=sh, status_fn=lambda: dict(STATUS),
+    rc = _rc(["run", "yolo11n"], sh=sh, status_fn=live_status(),
              current_fn=lambda d: (0.9, 1.0), align_fn=align_fn, verify_fn=lambda d, m: {},
              now=lambda: NOW, sleep=lambda s: None)
     out = capsys.readouterr().out

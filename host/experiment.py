@@ -11,6 +11,13 @@ log file there) with `dmesg -W` streamed here -> rsync the run back -> align.py 
 power-cycle recovery for a halted Pi. A failed cell is retried once at the end of its round.
 Cells already `ok` in results.jsonl are skipped, so `run` can be restarted at any time.
 
+Before each cell: the recorder's n_total must be rising (read twice, 2 s apart) with more than an
+hour of samples left before the 32-bit ceiling (the recorder once stalled silently at 2^32-1 while
+/status kept saying recording), and the EliteBook runs dir and the Pi project dir need free disk
+(more for `family: "soak"` cells). A cell's `timeout_s` overrides RUN_TIMEOUT_S. run.py exit codes
+3/4 (thermal abort / hard stop) end the cell at stage "thermal_abort" with the Pi's
+thermal_abort.json as the error; it is not retried and the matrix goes on with the next cell.
+
 Halted-Pi recovery (--auto-power-cycle N, at most N times per invocation): only when the Pi has
 not answered for PI_DOWN_S and the Monsoon shows halted-level current (mean < 0.4 A and max
 < 0.6 A over the last 5 s). Then: stop recorder, vout_off.py --confirm-pi-halted, start the
@@ -24,6 +31,7 @@ import json
 import math
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -43,6 +51,13 @@ THERMAL_MAX_C = 50.0
 THERMAL_WAIT_S = 600
 RUN_TIMEOUT_S = 40 * 60
 PI_DOWN_S = 180
+MIN_FREE_GB = 10            # EliteBook runs dir
+PI_MIN_FREE_GB = 5          # Pi project dir
+SOAK_EXTRA_GB = 2           # added to both minima for family "soak" cells
+THERMAL_EXIT_CODES = (3, 4)  # run.py: thermal abort (85 C), hard stop (90 C)
+SAMPLE_CEILING = 2 ** 32 - 1            # the Monsoon library stops here
+STALL_MARGIN_SAMPLES = 5000 * 3600      # refuse to start with less than an hour left
+STALL_READ_GAP_S = 2
 HALT_MEAN_A, HALT_MAX_A = 0.4, 0.6
 SSH = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15",
        "-o", "ServerAliveCountMax=8"]
@@ -132,6 +147,40 @@ def recorder_status() -> dict:
         return json.loads(r.read())
 
 
+def recorder_stalled(st_a: dict, st_b: dict) -> str | None:
+    """Why the recorder cannot be trusted for another cell, or None. `st_a`, `st_b` are two /status
+    reads a couple of seconds apart: n_total must have increased (the recorder has stalled
+    silently at the 32-bit ceiling while /status kept saying recording) and there must be more
+    than an hour of samples left before that ceiling."""
+    restart = "restart the recorder safely, README section 8"
+    a, b = st_a.get("n_total"), st_b.get("n_total")
+    if not isinstance(a, int) or not isinstance(b, int):
+        return f"recorder /status has no usable n_total ({a!r}, {b!r}); cannot tell it is sampling"
+    if b <= a:
+        return f"recorder is not sampling: n_total stayed at {b} between two /status reads; {restart}"
+    if b >= SAMPLE_CEILING - STALL_MARGIN_SAMPLES:
+        return (f"recorder n_total {b} is within an hour of the 32-bit ceiling {SAMPLE_CEILING} "
+                f"where it stops silently; {restart}")
+    return None
+
+
+def parse_df_avail_gb(out: str) -> float | None:
+    """Available GiB from `df -Pk <dir>` output (last line, 4th column; ssh warnings are ignored)."""
+    for line in reversed(out.splitlines()):
+        f = line.split()
+        if len(f) >= 6 and f[1].isdigit() and f[3].isdigit():
+            return int(f[3]) / 1024 ** 2
+    return None
+
+
+def local_free_gb(path) -> float:
+    """Free GiB on the filesystem holding `path` (or its nearest existing parent)."""
+    p = Path(path).resolve()
+    while not p.exists() and p != p.parent:
+        p = p.parent
+    return shutil.disk_usage(p).free / 1024 ** 3
+
+
 def halted_current(run_dir) -> tuple[float, float]:
     """(mean, max) input current over the last 5 s of the recording, finite samples only.
     (nan, nan) when fewer than half the samples are finite; recover_pi then refuses to cycle."""
@@ -175,7 +224,7 @@ class Orchestrator:
     def __init__(self, runs_dir, results_path, sh=None, status_fn=recorder_status,
                  align_fn=None, verify_fn=None, current_fn=halted_current, sleep=time.sleep,
                  auto_power_cycle: int = 0, log=print, pi_subdir: str = "runs/matrix",
-                 run_timeout_s: float | None = None):
+                 run_timeout_s: float | None = None, local_free_fn=local_free_gb):
         self.runs = Path(runs_dir)
         self.results_path = Path(results_path)
         self.sh = sh or Shell()
@@ -188,6 +237,7 @@ class Orchestrator:
         self.log = log
         self.pi_subdir = pi_subdir          # run folder on the Pi, relative to PI_DIR
         self.run_timeout_s = run_timeout_s  # None: RUN_TIMEOUT_S, read at call time
+        self.local_free_fn = local_free_fn  # free GiB on the runs dir
         self.provenance: dict = {}
 
     # ---- health -------------------------------------------------------------------------------
@@ -256,6 +306,21 @@ class Orchestrator:
                 return f"Pi still at {temp} C after {THERMAL_WAIT_S}s (gate {THERMAL_MAX_C} C)"
             self.sleep(10)
 
+    def disk_check(self, cell: dict) -> str | None:
+        """Free space on the EliteBook runs dir and the Pi project dir; soak cells need more."""
+        extra = SOAK_EXTRA_GB if cell.get("family") == "soak" else 0
+        need_here, need_pi = MIN_FREE_GB + extra, PI_MIN_FREE_GB + extra
+        here = self.local_free_fn(self.runs)
+        if here < need_here:
+            return f"EliteBook {self.runs}: {here:.1f} GB free, need {need_here} GB"
+        rc, out = self.sh.ssh(f"df -Pk {PI_DIR}", 30)
+        pi = parse_df_avail_gb(out) if rc == 0 else None
+        if pi is None:
+            return f"could not read free space on the Pi {PI_DIR} (rc={rc}): {out[-200:]}"
+        if pi < need_pi:
+            return f"Pi {PI_DIR}: {pi:.1f} GB free, need {need_pi} GB"
+        return None
+
     # ---- one cell ----------------------------------------------------------------------------
     def run_cell(self, cell: dict, attempt: int) -> dict:
         cid = cell["cell_id"]
@@ -277,6 +342,14 @@ class Orchestrator:
             return fail("recorder", f"recorder unreachable: {e}")
         if not st.get("recording"):
             return fail("recorder", f"recorder not recording: {st}")
+        self.sleep(STALL_READ_GAP_S)
+        try:
+            st_b = self.status_fn()
+        except (OSError, ValueError) as e:
+            return fail("recorder", f"recorder unreachable: {e}")
+        err = recorder_stalled(st, st_b)
+        if err:
+            return fail("recorder", err)
         try:
             err = self.recover_pi()
         except RecorderUnavailable as e:
@@ -288,6 +361,9 @@ class Orchestrator:
             res["recorder_dir"] = st["run_dir"]
         except (OSError, ValueError, KeyError) as e:
             return fail("recorder", f"recorder unreachable: {e}")
+        err = self.disk_check(cell)
+        if err:
+            return fail("disk", err)
         err = self.thermal_gate()
         if err:
             return fail("thermal", err)
@@ -296,7 +372,8 @@ class Orchestrator:
         dm, dm_f = self.sh.popen([*SSH, PI, "dmesg -W"], local.parent / f"{cid}.dmesg.log")
         try:
             t_run = time.monotonic()
-            timeout = RUN_TIMEOUT_S if self.run_timeout_s is None else self.run_timeout_s
+            timeout = cell.get("timeout_s") or (
+                RUN_TIMEOUT_S if self.run_timeout_s is None else self.run_timeout_s)
             rc, out = self.sh.ssh(pi_command(cell, self.pi_subdir), timeout)
             res["run_s"] = round(time.monotonic() - t_run, 1)
         finally:
@@ -308,6 +385,13 @@ class Orchestrator:
                      str(local.parent / f"{cid}.log")], 300)
         rrc, rout = self.sh.run(["rsync", "-a", f"{PI}:{PI_DIR}/{self.pi_subdir}/{cid}/",
                                  str(local) + "/"], 600)
+        if rc in THERMAL_EXIT_CODES:        # run.py ended itself; the Pi is up
+            f = local / "thermal_abort.json"
+            try:
+                what = json.dumps(json.loads(f.read_text()))
+            except (OSError, ValueError):
+                what = f"run.py rc={rc} (thermal) but thermal_abort.json is missing or unreadable"
+            return fail("thermal_abort", what)
         if rc != 0:
             if not self.pi_up():
                 return fail("pi_crash", f"Pi went down during the run (rc={rc}): {out[-500:]}")
@@ -357,10 +441,10 @@ class Orchestrator:
                              + (f" at {res['stage']}: {str(res['error'])[:300]}"
                                 if res["status"] != "ok" else f" in {res['duration_s']} s"))
                     if res["status"] != "ok":
-                        if res["stage"] in ("pi_down", "recorder"):
+                        if res["stage"] in ("pi_down", "recorder", "disk"):
                             aborted = f"{res['stage']}: {res['error']}"
                             break
-                        if attempt < max_attempts:
+                        if attempt < max_attempts and res["stage"] != "thermal_abort":
                             retry.append(cell)
                 queue = retry
             if aborted:
