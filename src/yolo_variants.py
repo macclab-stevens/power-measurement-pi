@@ -102,8 +102,11 @@ def count_quantized_modules(module) -> int:
     LinearReLU, ...) living in a torch quantized namespace (torch.ao.nn.quantized[.dynamic],
     torch.ao.nn.intrinsic.quantized). Quantize/DeQuantize/QFunctional stubs, quantized pooling and
     activations, a quantized module's own helpers (LinearPackedParams) and plain float modules do
-    not count: a model with stubs but float convs is FP32 and must not be labelled INT8."""
+    not count, nor do torch.ao.nn.quantized.reference modules (they compute in float): a model with
+    stubs but float convs is FP32 and must not be labelled INT8."""
     t = type(module)
+    if ".quantized.reference" in t.__module__:   # float compute wrapped in quant/dequant: not INT8
+        return 0
     if ".quantized" in t.__module__:
         return 1 if _QUANT_COMPUTE_CLASSES.match(t.__name__) else 0
     return sum(count_quantized_modules(c) for c in module.children())

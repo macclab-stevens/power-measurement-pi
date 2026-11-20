@@ -97,6 +97,15 @@ def test_stubs_alone_are_not_quantized_compute():
         "int8-static", yv.count_quantized_modules(m))[0]
 
 
+def test_reference_quantized_modules_are_float_compute_and_do_not_count():
+    """R18 follow-up: torch.ao.nn.quantized.reference.* (convert_to_reference_fx output) wraps float
+    Conv/Linear in quant/dequant; it must not pass the int8-static gate."""
+    from torch.ao.nn.quantized.reference import modules as ref
+    m = nn.Sequential(ref.Conv2d(3, 4, 3), ref.Linear(4, 2))
+    assert yv.count_quantized_modules(m) == 0
+    assert "int8-static quantized 0 modules" in yv.quant_count_errors("int8-static", 0)[0]
+
+
 def test_real_quantized_conv_linear_and_fused_variants_count():
     import torch.ao.nn.intrinsic.quantized as nniq
     import torch.ao.nn.quantized as nnq
