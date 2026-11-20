@@ -224,7 +224,7 @@ class Orchestrator:
     def __init__(self, runs_dir, results_path, sh=None, status_fn=recorder_status,
                  align_fn=None, verify_fn=None, current_fn=halted_current, sleep=time.sleep,
                  auto_power_cycle: int = 0, log=print, pi_subdir: str = "runs/matrix",
-                 run_timeout_s: float | None = None, local_free_fn=local_free_gb):
+                 run_timeout_s: float | None = None, local_free_fn=None):
         self.runs = Path(runs_dir)
         self.results_path = Path(results_path)
         self.sh = sh or Shell()
@@ -237,7 +237,8 @@ class Orchestrator:
         self.log = log
         self.pi_subdir = pi_subdir          # run folder on the Pi, relative to PI_DIR
         self.run_timeout_s = run_timeout_s  # None: RUN_TIMEOUT_S, read at call time
-        self.local_free_fn = local_free_fn  # free GiB on the runs dir
+        self.local_free_fn = local_free_fn  # free GiB on the runs dir; None: local_free_gb,
+                                            # resolved at call time
         self.provenance: dict = {}
 
     # ---- health -------------------------------------------------------------------------------
@@ -310,7 +311,7 @@ class Orchestrator:
         """Free space on the EliteBook runs dir and the Pi project dir; soak cells need more."""
         extra = SOAK_EXTRA_GB if cell.get("family") == "soak" else 0
         need_here, need_pi = MIN_FREE_GB + extra, PI_MIN_FREE_GB + extra
-        here = self.local_free_fn(self.runs)
+        here = (self.local_free_fn or local_free_gb)(self.runs)
         if here < need_here:
             return f"EliteBook {self.runs}: {here:.1f} GB free, need {need_here} GB"
         rc, out = self.sh.ssh(f"df -Pk {PI_DIR}", 30)

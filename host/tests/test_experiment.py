@@ -502,3 +502,9 @@ def test_second_status_read_failure_is_a_recorder_result(tmp_path):
     o.status_fn = status
     r = o.run_cell(_cell("a"), 1)
     assert r["stage"] == "recorder" and "reset" in r["error"]
+
+
+def test_default_local_free_fn_is_resolved_at_call_time(tmp_path, monkeypatch):
+    monkeypatch.setattr(ex, "local_free_gb", lambda p: 1.0)
+    o = ex.Orchestrator(tmp_path, tmp_path / "r.jsonl", sh=FakeShell(), log=lambda m: None)
+    assert "EliteBook" in o.disk_check(_cell("a"))

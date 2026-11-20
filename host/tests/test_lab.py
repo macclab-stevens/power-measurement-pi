@@ -23,6 +23,7 @@ def no_real_shell(monkeypatch, tmp_path):
             raise AssertionError("a test tried to construct a real Shell")
     monkeypatch.setattr(ex, "Shell", Boom)
     monkeypatch.setattr(lab, "LabShell", Boom)
+    monkeypatch.setattr(ex, "local_free_gb", lambda p: 100.0)   # never depend on the real disk
     monkeypatch.setattr(lab, "LOCAL_LAB", tmp_path / "runs" / "lab")
     monkeypatch.setattr(lab, "MATRIX_RESULTS", tmp_path / "runs" / "matrix" / "results.jsonl")
 
