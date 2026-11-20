@@ -297,9 +297,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "(Linear layers only, qnnpack) | int8-static (needs --quant-weights) | "
                          "fp16 (module and input .half(); executed dtype verified)")
     ap.add_argument("--quant-weights", default=None,
-                    help="int8-static artifact (pi-power-int8s/1 dict from tools/quantize.py)")
+                    help="int8-static artifact (pi-power-int8s/1 dict from tools/quantize_yolo.py)")
     ap.add_argument("--prune", default=None,
-                    help="pruned model artifact (pi-power-pruned/1 dict from tools/prune.py); "
+                    help="pruned model artifact (pi-power-pruned/1 dict from tools/prune_yolo.py); "
                          "cannot be combined with --quant other than fp32")
     ap.add_argument("--concurrent", default=None, metavar="MODEL.pt|spinner",
                     help="image task: run a second workload in the same process during the "

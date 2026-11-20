@@ -401,7 +401,8 @@ prints a summary and `"ok": true`.
 
 Two matrices exist. The v1 matrix (`host/matrix.py`, section 5.4.1) is what produced the 224
 cells of dataset v1 and is unchanged (its `run.py` command lines are the same; since `--perf-counters`
-now defaults to `on`, a cell planned from it also records counters, and stays `dataset_version` 1). The dataset-v2 matrix (`host/matrix_v2.py`, section 5.4.2)
+now defaults to `on`, a new cell planned from it also records counters, and stays `dataset_version` 1;
+the 224 existing v1 cells never have counters). The dataset-v2 matrix (`host/matrix_v2.py`, section 5.4.2)
 is the expansion.
 
 #### 5.4.1 The v1 matrix
@@ -469,7 +470,8 @@ the family says otherwise, `--perf-counters on`, a `--holdout` tag). Cells are s
 each round, as in v1, and a cell is named
 `{model}[_{variant}][_{condition}]_{imgsz}_t{threads}[_b{batch}]_{clock}_r{repeat}`, where `clock`
 is the pinned MHz or `dvfs` (for example `yolo11n_int8s_640_t4_2400_r00`,
-`yolo11n_640_t4_dvfs_r00`, `yolo11m_soak30_640_t4_2400_r00`).
+`yolo11n_640_t4_dvfs_r00`, `yolo11m_soak30_640_t4_2400_r00`). The `ref` cells are named
+`v1ref_<key>_<mhz>_rNN` (for example `v1ref_yolo11n_2400_r00`).
 
 | Family | What varies | Cells (default) |
 |---|---|---|
@@ -540,7 +542,7 @@ Each cell ends up in `~/power-measurement-pi/runs/<experiment>/<cell_id>/` on th
 | `run_meta.json` | Everything about the run: model, settings, clock, temperatures, software versions, training loss curve. | Knowing what the cell was. |
 | `alignment.json` | How well the clocks were lined up, and whether samples were lost. | Data-quality filtering. |
 | `derived.json` | Energy and latency per frame, worked out on the EliteBook after alignment ([section 11.8](#118-dataset-v2-files)). | Comparing cells without redoing the arithmetic. |
-| `counters.csv`, `sysfs.csv` | Hardware counters (10 Hz) and CPU clock / temperature / fan (1 Hz) from the Pi. Already merged into `power_trace.parquet`; the raw files stay in the cell folder. | v2 cells only: features for the power predictor. |
+| `counters.csv`, `sysfs.csv` | Hardware counters (10 Hz) and CPU clock / temperature / fan (1 Hz) from the Pi. Already merged into `power_trace.parquet`; the raw files stay in the cell folder. | Every dataset-version-2 cell, and any newer run (counters are on by default); never the 224 v1 cells. Features for the power predictor. |
 
 ### 6.2 `power_trace.parquet` columns
 
@@ -611,7 +613,7 @@ These are in the experiment folder (e.g. `runs/matrix/`):
 - `sysfs.csv`: v2 (every `run.py` run writes it): per-core clock, temperature and fan state once a
   second, read straight from `/sys` (cheap, unlike the `vcgencmd` reads of `context.csv`). The same
   reading drives the thermal watchdog.
-- `counters.csv`, `counters.raw.txt`: v2 cells, the hardware counters. `counters.raw.txt` is
+- `counters.csv`, `counters.raw.txt`: the hardware counters (always in version-2 cells, in any newer run; never in the 224 v1 cells). `counters.raw.txt` is
   `perf`'s own output; `counters.csv` is the same data as one row per 100 ms interval.
 - `thermal_abort.json`: only when `run.py` stopped the run for heat (see below).
 - `derived.json`: written by `verify_cell.py` for every cell.
@@ -657,10 +659,12 @@ What stands out:
   2400 MHz). `zero_grad`, `dataload` and the SGD optimizer step cost the least (about 6.5-8.7 W).
 - **For detectors, pre- and post-processing** use 1.5-2 W less than the network itself.
 
-These numbers are dataset v1. **Dataset v2 has not been measured yet** (the harness is built; the
+These numbers are dataset v1. **Dataset v2 has only had a three-cell smoke so far** (the harness is built; the
 probes and the pilot come first, see [docs/dataset-v2.md](docs/dataset-v2.md#7-phase-1-and-phase-2)).
 v1 ran with the Monsoon at 5.25 V on Pi kernel 6.18.50; v2 runs at 5.35 V on kernel 6.18.60, and
-the `ref` family exists to measure how much that changes the same workloads.
+the `ref` family exists to measure how much that changes the same workloads. A first v2 FP32 cell
+(2026-11-20) drew 9.29 W in `forward` and 5.01 W at baseline, against 9.61 W and 5.15 W for the
+matching v1 cell; see [docs/dataset-v2.md](docs/dataset-v2.md#7-phase-1-and-phase-2).
 
 ---
 
@@ -714,7 +718,7 @@ bits `0x0` throughout. Dataset v1 was measured at 5.25 V.
 | Cell failed at stage `thermal_abort` | `run.py` stopped at 85 °C (exit 3) or at 90 °C (exit 4). `thermal_abort.json` in the cell folder says when, how hot, and in which phase. | Fan `off` and `auto` cells, soaks and hot rooms can do this. Let the Pi cool. The cell is not retried; the experiment goes on. |
 | Experiment stopped at stage `disk` | Less than 10 GB free on the EliteBook runs folder or 5 GB on the Pi (2 GB more for soaks). | Move finished runs elsewhere, then start `run` again (done cells are skipped). |
 | `counter coverage 0.xxx < 0.95` in `verify` | Less than 95 % of the measured samples have counter data: `perf` was missing, died, or the cell was short. | Check `perf_counters` in `run_meta.json` (`error`, `min_pct_running`) and that `perf` is installed on the Pi ([section 4.8](#48-extra-setup-for-dataset-v2)). |
-| `./lab check` warns `pi wifi` | The Pi's Wi-Fi radio is up and adds power noise. | Turn it off (`ssh maccpi@192.168.0.243 nmcli radio wifi off`) and measure over ethernet. |
+| `./lab check` warns `pi wifi` | The Pi's Wi-Fi radio is up and adds power noise. | Turn it off (`ssh -t maccpi@192.168.0.243 'sudo nmcli con down stevens-iot'`) and measure over ethernet. |
 | The run dies silently | Its output was piped into `head`. | Redirect output into a file instead. |
 | `git mismatch: host ... vs Pi ...` when starting the matrix | The Pi and the EliteBook run different code versions. | Update both ([section 12.2](#122-deploying-code-to-the-pi-and-the-elitebook)). |
 

@@ -53,7 +53,7 @@ fully INT8 network, and a reader of the dataset should not call them one.
 | Variant | Why it is out | Still buildable |
 |---|---|---|
 | **INT8 dynamic** (`--quant int8-dynamic`) | Dynamic quantization only replaces Linear-type layers. YOLO has (almost) none, so it quantizes 0 modules and would be FP32 under an INT8 label. `run.py` fails such a run on purpose. | `plan --v2 ... --include-int8d` |
-| **Pruned yolo11n** (`prune_yolo.py`) | Structured pruning with no fine-tuning breaks the model. mAP50-95 is about 0 at 30 % and 50 % (0.021 even at 10 %), even after the BatchNorm re-estimation, and the sanity check does not find the bus in `bus.jpg`. Fine-tuning would be a training project of its own. | `plan --v2 ... --include-prune`; the tool, the artifacts and the numbers in `data/map_reference.json` stay as the negative result |
+| **Pruned yolo11n** (`prune_yolo.py`) | Structured pruning with no fine-tuning breaks the model. mAP50-95 is about 0 at 30 % and 50 % (0.021 at 10 % in a one-off check, not recorded in `data/map_reference.json`), even after the BatchNorm re-estimation, and the sanity check does not find the bus in `bus.jpg`. Fine-tuning would be a training project of its own. | `plan --v2 ... --include-prune`; the tool, the artifacts and the numbers in `data/map_reference.json` stay as the negative result |
 | **FP16** | It runs: the convolutions really execute in float16 on the Pi CPU (`executed_dtype`). But in an informal check whole yolo11n at 640 was slower than FP32 (about 553 ms per frame against about 330 ms). | `plan --v2 ... --include-fp16` (3 cells) |
 
 ## mAP numbers: provisional until measured on the Pi

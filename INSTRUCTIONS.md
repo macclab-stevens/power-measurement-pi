@@ -410,7 +410,7 @@ Other situations:
   Pi off and on.
 - **"recorder stall" fails:** the recorder is not sampling any more although `/status` says it is
   (it stops silently at 2^32 - 1 samples). Same restart as above; restart it at least every 9 days.
-- **"pi wifi" warning:** turn the Pi's Wi-Fi off (`ssh maccpi@192.168.0.243 nmcli radio wifi off`)
+- **"pi wifi" warning:** turn the Pi's Wi-Fi off (`ssh -t maccpi@192.168.0.243 'sudo nmcli con down stevens-iot'`)
   and measure over ethernet.
 - **"helper version" or "perf" warning:** the one-time setup of dataset v2 is incomplete
   ([docs/dataset-v2.md](docs/dataset-v2.md#5-one-time-setup)).

@@ -11,8 +11,9 @@ derives `offset_ns = t_first_seen - t0 - first_time` (>= 0); all timestamps are 
 `t0_ns + offset_ns + time*1e9`. If no line shows up within 2 s, offset_ns is 0 (method "none").
 
 Facts about perf on the Pi 5 (6.18.60, perf_event_paranoid=2 => user-space only, events print as
-`cycles:u`): the PMU multiplexes the 14 default events, so each interval reports `pct_running`
-(the share of the interval an event was actually counted; the count is already scaled up by perf);
+`cycles:u`): the 10 default events (7 hardware + 3 software) fit the PMU without multiplexing, but
+each interval still reports `pct_running` (the share of the interval an event was actually counted;
+the count is already scaled up by perf), and more hardware events than counters would multiplex;
 an event that was never scheduled prints `<not counted>`. perf also prints metric-only lines with
 an empty event field (`0.1,,,,,,0.12,stalled cycles per insn`); those are skipped. With `-o` perf
 writes each interval as it happens, and a SIGINT makes it flush a final partial interval and exit,

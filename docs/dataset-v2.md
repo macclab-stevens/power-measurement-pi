@@ -46,9 +46,10 @@ re-runs v1 command lines. The family table, cell counts and flags are in
 
 ## 2. v1 versus v2: the counter split
 
-**The 224 v1 cells have no hardware counters and cannot get them afterwards.** Only v2 cells have
-`counters.csv`, the `ctr_*` / `pct_*` / `sys_*` columns in `power_trace.parquet`, and
-`perf_counters.enabled: true` in `run_meta.json`.
+**The 224 v1 cells have no hardware counters and cannot get them afterwards.** Every
+dataset-version-2 cell has `counters.csv`, the `ctr_*` / `pct_*` / `sys_*` columns in
+`power_trace.parquet`, and `perf_counters.enabled: true` in `run_meta.json`. Any newer run may have
+them too (counters are on by default), but a v1 cell never does.
 
 - A predictor that uses **counter features** trains on **v2 cells only**.
 - A predictor that does **not** use them can use v1 and v2 together.
@@ -64,7 +65,8 @@ repeats, `--perf-counters off`, no `--holdout`. These cells stay `dataset_versio
 counter data; they are for comparing against the 224 v1 cells.
 
 `--perf-counters on` is the default for every run, including a v1-shaped command line, so
-`./lab run yolo11n` now also records counters (its `dataset_version` stays 1). The `ref` family
+`./lab run yolo11n` now also records counters (its `dataset_version` stays 1). So: counters are
+guaranteed in version-2 cells, possible in any new run, and absent from the 224 v1 cells. The `ref` family
 passes `off` so that it is as close to v1 as possible.
 
 ## 3. The holdout
@@ -98,7 +100,7 @@ Dated 2026-11-19 and 2026-11-20 unless stated.
   almost all convolutions, so it quantizes 0 modules. `run.py` fails such a run rather than label
   float32 data INT8. The flag `--include-int8d` keeps the 9 cells buildable.
 - **Pruning is cut.** Structured pruning of yolo11n without fine-tuning gives mAP50-95 of about 0
-  at 30 % and 50 % (0.021 even at 10 %), even after re-estimating the BatchNorm statistics on 200
+  at 30 % and 50 % (0.021 at 10 % in a one-off check, not recorded in `data/map_reference.json`), even after re-estimating the BatchNorm statistics on 200
   calibration pictures. The tool, the model files and the numbers are kept
   ([../tools/README.md](../tools/README.md)); `--include-prune` keeps the 6 cells buildable.
 - **FP16 is optional (`--include-fp16`, 3 cells).** FP16 really executes in float16 on the Pi CPU
@@ -147,8 +149,8 @@ stay on 6.18.60 and quantify the difference with the `ref` family.
 quantized module has no parameters to count, so they are wrong for FP16 and INT8 cells. Do not use
 those three columns for them.
 
-**Wi-Fi must be off while measuring.** The Pi's Wi-Fi profile (Stevens-IoT) has autoconnect off.
-Bring it up only for downloads, then turn it off again. `./lab check` warns when `wlan0` is up.
+**Wi-Fi must be off while measuring.** The Pi's Wi-Fi profile (`stevens-iot`) has autoconnect off,
+so it stays off across reboots. Bring it up only for downloads, then turn it off again. `./lab check` warns when `wlan0` is up.
 
 **Concurrency** is one process with a second workload as a thread (`src/coload.py`), so there is one
 sync envelope and `perf -p` still counts both. `events.csv` gains a `tag` column;
@@ -189,13 +191,16 @@ records. (Counting every core system-wide would need the value lowered to 1 with
 that was not needed and is not done.) The Pi hard-locks occasionally under load, so after the
 reboot wait for `ssh maccpi@192.168.0.243 true` to answer.
 
-**5.3 Wi-Fi off.** The Pi's Wi-Fi profile is `Stevens-IoT`, with autoconnect off:
+**5.3 Wi-Fi off.** The Pi's Wi-Fi profile is `stevens-iot` (the name is case-sensitive), with
+autoconnect off, so it stays off across reboots. Turn it off with the connection, not with
+`nmcli radio wifi off` (the radio is left on, otherwise bringing the connection up again fails):
 
 ```bash
-ssh maccpi@192.168.0.243 'nmcli radio wifi off; cat /sys/class/net/wlan0/operstate'    # "down"
-# only when something must be downloaded (weights, packages): bring it up, then off again
-ssh maccpi@192.168.0.243 'nmcli connection up Stevens-IoT'
-ssh maccpi@192.168.0.243 'nmcli connection down Stevens-IoT; nmcli radio wifi off'
+ssh -t maccpi@192.168.0.243 'sudo nmcli con down stevens-iot'
+ssh maccpi@192.168.0.243 'cat /sys/class/net/wlan0/operstate'    # "down"
+# only when something must be downloaded (weights, packages): bring it up, then down again
+ssh -t maccpi@192.168.0.243 'sudo nmcli con up stevens-iot'
+ssh -t maccpi@192.168.0.243 'sudo nmcli con down stevens-iot'
 ```
 
 **5.4 Weights, pictures and models on the Pi.** `*.pt`, `inputs/*` and `models/` are not in git.
@@ -247,13 +252,13 @@ python3 -c "import json; print(json.dumps(json.load(open('derived.json')), inden
 
 | # | Probe | Command(s) | Go / no-go question | Known so far |
 |---|---|---|---|---|
-| 1 | YOLO m-model latency | `./lab run yolo11m_640_t4 yolov8m_640_t4` and, for comparison, `./lab run yolo11s_640_t4 yolov8s_640_t4`. For an l-model (needs `yolo11l.pt` in the Pi project folder; fetch it with Wi-Fi up, section 5.3): `./lab run --task image --model yolo11l.pt --check-image bus.jpg --frames 5 --warmup 2 --bench 0 --serve 0` | Do the s and m cells fit the frame budget: the measured `forward` phase at most about 90 s (`latency_ms_per_frame` x frames: 20 for m, 30 for s)? And the whole cell well inside the 40-minute limit? Does an l-model confirm its exclusion? | not run |
-| 2 | FP16 viability | `./lab run yolo11n_fp16_640_t4`, and `./lab run yolo11n` for the FP32 baseline | Does FP16 really execute in float16 (`executed_dtype` is `float16`; the run fails otherwise), and what does it cost in latency and energy? | executes in float16, but slower than FP32 (informal check: about 553 ms against about 330 ms). Stays opt-in (`--include-fp16`) |
-| 3 | INT8 static end to end | `./lab run yolo11n_int8s_640_t4 yolo11s_int8s_640_t4` | Does the calibrated model run end to end with `quantized_modules` 80, a `map_reference` and an acceptable mAP **measured on the Pi** (compare with the FP32 entry)? | loads and runs on the Pi with 80 quantized modules; mAP so far only measured on the NUC (provisional, e.g. yolo11n 0.407 against 0.425 FP32 at 640); the Pi mAP is Task 16 |
+| 1 | YOLO m-model latency | `./lab run yolo11m_640_t4 yolov8m_640_t4` and, for comparison, `./lab run yolo11s_640_t4 yolov8s_640_t4`. For an l-model (needs `yolo11l.pt` in the Pi project folder; fetch it with the Wi-Fi connection up, section 5.3): `./lab run --task image --model yolo11l.pt --check-image bus.jpg --frames 5 --warmup 2 --bench 0 --serve 0` | Do the s and m cells fit the frame budget: the measured `forward` phase at most about 90 s (`latency_ms_per_frame` x frames: 20 for m, 30 for s)? And the whole cell well inside the 40-minute limit? Does an l-model confirm its exclusion? | not run |
+| 2 | FP16 viability | `./lab run yolo11n_fp16_640_t4`, and `./lab run yolo11n` for the FP32 baseline | Does FP16 really execute in float16 (`executed_dtype` is `float16`; the run fails otherwise), and what does it cost in latency and energy? | executes in float16, but slower than FP32 (informal check: about 553 ms against about 330 ms). Stays opt-in (`--include-fp16`). The FP32 baseline cell of 2026-11-20 (5.35 V, no throttling): 294 ms and 2952 mJ per frame |
+| 3 | INT8 static end to end | `./lab run yolo11n_int8s_640_t4 yolo11s_int8s_640_t4` | Does the calibrated model run end to end with `quantized_modules` 80, a `map_reference` and an acceptable mAP **measured on the Pi** (compare with the FP32 entry)? | runs end to end on the Pi at 5.35 V (2026-11-20 smoke): align 0.147 ms, verify ok, counter coverage 1.0, 207 ms and 1952 mJ per frame against 294 ms and 2952 mJ for FP32, 80 quantized modules; mAP so far only measured on the NUC (provisional, e.g. yolo11n 0.407 against 0.425 FP32 at 640); the Pi mAP is Task 16 |
 | 4 | Pruning smoke test | (cut) `./lab run yolo11n_p30_640_t4` would show it | Does a pruned yolo11n load and run? | **No-go.** It loads, but mAP is about 0 and its detection check on `bus.jpg` finds nothing, so the cells are cut (section 4) |
-| 5 | perf availability and overhead | `./lab check` (the `perf` line); on the Pi `perf stat -e cycles,instructions,cache-references,cache-misses,branch-misses,stalled-cycles-backend,LLC-load-misses,task-clock,context-switches,page-faults true`; then the A/B below | Do the Cortex-A76 events exist, run 100 % of the time (`min_pct_running` 100), and is the overhead small (the spec asks for under 0.1-0.2 W at 10 Hz; otherwise try 5 Hz)? | events exist and fit without multiplexing. Overhead: one A/B only, under bad conditions (section 4); **repeat it** |
+| 5 | perf availability and overhead | `./lab check` (the `perf` line); on the Pi `perf stat -e cycles,instructions,cache-references,cache-misses,branch-misses,stalled-cycles-backend,LLC-load-misses,task-clock,context-switches,page-faults true`; then the A/B below | Do the Cortex-A76 events exist, run 100 % of the time (`min_pct_running` 100), and is the overhead small (the spec asks for under 0.1-0.2 W at 10 Hz; otherwise try 5 Hz)? | events exist and fit without multiplexing; counter coverage was 1.0 in all three 2026-11-20 smoke cells. Overhead: one A/B only, under bad conditions (section 4); **repeat it** |
 | 6 | Fan-off thermal, supervised | `./lab run yolo11n_fanoff_640_t4 --yes-supervised`, while you stand at the Pi; watch it with `ssh maccpi@192.168.0.243 'sudo -n /usr/local/sbin/pi-power-pin status'` | How fast does the temperature climb (`sysfs.csv`, `temp_C`; `max_temp_C`), and does the 85 C abort trigger cleanly (exit code 3, `thermal_abort.json`, stage `thermal_abort`, fan back to auto afterwards)? | not run on the Pi; the abort logic is covered by unit tests |
-| 7 | DVFS alignment and 1 Hz logging | `./lab run yolo11n_640_t4_dvfs` | Do the alignment residuals stay under 1 ms (the clock is pinned only around the sync pulses)? Does `sysfs.csv` have about one row per second, and do the measured phases show the clock moving inside 1500-2400 MHz? | not run on the Monsoon |
+| 7 | DVFS alignment and 1 Hz logging | `./lab run yolo11n_640_t4_dvfs` | Do the alignment residuals stay under 1 ms (the clock is pinned only around the sync pulses)? Does `sysfs.csv` have about one row per second, and do the measured phases show the clock moving inside 1500-2400 MHz? | the 2026-11-20 smoke cell passed: align max residual 0.154 ms, verify ok, counter coverage 1.0, 2885 mJ and 293 ms per frame; cpu0 sat at 1500 MHz idle and 2400 MHz under load. Still to confirm in Phase 0: repeat residuals and the 1 Hz log over a longer cell |
 | 8 | Concurrency | `./lab run yolo11n_concspin_640_t4 yolo11n_conc2_640_t4` | One sync envelope (12 edges, residual under 1 ms), tagged step events (`tag`, `step_m1` / `step_spin` in the trace), both workloads completed iterations and overlapped, counter coverage at least 95 %, no `concurrent` check failing in `verify` | built and unit-tested; no Monsoon cell has been run yet |
 
 **The perf A/B for probe 5.** `./lab run yolo11n` is the v1 command line with counters on (the
@@ -265,21 +270,31 @@ so the difference is bigger than the spread between repeats. If the overhead is 
 allows, `run.py --perf-interval-ms 200` samples at 5 Hz; the matrix does not pass that flag, so
 switching it needs a one-line change in `host/matrix_v2.py`.
 
-**First step of the session:** run one v2 cell (for example probe 2's baseline `./lab run yolo11n`
-or probe 3) and confirm `./lab` ends with `RUN OK` and no under-voltage at 5.35 V. An earlier cell at
-5.25 V aligned at 0.135 ms with counter coverage 1.0 but failed `run.py`'s own check on
-under-voltage; that is what led to the voltage change.
-
 ## 7. Phase 1 and Phase 2
 
 **Phase 1 (harness).** The code for everything in this document is on the branch
 `dataset-v2-harness`: `run.py` flags, counters and the thermal watchdog, the variants, the NUC
 tools, the host merge and checks, the orchestrator pre-checks, the v2 families, concurrency, and the
 `./lab` presets and checks. This page and the README / INSTRUCTIONS / tools updates are the last
-documentation step. Still to do: measure mAP on the Pi (plan Task 16), and, before the probes of
-section 6, deploy the branch to the Pi and the EliteBook (same commit on both, README 12.2; the
-orchestrator checks) and pass `./lab test --host`. Phase 1's exit criterion is a 3-cell smoke of the new families that aligns
-under 1 ms and passes `verify_cell.py`, including counter coverage.
+documentation step.
+
+Phase 1's exit criterion, a 3-cell smoke of the new families that aligns under 1 ms and passes
+`verify_cell.py` including counter coverage, **was met on 2026-11-20** with the Monsoon at 5.35 V
+(all `throttled` 0x0, no under-voltage events):
+
+| Cell | Max residual | verify | Counter coverage | Per frame |
+|---|---|---|---|---|
+| yolo11n FP32, pinned 2400 MHz | 0.163 ms | ok | 1.0 | 2952 mJ, 294 ms |
+| yolo11n INT8 static | 0.147 ms | ok | 1.0 | 1952 mJ, 207 ms |
+| yolo11n DVFS (`ondemand`) | 0.154 ms | ok | 1.0 | 2885 mJ, 293 ms |
+
+In the same session the FP32 cell drew 9.29 W in `forward` and 5.01 W at baseline, against 9.61 W
+and 5.15 W for the matching v1 cell. That difference mixes kernel 6.18.60, 5.35 V and `perf` being
+on; the `ref` family will quantify it.
+
+Still to do in Phase 1: measure mAP on the Pi (plan Task 16), the final review and merge, and
+deploying the branch to the Pi and the EliteBook (same commit on both, README 12.2; the
+orchestrator checks), then `./lab test --host`.
 
 **Phase 2 (the pilot).** The pilot runs every configuration group once, to catch naming, timeout,
 disk and verification problems at about 30 cells instead of 176:
