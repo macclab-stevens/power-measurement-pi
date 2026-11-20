@@ -71,6 +71,14 @@
     "n_images": 500,
     "tool_version": "f74dd2e"
   },
+  "yolo11n_int8s@640": {
+    "dataset": "coco-val2017-first500",
+    "map50": 0.56195,
+    "map50_95": 0.40657,
+    "measured": "2026-11-20",
+    "n_images": 500,
+    "tool_version": "5e0010b"
+  },
   "yolo11s@320": {
     "dataset": "coco-val2017-first500",
     "map50": 0.56186,
@@ -102,6 +110,14 @@
     "measured": "2026-11-19",
     "n_images": 500,
     "tool_version": "f74dd2e"
+  },
+  "yolo11s_int8s@640": {
+    "dataset": "coco-val2017-first500",
+    "map50": 0.65802,
+    "map50_95": 0.49197,
+    "measured": "2026-11-20",
+    "n_images": 500,
+    "tool_version": "5e0010b"
   },
   "yolov8m@640": {
     "dataset": "coco-val2017-first500",
