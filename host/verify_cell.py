@@ -95,7 +95,7 @@ def derived_metrics(pe: pd.DataFrame, meta: dict, baseline_P_W: float) -> dict:
             "dyn_energy_per_frame_mJ": head.get("dyn_energy_per_frame_mJ"),
             "latency_ms_per_frame": head.get("latency_ms_per_frame"),
             "energy_per_image_mJ": e / batch if e is not None else None,
-            "n_frames": head.get("n_frames"), "batch": batch, "baseline_P_W": baseline_P_W,
+            "n_frames": head.get("n_frames"), "batch": batch, "baseline_mean_P_W": baseline_P_W,
             "by_mode": by_mode, "variant": meta.get("variant"), "holdout": meta.get("holdout"),
             "map_reference": meta.get("map_reference")}
 
@@ -232,13 +232,13 @@ def verify(run_dir, cpu_mhz: int | None = None, write: bool = True) -> dict:
             if ctr < COUNTER_COVERAGE_MIN:
                 errors.append(f"counter coverage {ctr:.3f} < {COUNTER_COVERAGE_MIN}")
     errors.extend(_thermal_errors(run_dir, meta))
-    if _is_yolo(meta) and "variant" in meta:
+    if _is_yolo(meta) and (v2 or "variant" in meta):
         ref = meta.get("map_reference")
         if not ref:
-            warnings.append(f"mAP reference missing for {meta['variant']}@{meta.get('imgsz')}")
+            warnings.append(f"mAP reference missing for {meta.get('variant')}@{meta.get('imgsz')}")
         elif (ref.get("measured_on") or {}).get("machine") != "aarch64":
             warnings.append(f"mAP reference not measured on the Pi "
-                            f"({meta['variant']}@{meta.get('imgsz')})")
+                            f"({meta.get('variant')}@{meta.get('imgsz')})")
 
     dt_s = 1.0 / float(ali.get("slip_rate_hz") or 5000.0)
     pe = phase_energy(df, dt_s)

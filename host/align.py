@@ -169,36 +169,53 @@ def detect_slips(last_idx, host_ns, rate_hz=None, min_step_ms=1.0, tail_guard_bl
     return out
 
 
+def _assign(df: pd.DataFrame, name: str, src: np.ndarray, idx: np.ndarray, valid: np.ndarray):
+    """df[name] = src[idx] where valid else NaN, built as one float64 column (no frame copy)."""
+    col = np.full(len(df), np.nan, dtype=np.float64)
+    col[valid] = src[idx[valid]]
+    df[name] = col
+
+
 def merge_counters(df: pd.DataFrame, ctr: pd.DataFrame) -> pd.DataFrame:
-    """Attach the perf interval that contains each sample (t_start_ns < t_pi_ns <= t_end_ns).
+    """Add the perf interval that contains each sample (t_start_ns < t_pi_ns <= t_end_ns).
 
     `ctr` is counters.csv (t_start_ns, t_end_ns, ctr_*, pct_*). Samples outside every interval
     (before the first, in a gap, after the last) get NaN. A header-only `ctr` (perf was
-    unavailable) adds all-NaN columns so the schema stays the same."""
+    unavailable) adds all-NaN columns so the schema stays the same.
+
+    Index lookup instead of merge_asof + concat: a 30-min soak has 9 M samples, and copying the
+    whole frame several times needs ~5 GB (the host has 7 GB and runs the recorder). Columns are
+    added to `df` in place (which is also returned), one float64 array each."""
     cols = [c for c in ctr.columns if c.startswith(("ctr_", "pct_"))]
-    if ctr.empty:
-        return df.assign(**{c: np.nan for c in cols})
     ctr = ctr.sort_values("t_end_ns", kind="stable")
-    right = ctr[["t_start_ns", "t_end_ns", *cols]].astype(
-        {"t_start_ns": np.int64, "t_end_ns": np.int64, **{c: np.float64 for c in cols}})
-    m = pd.merge_asof(df[["t_pi_ns"]], right, left_on="t_pi_ns", right_on="t_end_ns",
-                      direction="forward")           # first interval ending at/after the sample
-    before = (m["t_pi_ns"] <= m["t_start_ns"]).to_numpy()   # in a gap, not inside that interval
-    out = m[cols].copy()
-    out.loc[before, :] = np.nan
-    return pd.concat([df, out.set_index(df.index)], axis=1)
+    t_start = ctr["t_start_ns"].to_numpy(dtype=np.int64)
+    t_end = ctr["t_end_ns"].to_numpy(dtype=np.int64)
+    n = len(t_end)
+    t = df["t_pi_ns"].to_numpy()
+    idx = np.searchsorted(t_end, t, side="left")      # first interval ending at/after the sample
+    valid = np.zeros(len(t), dtype=bool)
+    if n:
+        valid = (idx < n) & (t > t_start[np.minimum(idx, n - 1)])   # else: in a gap / outside
+    for c in cols:
+        _assign(df, c, ctr[c].to_numpy(dtype=np.float64), idx, valid)
+    return df
 
 
 def merge_sysfs(df: pd.DataFrame, sysfs: pd.DataFrame) -> pd.DataFrame:
-    """Attach the latest 1 Hz sysfs reading (at most SYSFS_TOLERANCE_NS old) as sys_* columns."""
+    """Add the latest 1 Hz sysfs reading (at most SYSFS_TOLERANCE_NS old) as sys_* columns.
+
+    Same in-place, index-based approach as merge_counters."""
     cols = [c for c in sysfs.columns if c != "t_real_ns"]
-    if sysfs.empty:
-        return df.assign(**{f"sys_{c}": np.nan for c in cols})
-    right = sysfs.sort_values("t_real_ns", kind="stable").astype({"t_real_ns": np.int64})
-    m = pd.merge_asof(df[["t_pi_ns"]], right, left_on="t_pi_ns", right_on="t_real_ns",
-                      direction="backward", tolerance=SYSFS_TOLERANCE_NS)
-    out = m[cols].rename(columns={c: f"sys_{c}" for c in cols})
-    return pd.concat([df, out.set_index(df.index)], axis=1)
+    sysfs = sysfs.sort_values("t_real_ns", kind="stable")
+    t_r = sysfs["t_real_ns"].to_numpy(dtype=np.int64)
+    t = df["t_pi_ns"].to_numpy()
+    idx = np.searchsorted(t_r, t, side="right") - 1   # latest reading at/before the sample
+    valid = np.zeros(len(t), dtype=bool)
+    if len(t_r):
+        valid = (idx >= 0) & (t - t_r[np.maximum(idx, 0)] <= SYSFS_TOLERANCE_NS)
+    for c in cols:
+        _assign(df, f"sys_{c}", sysfs[c].to_numpy(dtype=np.float64), idx, valid)
+    return df
 
 
 def attach_pi_logs(df: pd.DataFrame, pi_run_dir) -> pd.DataFrame:

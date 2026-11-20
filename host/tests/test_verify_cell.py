@@ -257,6 +257,9 @@ def test_map_reference_warnings(tmp_path):
     assert not any("mAP" in w for w in r["warnings"])
     r = verify(_run(tmp_path / "e", meta_over={"model": "yolo11n.pt"}))        # v1 meta: no variant
     assert not any("mAP" in w for w in r["warnings"])
+    meta = {"variant": None, "map_reference": None}                      # v2 without variant
+    r = verify(_v2(tmp_path / "f", df_over=ctr, meta_over=meta))
+    assert any("mAP reference missing" in w for w in r["warnings"])
 
 
 def test_bench_not_required_when_forced_off(tmp_path):
@@ -277,7 +280,7 @@ def test_derived_metrics_and_file(tmp_path):
     assert abs(x["dyn_energy_per_frame_mJ"] - 120.0) < 1e-6
     assert abs(x["latency_ms_per_frame"] - 60.0) < 1e-6
     assert abs(x["energy_per_image_mJ"] - 52.5) < 1e-6
-    assert x["n_frames"] == 1 and x["batch"] == 8 and x["baseline_P_W"] == 5.0
+    assert x["n_frames"] == 1 and x["batch"] == 8 and x["baseline_mean_P_W"] == 5.0
     assert x["variant"] == "yolo11n" and x["holdout"] == "primary-s"
     assert x["map_reference"]["map50_95"] == 0.39
     assert json.loads((d / "derived.json").read_text()) == x
