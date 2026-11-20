@@ -6,6 +6,8 @@
    offset(t) = c0 + c1 * (t - ref) over all edges (USB latency + oscillator drift).
 3. Label: each sample gets the latest marker (phase), the latest event's mode/iter,
    and the innermost enclosing layer span.
+4. Merge (v2 runs): counters.csv (perf intervals, ctr_*/pct_*) and sysfs.csv (1 Hz, sys_*)
+   join the samples on t_pi_ns; absent files add no columns.
 
     uv run python align.py --recorder-dir data/<session> --pi-run ../runs/<cell>
 """
@@ -21,7 +23,8 @@ import pandas as pd
 from clockfit import fit_sample_clock
 from store import load_blocks, open_samples
 
-PASS_MS = 1.0
+PASS_MS = 1.0             # unchanged for every mode. The DVFS (ondemand) design pins the clock
+                          # during the sync pulses, so the edge search/tolerances need no change.
 SEARCH_MS = 60.0          # edge search half-window around the coarse prediction
 SMOOTH = 5                # centered moving average (1 ms), symmetric -> no edge shift
 PAD_S = 5.0
@@ -29,6 +32,7 @@ ENVELOPE_MAX_DEV_MS = 1.0  # coarse-clock lower envelope must be linear to this 
 MAX_DRIFT_PPM = 50.0
 ENVELOPE_SEGMENTS = 20     # same rule as fit_sample_clock
 MIN_ENVELOPE_BLOCKS = 40
+SYSFS_TOLERANCE_NS = 2_000_000_000   # a 1 Hz sysfs reading is attached for at most 2 s
 LABEL_KINDS = ("marker", "begin", "end", "pulse_on", "pulse_off", "step_begin", "step_end")
 
 
@@ -163,6 +167,48 @@ def detect_slips(last_idx, host_ns, rate_hz=None, min_step_ms=1.0, tail_guard_bl
         out.append({"t_ns": int(host_ns[k + 1]), "step_ms": float(steps[k]),
                     "samples": int(round(steps[k] * rate_hz / 1000))})
     return out
+
+
+def merge_counters(df: pd.DataFrame, ctr: pd.DataFrame) -> pd.DataFrame:
+    """Attach the perf interval that contains each sample (t_start_ns < t_pi_ns <= t_end_ns).
+
+    `ctr` is counters.csv (t_start_ns, t_end_ns, ctr_*, pct_*). Samples outside every interval
+    (before the first, in a gap, after the last) get NaN. A header-only `ctr` (perf was
+    unavailable) adds all-NaN columns so the schema stays the same."""
+    cols = [c for c in ctr.columns if c.startswith(("ctr_", "pct_"))]
+    if ctr.empty:
+        return df.assign(**{c: np.nan for c in cols})
+    ctr = ctr.sort_values("t_end_ns", kind="stable")
+    right = ctr[["t_start_ns", "t_end_ns", *cols]].astype(
+        {"t_start_ns": np.int64, "t_end_ns": np.int64, **{c: np.float64 for c in cols}})
+    m = pd.merge_asof(df[["t_pi_ns"]], right, left_on="t_pi_ns", right_on="t_end_ns",
+                      direction="forward")           # first interval ending at/after the sample
+    before = (m["t_pi_ns"] <= m["t_start_ns"]).to_numpy()   # in a gap, not inside that interval
+    out = m[cols].copy()
+    out.loc[before, :] = np.nan
+    return pd.concat([df, out.set_index(df.index)], axis=1)
+
+
+def merge_sysfs(df: pd.DataFrame, sysfs: pd.DataFrame) -> pd.DataFrame:
+    """Attach the latest 1 Hz sysfs reading (at most SYSFS_TOLERANCE_NS old) as sys_* columns."""
+    cols = [c for c in sysfs.columns if c != "t_real_ns"]
+    if sysfs.empty:
+        return df.assign(**{f"sys_{c}": np.nan for c in cols})
+    right = sysfs.sort_values("t_real_ns", kind="stable").astype({"t_real_ns": np.int64})
+    m = pd.merge_asof(df[["t_pi_ns"]], right, left_on="t_pi_ns", right_on="t_real_ns",
+                      direction="backward", tolerance=SYSFS_TOLERANCE_NS)
+    out = m[cols].rename(columns={c: f"sys_{c}" for c in cols})
+    return pd.concat([df, out.set_index(df.index)], axis=1)
+
+
+def attach_pi_logs(df: pd.DataFrame, pi_run_dir) -> pd.DataFrame:
+    """Merge the Pi's counters.csv / sysfs.csv onto the trace; a missing file adds no columns."""
+    pi_run_dir = Path(pi_run_dir)
+    if (pi_run_dir / "counters.csv").exists():
+        df = merge_counters(df, pd.read_csv(pi_run_dir / "counters.csv"))
+    if (pi_run_dir / "sysfs.csv").exists():
+        df = merge_sysfs(df, pd.read_csv(pi_run_dir / "sysfs.csv"))
+    return df
 
 
 def align(recorder_dir, pi_run_dir, out_dir) -> dict:
@@ -330,6 +376,7 @@ def align(recorder_dir, pi_run_dir, out_dir) -> dict:
         "P_W": P.astype(np.float32), "phase": phase, "mode": mode, "iter": it,
         "step": step, "layer_path": layer, "depth": depth, "ctx_read": ctx_read,
     })
+    df = attach_pi_logs(df, pi_run_dir)
     df.to_parquet(out_dir / "power_trace.parquet", index=False)
     return res
 

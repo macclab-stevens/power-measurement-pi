@@ -8,7 +8,8 @@ import pytest
 
 from pathlib import Path
 
-from align import AlignError, _robust_rate_hz, align, detect_slips
+from align import (AlignError, _robust_rate_hz, align, attach_pi_logs, detect_slips,
+                   merge_counters, merge_sysfs)
 from store import SampleStore
 
 FIELDS = ["t_real_ns", "t_mono_ns", "kind", "name", "depth", "mode", "iter",
@@ -271,3 +272,88 @@ def test_align_labels_innermost_step(tmp_path):
     assert r["step"] == "forward" and r["layer_path"] == "0"
     assert at(S1 + 100_000_000)["step"] == ""
     assert at(S0 - 100_000_000)["step"] == ""
+
+
+# ---- counters.csv / sysfs.csv merge ----------------------------------------------------
+
+def _ctr(rows):
+    return pd.DataFrame(rows, columns=["t_start_ns", "t_end_ns", "ctr_instructions",
+                                       "pct_instructions"])
+
+
+def test_merge_counters_interval_is_open_closed_and_edges_are_nan():
+    ctr = _ctr([(1000, 2000, 10, 100.0), (2000, 3000, 20, 90.0), (4000, 5000, 40, 80.0)])
+    df = pd.DataFrame({"t_pi_ns": np.array([500, 1000, 1001, 2000, 2001, 3000, 3500, 4000,
+                                            4500, 5000, 5001], dtype=np.int64)})
+    out = merge_counters(df, ctr)
+    got = out["ctr_instructions"].tolist()
+    nan = float("nan")
+    # 500 before the first interval; 1000 == t_start of the first is NOT inside it;
+    # 2000 == end of the first belongs to the first; 3500 is in the gap; 5000 is the last end
+    expect = [nan, nan, 10, 10, 20, 20, nan, nan, 40, 40, nan]
+    assert all((np.isnan(g) and np.isnan(e)) or g == e for g, e in zip(got, expect)), got
+    assert out["pct_instructions"].iloc[4] == 90.0
+    assert out["ctr_instructions"].dtype == np.float64
+    assert "t_start_ns" not in out.columns and "t_end_ns" not in out.columns
+    assert out["t_pi_ns"].tolist() == df["t_pi_ns"].tolist()
+
+
+def test_merge_counters_header_only_gives_nan_columns():
+    out = merge_counters(pd.DataFrame({"t_pi_ns": np.arange(3, dtype=np.int64)}),
+                         _ctr([]))
+    assert out["ctr_instructions"].isna().all() and out["pct_instructions"].isna().all()
+
+
+def test_merge_counters_keeps_missing_cells_as_nan():
+    ctr = _ctr([(0, 1000, np.nan, 0.0)])
+    out = merge_counters(pd.DataFrame({"t_pi_ns": np.array([500], dtype=np.int64)}), ctr)
+    assert np.isnan(out["ctr_instructions"].iloc[0]) and out["pct_instructions"].iloc[0] == 0.0
+
+
+def test_merge_sysfs_backward_with_2s_tolerance():
+    sysfs = pd.DataFrame({"t_real_ns": [1_000_000_000, 2_000_000_000],
+                          "cpu0_kHz": [1500000, 2400000], "temp_C": [50.0, 55.0],
+                          "fan_state": [0, 1]})
+    t = np.array([500_000_000, 1_000_000_000, 1_999_999_999, 2_000_000_000,
+                  3_999_999_999, 4_000_000_001], dtype=np.int64)
+    out = merge_sysfs(pd.DataFrame({"t_pi_ns": t}), sysfs)
+    assert out["sys_cpu0_kHz"].tolist()[1:5] == [1500000, 1500000, 2400000, 2400000]
+    assert np.isnan(out["sys_cpu0_kHz"].iloc[0])          # before the first reading
+    assert np.isnan(out["sys_cpu0_kHz"].iloc[5])          # reading is older than 2 s
+    assert out["sys_temp_C"].iloc[3] == 55.0 and out["sys_fan_state"].iloc[1] == 0
+    assert "sys_t_real_ns" not in out.columns
+
+
+def test_attach_pi_logs_missing_files_add_nothing(tmp_path):
+    df = pd.DataFrame({"t_pi_ns": np.arange(3, dtype=np.int64), "P_W": [1.0, 2.0, 3.0]})
+    assert attach_pi_logs(df, tmp_path).equals(df)
+
+
+def test_align_merges_counters_and_sysfs(tmp_path):
+    rec, pi, _ = _build(tmp_path)
+    t_s = T0 + 5_000_000_000
+    rows = [(t_s + i * 100_000_000, t_s + (i + 1) * 100_000_000, 1000 + i, 100.0)
+            for i in range(20)]
+    _ctr(rows).to_csv(pi / "counters.csv", index=False)
+    pd.DataFrame({"t_real_ns": [T0 + k * 1_000_000_000 for k in range(18)],
+                  "cpu0_kHz": 2400000, "cpu1_kHz": 2400000, "cpu2_kHz": 2400000,
+                  "cpu3_kHz": 2400000, "temp_C": 61.5, "fan_state": 4}).to_csv(
+        pi / "sysfs.csv", index=False)
+    align(rec, pi, pi)
+    df = pd.read_parquet(pi / "power_trace.parquet")
+    t = df["t_pi_ns"].to_numpy()
+    inside = (t > t_s) & (t <= t_s + 2_000_000_000)
+    assert df.loc[inside, "ctr_instructions"].notna().all()
+    assert df.loc[~inside, "ctr_instructions"].isna().all()
+    k = np.minimum((t[inside] - t_s - 1) // 100_000_000, 19)
+    assert (df.loc[inside, "ctr_instructions"].to_numpy() == 1000 + k).all()
+    assert df["sys_cpu0_kHz"].notna().all() and (df["sys_temp_C"] == 61.5).all()
+    assert (df["sys_fan_state"] == 4).all()
+    assert df["P_W"].dtype == np.float32
+
+
+def test_align_without_pi_logs_has_v1_columns(tmp_path):
+    rec, pi, _ = _build(tmp_path)
+    align(rec, pi, pi)
+    cols = pd.read_parquet(pi / "power_trace.parquet").columns
+    assert not any(c.startswith(("ctr_", "pct_", "sys_")) for c in cols)

@@ -4,6 +4,10 @@
 Reads run_meta.json, alignment.json and power_trace.parquet from the run directory (align.py
 must have run). Fatal checks make `ok` false; soft ones go to `warnings`.
 
+v2 cells (dataset_version 2) add: fan mode, DVFS clock range (governor ondemand), perf counter
+coverage, thermal limits and a mAP-reference warning. Every cell also gets derived.json
+(energy and latency per frame, measured iterations only).
+
     uv run python verify_cell.py ../runs/<cell> [--cpu-mhz 2400]
 """
 from __future__ import annotations
@@ -21,6 +25,10 @@ STEP_COVERAGE_FAIL, STEP_COVERAGE_WARN = 0.5, 0.9
 ENERGY_CLOSURE = 0.01
 INFER_STEPS = ("preprocess", "forward", "postprocess")
 TRAIN_STEPS = ("dataload", "zero_grad", "forward", "loss", "backward", "optimizer_step")
+THERMAL_ABORT_C = 85.0                 # same limit run.py enforces on the Pi
+COUNTER_COVERAGE_MIN = 0.95
+DVFS_RANGE_MHZ, DVFS_TOL_MHZ = (1500, 2400), 25
+FAN_MODES = ("full", "auto", "off")
 
 
 def expected_phases(meta: dict) -> list[str]:
@@ -53,6 +61,93 @@ def phase_energy(df: pd.DataFrame, dt_s: float) -> pd.DataFrame:
     return out
 
 
+def _frame_table(pe: pd.DataFrame, mode: str) -> pd.DataFrame:
+    """Per measured iteration (frame >= 1) of one mode: energy E_mJ and duration dur_ms.
+
+    Frame 0 is the first call of the mode (cold caches, lazy init) and is excluded."""
+    rows = pe[pe["phase"] == mode]
+    frame = pd.to_numeric(rows["iter"], errors="coerce")
+    rows = rows[frame >= 1].assign(frame=frame[frame >= 1])
+    return rows.groupby("frame")[["E_mJ", "dur_ms"]].sum()
+
+
+def derived_metrics(pe: pd.DataFrame, meta: dict, baseline_P_W: float) -> dict:
+    """Energy and latency per frame from the per-(phase, iter, step) energy table.
+
+    dyn_energy subtracts baseline_P_W x iteration duration (W x ms = mJ). Single-mode cells
+    (image, train) also get the headline scalars; by_mode always has every mode's values."""
+    batch = int(meta.get("batch") or 1)
+    modes = list(meta.get("modes") or [])
+    by_mode = {}
+    for m in modes:
+        t = _frame_table(pe, m)
+        if t.empty:
+            by_mode[m] = {"n_frames": 0, "energy_per_frame_mJ": None,
+                          "dyn_energy_per_frame_mJ": None, "latency_ms_per_frame": None}
+            continue
+        e = float(t["E_mJ"].mean())
+        by_mode[m] = {"n_frames": int(len(t)), "energy_per_frame_mJ": e,
+                      "dyn_energy_per_frame_mJ": float((t["E_mJ"] - baseline_P_W * t["dur_ms"]).mean()),
+                      "latency_ms_per_frame": float(t["dur_ms"].mean())}
+    head = by_mode[modes[0]] if len(modes) == 1 else {}
+    e = head.get("energy_per_frame_mJ")
+    return {"energy_per_frame_mJ": e,
+            "dyn_energy_per_frame_mJ": head.get("dyn_energy_per_frame_mJ"),
+            "latency_ms_per_frame": head.get("latency_ms_per_frame"),
+            "energy_per_image_mJ": e / batch if e is not None else None,
+            "n_frames": head.get("n_frames"), "batch": batch, "baseline_P_W": baseline_P_W,
+            "by_mode": by_mode, "variant": meta.get("variant"), "holdout": meta.get("holdout"),
+            "map_reference": meta.get("map_reference")}
+
+
+def _is_yolo(meta: dict) -> bool:
+    return Path(str(meta.get("model") or "")).name.lower().startswith("yolo")
+
+
+def _fan_errors(meta: dict) -> list[str]:
+    """full: fan_full must be set. auto/off: the mode must be recorded. Anything else (incl. a
+    v1-style meta without fan_full) is the old "fan_full not set" error."""
+    mode = meta.get("fan_mode", "full" if meta.get("fan_full") else "none")
+    if mode == "full":
+        return [] if meta.get("fan_full") else ["fan_full not set (fan_mode full)"]
+    if mode in FAN_MODES:
+        return []
+    return [f"fan_full not set (fan_mode {mode})"]
+
+
+def _clock_range_errors(in_modes: pd.DataFrame) -> list[str]:
+    cols = [c for c in in_modes.columns if c.startswith("sys_cpu") and c.endswith("_kHz")]
+    vals = in_modes[cols].to_numpy(dtype=np.float64) if cols else np.empty((0, 0))
+    vals = vals[np.isfinite(vals)]
+    if vals.size == 0:
+        return ["no cpu frequency readings in mode phases"]
+    lo, hi = (DVFS_RANGE_MHZ[0] - DVFS_TOL_MHZ) * 1000, (DVFS_RANGE_MHZ[1] + DVFS_TOL_MHZ) * 1000
+    if vals.min() < lo or vals.max() > hi:
+        return [f"cpu clock outside {DVFS_RANGE_MHZ[0]}-{DVFS_RANGE_MHZ[1]} MHz "
+                f"(+/-{DVFS_TOL_MHZ}): min {vals.min() / 1000:.0f} max {vals.max() / 1000:.0f} MHz"]
+    return []
+
+
+def _thermal_errors(run_dir: Path, meta: dict | None) -> list[str]:
+    errs = []
+    t = None
+    try:
+        t = json.loads((run_dir / "thermal_abort.json").read_text())
+    except OSError:
+        pass
+    except ValueError:
+        t = {}
+    if t is None and meta and meta.get("thermal_abort"):
+        t = meta["thermal_abort"]
+    if t is not None:
+        temp = t.get("temp_C") if isinstance(t, dict) else None
+        errs.append(f"thermal abort at {temp} C")
+    max_t = (meta or {}).get("max_temp_C")
+    if max_t is not None and max_t >= THERMAL_ABORT_C:
+        errs.append(f"max_temp_C {max_t} >= {THERMAL_ABORT_C:g}")
+    return errs
+
+
 def verify(run_dir, cpu_mhz: int | None = None, write: bool = True) -> dict:
     run_dir = Path(run_dir)
     errors: list[str] = []
@@ -65,6 +160,7 @@ def verify(run_dir, cpu_mhz: int | None = None, write: bool = True) -> dict:
         df = pd.read_parquet(run_dir / "power_trace.parquet")
     except (OSError, ValueError) as e:
         errors.append(f"missing or unreadable output: {e}")
+        errors.extend(_thermal_errors(run_dir, None))   # an aborted run leaves no run_meta.json
         res["ok"] = False
         return res
 
@@ -72,8 +168,7 @@ def verify(run_dir, cpu_mhz: int | None = None, write: bool = True) -> dict:
         errors.append(f"schema_version {meta.get('schema_version')} != 4")
     if cpu_mhz is not None and meta.get("cpu_mhz_pinned") != cpu_mhz:
         errors.append(f"cpu_mhz_pinned {meta.get('cpu_mhz_pinned')} != {cpu_mhz}")
-    if not meta.get("fan_full"):
-        errors.append("fan_full not set")
+    errors.extend(_fan_errors(meta))
     if not ali.get("pass"):
         errors.append(f"alignment failed: {ali.get('fail_reasons')}")
     if ali.get("slip_warning"):
@@ -107,7 +202,8 @@ def verify(run_dir, cpu_mhz: int | None = None, write: bool = True) -> dict:
     missing = [p for p in expected_phases(meta) if counts.get(p, 0) == 0]
     if missing:
         errors.append(f"phases without samples: {missing}")
-    if not meta.get("bench_skipped") and not any(str(p).startswith("bench:") for p in counts.index):
+    benches_off = meta.get("bench_skipped") or meta.get("bench_forced_off")
+    if not benches_off and not any(str(p).startswith("bench:") for p in counts.index):
         errors.append("no bench:* phase although benches were not skipped")
 
     modes = list(meta.get("modes") or [])
@@ -121,6 +217,28 @@ def verify(run_dir, cpu_mhz: int | None = None, write: bool = True) -> dict:
         errors.append(f"step coverage in mode phases {cov:.2f} < {STEP_COVERAGE_FAIL}")
     elif cov < STEP_COVERAGE_WARN:
         warnings.append(f"step coverage in mode phases {cov:.2f} < {STEP_COVERAGE_WARN}")
+
+    v2 = meta.get("dataset_version") == 2
+    if meta.get("governor") == "ondemand":
+        errors.extend(_clock_range_errors(in_modes))
+    if v2:
+        pc = meta.get("perf_counters") or {}
+        if not pc.get("enabled"):
+            errors.append("perf counters not enabled for a dataset_version 2 cell")
+        else:
+            ctr = (in_modes["ctr_instructions"].notna().mean()
+                   if "ctr_instructions" in in_modes and len(in_modes) else 0.0)
+            res["counter_coverage"] = float(ctr)
+            if ctr < COUNTER_COVERAGE_MIN:
+                errors.append(f"counter coverage {ctr:.3f} < {COUNTER_COVERAGE_MIN}")
+    errors.extend(_thermal_errors(run_dir, meta))
+    if _is_yolo(meta) and "variant" in meta:
+        ref = meta.get("map_reference")
+        if not ref:
+            warnings.append(f"mAP reference missing for {meta['variant']}@{meta.get('imgsz')}")
+        elif (ref.get("measured_on") or {}).get("machine") != "aarch64":
+            warnings.append(f"mAP reference not measured on the Pi "
+                            f"({meta['variant']}@{meta.get('imgsz')})")
 
     dt_s = 1.0 / float(ali.get("slip_rate_hz") or 5000.0)
     pe = phase_energy(df, dt_s)
@@ -143,6 +261,15 @@ def verify(run_dir, cpu_mhz: int | None = None, write: bool = True) -> dict:
         "max_residual_ms": ali.get("max_residual_ms"),
         "slip_samples_total": ali.get("slip_samples_total", 0),
     })
+    if meta.get("max_temp_C") is not None:
+        res["max_temp_C"] = meta["max_temp_C"]
+    bl = [by_phase[k] for k in ("baseline_A", "baseline_B") if k in by_phase]
+    base_w = float(np.mean(bl)) if bl else 0.0       # same definition as run_meta baseline_W
+    res["derived"] = derived_metrics(pe, meta, base_w)
+    if modes and not any(v["n_frames"] for v in res["derived"]["by_mode"].values()):
+        warnings.append("no measured iterations (frame >= 1): derived metrics are empty")
+    if write:
+        (run_dir / "derived.json").write_text(json.dumps(res["derived"], indent=2))
     res["ok"] = not errors
     return res
 
