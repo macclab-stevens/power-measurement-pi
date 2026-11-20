@@ -612,3 +612,33 @@ Pi, turn Pi Wi-Fi off before measuring, the perf_event_paranoid note).
 Every new run.py flag, every new output file (`sysfs.csv`, `counters.csv`, `counters.raw.txt`,
 `thermal_abort.json`, `derived.json`) and every new `run_meta.json` field is documented once.
 Plain language, same tone as the existing README. No measurement numbers that were not measured.
+
+### Task 16: measure mAP on the Pi (the target device)
+
+**Decided by the user 2026-11-20:** accuracy numbers come from the Pi, not the NUC — INT8
+(qnnpack on ARM) and FP16 run different kernels on the Pi than on x86. The NUC keeps only offline
+weight building (quantize, prune) and data prep. Runs after Tasks 8-9 (it evaluates their
+artifacts too). Never during a measurement session.
+
+**Files:** `tools/eval_map.py`, `tools/tests/test_eval_map.py`, `tools/README.md`,
+`data/map_reference.json`.
+
+- Make `tools/eval_map.py` runnable with the **Pi project environment** (repo root
+  `pyproject.toml`: torch 2.14.0, ultralytics 8.4.152, opencv — no tools-only imports on the eval
+  path), e.g. `cd ~/Desktop/power-measurement-pi && ~/.local/bin/uv run --frozen --offline python
+  tools/eval_map.py ...`. Add `--data-dir` so the eval set location is explicit.
+- Every entry records where it was measured: `"measured_on": {"hostname", "machine"
+  (platform.machine()), "torch": torch.__version__, "quantized_engine"}`. run.py's lookup is
+  unchanged (it only needs the key); verify (Task 10) warns when a cell's `map_reference` was not
+  measured on an `aarch64` machine.
+- Copy `tools/data/coco500` (images + labels + yaml) and `models/` to the Pi
+  (`~/Desktop/power-measurement-pi/tools/data/coco500`, `models/`), and the six weights are already
+  there.
+- Run `--all` (plus every `models/*.pt` artifact) **on the Pi** in the background with `nohup`,
+  logging to `runs/map_eval.log`, with the fan forced full (`sudo -n /usr/local/sbin/pi-power-pin
+  fan full` before, `fan auto` after) and resumable per entry (`--skip-existing` semantics that only
+  skip entries already measured on aarch64). The Pi has had intermittent hard lockups under
+  sustained load (see README §9 / Pi lockup notes): if it locks up, wait for it, then resume.
+- Replace all NUC entries in `data/map_reference.json` with the Pi results; keep the NUC numbers
+  in the report as a cross-check table (Pi vs NUC per key, difference).
+- Do not run anything while `pgrep -af '[s]rc/run.py'` finds a measurement on the Pi.
