@@ -8,6 +8,10 @@
    and the innermost enclosing layer span.
 4. Merge (v2 runs): counters.csv (perf intervals, ctr_*/pct_*) and sysfs.csv (1 Hz, sys_*)
    join the samples on t_pi_ns; absent files add no columns.
+5. Concurrent runs (events.csv `tag` column non-empty): `mode`/`iter`/`step` follow the primary
+   workload (tag "" or "m0") only; every tag gets a `step_<tag>` column (its innermost step
+   span) and `tag` lists the workloads inside a step at that sample ("m0+m1"). v1 files have no
+   tag column and get none of these.
 
     uv run python align.py --recorder-dir data/<session> --pi-run ../runs/<cell>
 """
@@ -33,6 +37,7 @@ MAX_DRIFT_PPM = 50.0
 ENVELOPE_SEGMENTS = 20     # same rule as fit_sample_clock
 MIN_ENVELOPE_BLOCKS = 40
 SYSFS_TOLERANCE_NS = 2_000_000_000   # a 1 Hz sysfs reading is attached for at most 2 s
+PRIMARY_TAGS = ("", "m0")   # workload tags whose events label mode/iter/step (run.py --concurrent)
 LABEL_KINDS = ("marker", "begin", "end", "pulse_on", "pulse_off", "step_begin", "step_end")
 
 
@@ -232,7 +237,9 @@ def align(recorder_dir, pi_run_dir, out_dir) -> dict:
     recorder_dir, pi_run_dir, out_dir = Path(recorder_dir), Path(pi_run_dir), Path(out_dir)
     ev = pd.read_csv(pi_run_dir / "events.csv", keep_default_na=False,
                      dtype={"kind": str, "name": str, "mode": str, "iter": str,
-                            "layer_path": str, "config_id": str})
+                            "layer_path": str, "config_id": str, "tag": str})
+    if "tag" not in ev.columns:   # v1 events.csv has no workload tag
+        ev["tag"] = ""
     ev = ev.sort_values("t_real_ns", kind="stable").reset_index(drop=True)
     t_first, t_last = int(ev["t_real_ns"].iloc[0]), int(ev["t_real_ns"].iloc[-1])
 
@@ -345,7 +352,8 @@ def align(recorder_dir, pi_run_dir, out_dir) -> dict:
 
     # mode/iter come from the latest *workload* event; ctx_begin/ctx_end are written by the
     # sampler's context thread, so their labels are arbitrary
-    evw = ev[ev["kind"].isin(LABEL_KINDS)]
+    # (concurrent runs: only the primary workload's events, so mode/iter stay the primary's frame)
+    evw = ev[ev["kind"].isin(LABEL_KINDS) & ev["tag"].isin(PRIMARY_TAGS)]
     et = evw["t_real_ns"].to_numpy(dtype=np.float64)
     k = np.clip(np.searchsorted(et, t_pi, side="right") - 1, 0, None)
     mode = evw["mode"].astype(str).to_numpy()[k].astype(object)
@@ -371,12 +379,9 @@ def align(recorder_dir, pi_run_dir, out_dir) -> dict:
         layer[ok] = paths[j[ok]]
         depth[ok] = d
 
-    step = np.full(t_pi.size, "", dtype=object)
-    for lvl, s in sorted(_step_spans(ev).items()):
-        st, en, names = s[:, 0].astype(np.float64), s[:, 1].astype(np.float64), s[:, 2]
-        j = np.searchsorted(st, t_pi, side="right") - 1
-        ok = (j >= 0) & (t_pi < en[np.clip(j, 0, None)])
-        step[ok] = names[j[ok]]
+    step = _label_steps(ev[ev["tag"].isin(PRIMARY_TAGS)], t_pi)
+    tag_steps = {t: _label_steps(ev[ev["tag"] == t], t_pi)
+                 for t in sorted(set(ev["tag"]) - {""})}
 
     cb = np.sort(ev[ev["kind"] == "ctx_begin"]["t_real_ns"].to_numpy(dtype=np.float64))
     ce = np.sort(ev[ev["kind"] == "ctx_end"]["t_real_ns"].to_numpy(dtype=np.float64))
@@ -393,6 +398,12 @@ def align(recorder_dir, pi_run_dir, out_dir) -> dict:
         "P_W": P.astype(np.float32), "phase": phase, "mode": mode, "iter": it,
         "step": step, "layer_path": layer, "depth": depth, "ctx_read": ctx_read,
     })
+    if tag_steps:   # concurrent run: which workloads were inside a step at each sample
+        tagcol = np.full(t_pi.size, "", dtype=object)
+        for t, names in tag_steps.items():
+            df[f"step_{t}"] = names
+            tagcol = np.where(names != "", np.where(tagcol == "", t, tagcol + "+" + t), tagcol)
+        df["tag"] = tagcol
     df = attach_pi_logs(df, pi_run_dir)
     df.to_parquet(out_dir / "power_trace.parquet", index=False)
     return res
@@ -410,6 +421,17 @@ def _layer_spans(ev) -> dict:
         elif open_.get(key):
             out.setdefault(int(d), []).append((open_[key].pop(), t, path))
     return {d: np.array(sorted(v, key=lambda r: r[0]), dtype=object) for d, v in out.items()}
+
+
+def _label_steps(ev, t_pi) -> np.ndarray:
+    """Name of the innermost step span of `ev` (one workload's events) containing each t_pi."""
+    step = np.full(t_pi.size, "", dtype=object)
+    for lvl, s in sorted(_step_spans(ev).items()):
+        st, en, names = s[:, 0].astype(np.float64), s[:, 1].astype(np.float64), s[:, 2]
+        j = np.searchsorted(st, t_pi, side="right") - 1
+        ok = (j >= 0) & (t_pi < en[np.clip(j, 0, None)])
+        step[ok] = names[j[ok]]
+    return step
 
 
 def _step_spans(ev) -> dict:

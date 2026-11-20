@@ -310,3 +310,92 @@ def test_no_measured_iterations_warns(tmp_path):
     r = verify(_run(tmp_path, df_over=only_frame0))
     assert r["derived"]["energy_per_frame_mJ"] is None
     assert any("no measured iterations" in w for w in r["warnings"])
+
+
+# ---- concurrent cells (run.py --concurrent) --------------------------------------------------
+
+CONC = {"mode": "spinner", "model": None, "tags": ["m0", "spin"], "threads_split": {"m0": 3, "spin": 1},
+        "iterations": {"m0": 2, "spin": 40}, "latency_ms": {"m0": None, "spin": None}}
+
+
+def _conc(spin=(100, 500), m0_in_window=True, drop=()):
+    """Train-phase rows 100..500 (frames 0 and 1 are rows 0..300 / 300..600) carry the second
+    workload; step_m0 is the primary's `step` column (what align.py writes)."""
+    def f(df):
+        df["step_m0"] = df["step"]
+        df["step_spin"] = ""
+        rows = np.flatnonzero((df["phase"] == "train").to_numpy())
+        win = rows[spin[0]:spin[1]]
+        df.loc[df.index[win], "step_spin"] = "spin"
+        if not m0_in_window:
+            df.loc[df.index[win], "step_m0"] = ""
+        df["tag"] = np.where(df["step_m0"] != "", "m0", "")
+        df["tag"] = np.where(df["step_spin"] != "", np.where(df["tag"] == "", "spin", "m0+spin"),
+                             df["tag"])
+        return df.drop(columns=list(drop))
+    return f
+
+
+def _cv(tmp_path, meta_over=None, **kw):
+    return _run(tmp_path, meta_over={"concurrent": CONC, **(meta_over or {})}, **kw)
+
+
+def test_concurrent_cell_passes_and_derived_notes_both_workloads(tmp_path):
+    r = verify(_cv(tmp_path, df_over=_conc()))
+    assert r["ok"], r["errors"]
+    assert r["warnings"] == []
+    assert r["concurrent"]["coverage"] == {"m0": 1.0, "spin": 1.0}
+    assert r["concurrent"]["overlap"] == {"spin": 1.0}
+    c = r["derived"]["concurrent"]
+    assert c["tags"] == ["m0", "spin"] and c["iterations"] == {"m0": 2, "spin": 40}
+    assert c["threads_split"] == {"m0": 3, "spin": 1} and "both workloads" in c["note"]
+
+
+def test_non_concurrent_cell_has_no_concurrent_keys(tmp_path):
+    r = verify(_run(tmp_path))
+    assert r["ok"] and "concurrent" not in r and "concurrent" not in r["derived"]
+
+
+def test_concurrent_cell_requires_tag_and_step_columns(tmp_path):
+    r = verify(_cv(tmp_path / "a"))                                   # align wrote no tags
+    assert not r["ok"] and any("tag column" in e for e in r["errors"])
+    r = verify(_cv(tmp_path / "b", df_over=_conc(drop=("step_spin",))))
+    assert any("no step_spin column" in e for e in r["errors"])
+
+
+def test_concurrent_cell_needs_iterations_from_every_tag(tmp_path):
+    zero = {**CONC, "iterations": {"m0": 2, "spin": 0}}
+    r = verify(_cv(tmp_path, meta_over={"concurrent": zero}, df_over=_conc()))
+    assert not r["ok"] and any("spin completed no iterations" in e for e in r["errors"])
+
+
+def test_concurrent_cell_fails_when_workloads_do_not_overlap(tmp_path):
+    r = verify(_cv(tmp_path / "a", df_over=_conc(m0_in_window=False)))
+    assert not r["ok"] and any("overlap only 0.00" in e for e in r["errors"])
+
+
+def test_concurrent_step_coverage_is_per_tag(tmp_path):
+    def sparse(df):
+        df = _conc()(df)
+        idx = np.flatnonzero((df["step_spin"] == "spin").to_numpy())
+        df.loc[df.index[idx[::2]], "step_spin"] = ""                 # 50 % of the window
+        df.loc[df.index[idx[0]], "step_spin"] = "spin"
+        return df
+    r = verify(_cv(tmp_path, df_over=sparse))
+    assert any("coverage of workload spin" in w for w in r["warnings"] + r["errors"])
+
+
+def test_model_pair_checks_infer_steps_per_tag():
+    full = ["preprocess", "forward", "postprocess"]
+    n = 30
+    df = pd.DataFrame({"step_m0": np.tile(full, n // 3), "step_m1": np.tile(full, n // 3)})
+    meta = {"tags": ["m0", "m1"], "iterations": {"m0": 5, "m1": 7}}
+    from verify_cell import concurrent_checks
+    errs, warns, info = concurrent_checks(df.assign(tag="m0+m1"), meta)
+    assert errs == [] and warns == [] and info["overlap"] == {"m1": 1.0}
+    errs, _, _ = concurrent_checks(df.assign(tag="m0+m1", step_m1=np.tile(["forward"], n)), meta)
+    assert any("workload m1" in e and "preprocess" in e for e in errs)
+    # a train primary expects the train steps, not the inference steps
+    tdf = pd.DataFrame({"step_m0": np.tile(list(TRAIN_STEPS), 5), "tag": "m0"})
+    errs, _, _ = concurrent_checks(tdf, {"tags": ["m0"], "iterations": {"m0": 1}}, TRAIN_STEPS)
+    assert errs == []

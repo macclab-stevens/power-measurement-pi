@@ -4,16 +4,22 @@ Primary clock is time.time_ns() (lab PTP/GPS-disciplined wall clock, ~0.03 ms
 from the TM2500C), so events line up with the EliteBook's Monsoon recording.
 monotonic_ns is kept as a secondary column. Appends are lock-guarded list
 appends, cheap enough for per-layer begin/end events.
+
+`tag` names the workload that produced a step event ("" for the single-workload runs, "m0" /
+"m1" / "spin" in --concurrent runs, where two threads share one log). Step events carry no
+nesting state, so they are thread-safe; begin()/end() keep a shared depth counter and must only
+be called from one thread (concurrent runs turn the per-layer events off).
 """
 from __future__ import annotations
 
 import contextlib
 import csv
+import functools
 import threading
 import time
 
 FIELDS = ["t_real_ns", "t_mono_ns", "kind", "name", "depth", "mode", "iter",
-          "layer_path", "config_id", "window_id"]
+          "layer_path", "config_id", "window_id", "tag"]
 
 
 class EventLog:
@@ -26,12 +32,12 @@ class EventLog:
         self.labels: dict = {"mode": "", "iter": ""}
 
     def _add(self, kind: str, name: str, depth: int, layer_path: str = "",
-             config_id: str = "") -> None:
+             config_id: str = "", tag: str = "") -> None:
         row = {"t_real_ns": time.time_ns(), "t_mono_ns": time.monotonic_ns(),
                "kind": kind, "name": name, "depth": depth,
                "mode": self.labels["mode"], "iter": self.labels["iter"],
                "layer_path": layer_path, "config_id": config_id,
-               "window_id": self.window_id}
+               "window_id": self.window_id, "tag": tag}
         with self._lock:
             self._rows.append(row)
 
@@ -52,15 +58,20 @@ class EventLog:
         self._depth = max(0, self._depth - 1)
 
     @contextlib.contextmanager
-    def step(self, name: str):
+    def step(self, name: str, tag: str = ""):
         """Sub-phase span inside one iteration (preprocess, forward, backward, ...).
 
-        Logged as step_begin/step_end; does not change the layer depth."""
-        self._add("step_begin", name, 0)
+        Logged as step_begin/step_end; does not change the layer depth. `tag` marks the
+        workload in a concurrent run."""
+        self._add("step_begin", name, 0, tag=tag)
         try:
             yield
         finally:
-            self._add("step_end", name, 0)
+            self._add("step_end", name, 0, tag=tag)
+
+    def step_for(self, tag: str):
+        """step(name) bound to one workload tag: what a TaskAdapter's `step` is set to."""
+        return functools.partial(self.step, tag=tag)
 
     def edge(self, kind: str, name: str) -> None:
         self._add(kind, name, 0)

@@ -3,7 +3,7 @@
 
     uv run python experiment.py plan [--smoke|--probe] [--only yolo11n,lm64] --out ../runs/matrix/manifest.jsonl
     uv run python experiment.py plan --v2 {A,A-input,B,C,D,soak,ref,all,pilot} [--include-fp16]
-        [--include-optional] [--include-concurrent] [--include-int8d] [--include-prune] --out ...
+        [--include-optional] [--no-concurrent] [--include-int8d] [--include-prune] --out ...
     uv run python experiment.py run --manifest ../runs/matrix/manifest.jsonl [--auto-power-cycle 3]
     uv run python experiment.py status --manifest ../runs/matrix/manifest.jsonl
 
@@ -497,9 +497,11 @@ def main() -> None:  # pragma: no cover - CLI
     p.add_argument("--v2", choices=matrix_v2.CHOICES, default=None,
                    help="dataset v2 family (host/matrix_v2.py) instead of the v1 matrix")
     for flag, what in (("fp16", "B: fp16 yolo11n cells"), ("optional", "C: threads x yolo11m"),
-                       ("concurrent", "D: concurrency cells"), ("int8d", "B: int8-dynamic cells"),
+                       ("int8d", "B: int8-dynamic cells"),
                        ("prune", "B: pruned yolo11n cells")):
         p.add_argument(f"--include-{flag}", action="store_true", help=f"with --v2, add {what}")
+    p.add_argument("--no-concurrent", action="store_true",
+                   help="with --v2, leave out the D concurrency cells (run.py --concurrent)")
     r = sub.add_parser("run")
     r.add_argument("--manifest", required=True)
     r.add_argument("--results", default=None, help="default: results.jsonl next to the manifest")
@@ -519,10 +521,10 @@ def main() -> None:  # pragma: no cover - CLI
                 raise SystemExit("--v2 cannot be combined with --smoke, --probe or --only")
             rows = matrix_v2.cells(a.v2, seed=a.seed, include_fp16=a.include_fp16,
                                    include_optional=a.include_optional,
-                                   include_concurrent=a.include_concurrent,
+                                   include_concurrent=not a.no_concurrent,
                                    include_int8d=a.include_int8d, include_prune=a.include_prune)
         else:
-            if any((a.include_fp16, a.include_optional, a.include_concurrent, a.include_int8d,
+            if any((a.include_fp16, a.include_optional, a.no_concurrent, a.include_int8d,
                     a.include_prune)):
                 raise SystemExit("--include-* options need --v2")
             import matrix

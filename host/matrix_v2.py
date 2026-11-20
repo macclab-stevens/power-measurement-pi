@@ -12,6 +12,9 @@ Family `ref` re-runs the v1 presets (yolo11n, yolov8n at 1500/2000/2400 MHz x 3)
 unchanged plus `--perf-counters off` and no `--holdout`, so they stay dataset_version 1: a kernel
 (6.18.50 -> 6.18.60) cross-check against the 224 v1 cells (Ruling R26). Ids `v1ref_<key>_<mhz>_rNN`.
 
+Family D's concurrency cells (`--concurrent yolo11n.pt` / `--concurrent spinner`, run.py Task 13)
+are on by default (`include_concurrent=False` leaves them out; experiment.py plan --no-concurrent).
+
 Cell id: `{model}[_{variant}][_{condition}]_{imgsz}_t{threads}[_b{batch}]_{clock}_r{repeat:02d}`
 with `clock` = pinned MHz or `dvfs`; pilot ids carry the prefix `pilot_`.
 
@@ -171,7 +174,7 @@ def configs_c(include_optional=False) -> list[Config]:
     return out
 
 
-def configs_d(include_concurrent=False) -> list[Config]:
+def configs_d(include_concurrent=True) -> list[Config]:
     out = [Config("D", m, 5, dvfs=True) for m in ("yolo11n", "yolo11s")]
     out += [Config("D", "yolo11n", 3, condition=f"fan{m}", fan=m) for m in ("auto", "off")]
     out += [Config("D", "yolo11n", 3, condition=f"serve{f}", serve_fps=f) for f in (1, 5, 15)]
@@ -198,7 +201,7 @@ def ref_row(key: str, mhz: int, repeat: int, prefix: str = "") -> dict:
             "args": [*v1["args"], "--perf-counters", "off"]}
 
 
-def configs(which: str, *, include_fp16=False, include_optional=False, include_concurrent=False,
+def configs(which: str, *, include_fp16=False, include_optional=False, include_concurrent=True,
             include_int8d=False, include_prune=False) -> list[Config]:
     """Configuration groups of one family, or of all six."""
     if which == "all":
@@ -246,7 +249,7 @@ def cells(which: str = "all", seed: int = 7, **include) -> list[dict]:
 
 
 # ---- pilot -----------------------------------------------------------------------------------
-def pilot(seed: int = 7, *, include_fp16=False, include_optional=False, include_concurrent=False,
+def pilot(seed: int = 7, *, include_fp16=False, include_optional=False, include_concurrent=True,
           include_int8d=False, include_prune=False) -> list[dict]:
     """One cell per distinct configuration group (two DVFS repeats), a 5-minute soak, and one v1ref
     cell per key at 2400 MHz.

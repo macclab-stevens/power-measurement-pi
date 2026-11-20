@@ -76,13 +76,14 @@ def _build(tmp_path, with_pulses=True, extra_events=(), it="0", nan_in_on=False,
     s.close()
     events.sort(key=lambda e: e[4])
     with open(pi / "events.csv", "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=FIELDS)
+        tagged = any(len(e) > 7 for e in events)      # v1-shaped files have no tag column
+        w = csv.DictWriter(f, fieldnames=FIELDS + (["tag"] if tagged else []))
         w.writeheader()
         for kind, name, depth, path, t, *lab in events:
             w.writerow({"t_real_ns": int(t), "t_mono_ns": int(t), "kind": kind, "name": name,
                         "depth": depth, "mode": lab[0] if lab else "forward",
                         "iter": lab[1] if lab else it, "layer_path": path,
-                        "config_id": "", "window_id": 0})
+                        "config_id": "", "window_id": 0, **({"tag": lab[2] if len(lab) > 2 else ""} if tagged else {})})
     return rec, pi, (L0, L1, C0, C1)
 
 
@@ -272,6 +273,59 @@ def test_align_labels_innermost_step(tmp_path):
     assert r["step"] == "forward" and r["layer_path"] == "0"
     assert at(S1 + 100_000_000)["step"] == ""
     assert at(S0 - 100_000_000)["step"] == ""
+
+
+# ---- concurrent runs: tagged step events ---------------------------------------------------
+
+def _tagged_run(tmp_path):
+    """m0 steps (iter 4) every 300 ms and m1 steps (its own labels, iter 99) overlapping them."""
+    ev = []
+    for i in range(6):
+        a = T0 + 7_000_000_000 + i * 300_000_000
+        ev += [("step_begin", "forward", 0, "", a, "forward", "4", "m0"),
+               ("step_end", "forward", 0, "", a + 200_000_000, "forward", "4", "m0")]
+    for i in range(3):
+        a = T0 + 7_100_000_000 + i * 500_000_000
+        ev += [("step_begin", "spin", 0, "", a, "forward", "99", "m1"),
+               ("step_end", "spin", 0, "", a + 300_000_000, "forward", "99", "m1")]
+    return _build(tmp_path, extra_events=ev)
+
+
+def test_align_concurrent_labels_tags_and_keeps_primary_mode_iter(tmp_path):
+    rec, pi, _ = _tagged_run(tmp_path)
+    align(rec, pi, pi)
+    df = pd.read_parquet(pi / "power_trace.parquet")
+
+    def at(t):
+        return df.iloc[int(np.argmin(np.abs(df["t_pi_ns"].to_numpy() - t)))]
+    a0 = T0 + 7_000_000_000
+    both = at(a0 + 150_000_000)                    # m0 step 0 and m1 step 0 are both open
+    assert both["tag"] == "m0+m1" and both["step"] == "forward" and both["step_m1"] == "spin"
+    only_m1 = at(a0 + 250_000_000)                 # m0 between steps, m1 (until +400 ms) running
+    assert only_m1["tag"] == "m1" and only_m1["step"] == "" and only_m1["step_m0"] == ""
+    only_m0 = at(a0 + 450_000_000)                 # m1 step 0 over (+100..+400), step 1 not yet
+    assert only_m0["tag"] == "m0" and only_m0["step_m1"] == ""
+    assert at(a0 - 200_000_000)["tag"] == ""
+    # mode/iter follow the primary's events only (m1 events carry iter 99)
+    assert set(df["iter"]) <= {"", "0", "4"} and "99" not in set(df["iter"])
+    assert {c for c in df.columns if c.startswith("step_")} == {"step_m0", "step_m1"}
+
+
+def test_align_without_tags_adds_no_tag_columns(tmp_path):
+    rec, pi, _ = _build(tmp_path)                  # the v1-shaped events.csv has no tag column
+    assert "tag" not in open(pi / "events.csv").readline()
+    align(rec, pi, pi)
+    cols = set(pd.read_parquet(pi / "power_trace.parquet").columns)
+    assert "tag" not in cols and not any(c.startswith("step_") for c in cols)
+
+
+def test_align_untagged_events_with_a_tag_column_add_no_tag_columns(tmp_path):
+    ev = [("step_begin", "forward", 0, "", T0 + 7_000_000_000, "forward", "4", ""),
+          ("step_end", "forward", 0, "", T0 + 7_200_000_000, "forward", "4", "")]
+    rec, pi, _ = _build(tmp_path, extra_events=ev)
+    align(rec, pi, pi)
+    cols = set(pd.read_parquet(pi / "power_trace.parquet").columns)
+    assert "tag" not in cols and "step_m0" not in cols
 
 
 # ---- counters.csv / sysfs.csv merge ----------------------------------------------------

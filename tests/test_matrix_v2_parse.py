@@ -56,8 +56,10 @@ def test_parsed_values_of_special_cells():
     assert (a.holdout, a.imgsz) == ("primary-s", 960)
 
 
-@pytest.mark.skipif(not hasattr(run.build_parser().parse_known_args([])[0], "concurrent"),
-                    reason="--concurrent lands with Task 13")
 def test_concurrency_cells_parse():
-    for r in _cells("D", include_concurrent=True):
-        run.parse_args(r["args"])
+    rows = [r for r in _cells("D") if "--concurrent" in r["args"]]   # included by default
+    assert len(rows) == 6
+    for r in rows:
+        a = run.parse_args(r["args"])
+        assert a.concurrent in ("yolo11n.pt", "spinner") and run.dataset_version(a) == 2
+    assert not any("--concurrent" in r["args"] for r in _cells("D", include_concurrent=False))

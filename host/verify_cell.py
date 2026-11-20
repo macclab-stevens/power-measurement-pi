@@ -4,6 +4,11 @@
 Reads run_meta.json, alignment.json and power_trace.parquet from the run directory (align.py
 must have run). Fatal checks make `ok` false; soft ones go to `warnings`.
 
+Concurrent cells (run_meta["concurrent"], align.py's `tag` / `step_<tag>` columns) keep the
+primary's step checks (the `step` column is the primary workload's) and add one check per tag:
+its steps are present, they cover its active window, it completed iterations, and the primary
+was inside a step during >= 50 % of every other tag's window (the workloads really overlapped).
+
 v2 cells (dataset_version 2) add: fan mode, DVFS clock range (governor ondemand), perf counter
 coverage, thermal limits and a mAP-reference warning. Every cell also gets derived.json
 (energy and latency per frame, measured iterations only).
@@ -29,6 +34,9 @@ THERMAL_ABORT_C = 85.0                 # same limit run.py enforces on the Pi
 COUNTER_COVERAGE_MIN = 0.95
 DVFS_RANGE_MHZ, DVFS_TOL_MHZ = (1500, 2400), 25
 FAN_MODES = ("full", "auto", "off")
+OVERLAP_FAIL, OVERLAP_WARN = 0.5, 0.9
+PRIMARY_TAG = "m0"
+SPIN_STEPS = ("spin",)                 # tag "spin"; "m1" is a second image model: INFER_STEPS
 
 
 def expected_phases(meta: dict) -> list[str]:
@@ -71,6 +79,15 @@ def _frame_table(pe: pd.DataFrame, mode: str) -> pd.DataFrame:
     return rows.groupby("frame")[["E_mJ", "dur_ms"]].sum()
 
 
+def _concurrent_summary(conc: dict) -> dict:
+    """What derived.json says about a concurrent cell: energy_per_frame_mJ is the whole board's
+    draw per primary frame (both workloads), not the primary's own."""
+    return {"mode": conc.get("mode"), "model": conc.get("model"), "tags": conc.get("tags"),
+            "threads_split": conc.get("threads_split"), "iterations": conc.get("iterations"),
+            "latency_ms": conc.get("latency_ms"),
+            "note": "energy per frame covers both workloads running together"}
+
+
 def derived_metrics(pe: pd.DataFrame, meta: dict, baseline_P_W: float) -> dict:
     """Energy and latency per frame from the per-(phase, iter, step) energy table.
 
@@ -91,13 +108,64 @@ def derived_metrics(pe: pd.DataFrame, meta: dict, baseline_P_W: float) -> dict:
                       "latency_ms_per_frame": float(t["dur_ms"].mean())}
     head = by_mode[modes[0]] if len(modes) == 1 else {}
     e = head.get("energy_per_frame_mJ")
-    return {"energy_per_frame_mJ": e,
+    out = {"energy_per_frame_mJ": e,
             "dyn_energy_per_frame_mJ": head.get("dyn_energy_per_frame_mJ"),
             "latency_ms_per_frame": head.get("latency_ms_per_frame"),
             "energy_per_image_mJ": e / batch if e is not None else None,
             "n_frames": head.get("n_frames"), "batch": batch, "baseline_mean_P_W": baseline_P_W,
             "by_mode": by_mode, "variant": meta.get("variant"), "holdout": meta.get("holdout"),
             "map_reference": meta.get("map_reference")}
+    if meta.get("concurrent"):
+        out["concurrent"] = _concurrent_summary(meta["concurrent"])
+    return out
+
+
+def _active_window(col: pd.Series) -> tuple[int, int]:
+    """Row positions [lo, hi) from the first to the last labelled sample (rows are in time
+    order); (0, 0) if the column is never labelled."""
+    idx = np.flatnonzero((col != "").to_numpy())
+    return (int(idx[0]), int(idx[-1]) + 1) if idx.size else (0, 0)
+
+
+def concurrent_checks(in_modes: pd.DataFrame, conc: dict,
+                      primary_steps: tuple = INFER_STEPS) -> tuple[list, list, dict]:
+    """Per-tag step coverage and overlap of a --concurrent cell: (errors, warnings, info)."""
+    errs: list[str] = []
+    warns: list[str] = []
+    info: dict = {"coverage": {}, "overlap": {}}
+    tags = list(conc.get("tags") or [])
+    if "tag" not in in_modes.columns:
+        return ["concurrent cell without a tag column (events.csv had no tagged steps)"], warns, info
+    iters = conc.get("iterations") or {}
+    for t in tags:
+        if not iters.get(t):
+            errs.append(f"concurrent workload {t} completed no iterations")
+        col = in_modes.get(f"step_{t}")
+        if col is None:
+            errs.append(f"no step_{t} column: workload {t} left no step events")
+            continue
+        seen = set(col.unique()) - {""}
+        want = primary_steps if t == PRIMARY_TAG else SPIN_STEPS if t == "spin" else INFER_STEPS
+        missing = [x for x in want if x not in seen]
+        if missing:
+            errs.append(f"steps without samples for workload {t}: {missing}")
+        lo, hi = _active_window(col)
+        win = col.iloc[lo:hi]
+        cov = float((win != "").mean()) if len(win) else 0.0
+        info["coverage"][t] = cov
+        if cov < STEP_COVERAGE_FAIL:
+            errs.append(f"step coverage of workload {t} {cov:.2f} < {STEP_COVERAGE_FAIL}")
+        elif cov < STEP_COVERAGE_WARN:
+            warns.append(f"step coverage of workload {t} {cov:.2f} < {STEP_COVERAGE_WARN}")
+        if t != PRIMARY_TAG and PRIMARY_TAG in tags and f"step_{PRIMARY_TAG}" in in_modes:
+            span = in_modes[f"step_{PRIMARY_TAG}"].iloc[lo:hi]
+            ov = float((span != "").mean()) if len(span) else 0.0
+            info["overlap"][t] = ov
+            if ov < OVERLAP_FAIL:
+                errs.append(f"workloads {PRIMARY_TAG} and {t} overlap only {ov:.2f} of {t}'s window")
+            elif ov < OVERLAP_WARN:
+                warns.append(f"workloads {PRIMARY_TAG} and {t} overlap {ov:.2f} < {OVERLAP_WARN}")
+    return errs, warns, info
 
 
 def _is_yolo(meta: dict) -> bool:
@@ -217,6 +285,12 @@ def verify(run_dir, cpu_mhz: int | None = None, write: bool = True) -> dict:
         errors.append(f"step coverage in mode phases {cov:.2f} < {STEP_COVERAGE_FAIL}")
     elif cov < STEP_COVERAGE_WARN:
         warnings.append(f"step coverage in mode phases {cov:.2f} < {STEP_COVERAGE_WARN}")
+
+    if meta.get("concurrent"):
+        c_err, c_warn, res["concurrent"] = concurrent_checks(
+            in_modes, meta["concurrent"], expected_steps(meta))
+        errors.extend(c_err)
+        warnings.extend(c_warn)
 
     v2 = meta.get("dataset_version") == 2
     if meta.get("governor") == "ondemand":

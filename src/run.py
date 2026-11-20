@@ -11,6 +11,11 @@ samples.csv, context.csv, sysfs.csv, run_meta.json. Same join contract as before
 with generalized measurement identity (config_id = op+attrs+shapes+dtype) and
 structural columns (path/callsite, mode) kept separate.
 
+--concurrent {<model>.pt,spinner} (image task) runs a second workload as a thread of this process
+during the measured forward loop: one sync envelope, step events tagged m0 / m1 / spin
+(src/coload.py), per-layer events off, run_meta["concurrent"] with the thread split and per-tag
+iteration counts and latencies.
+
 Usage:
   uv run src/run.py --task image --model yolo11n.pt --check-image bus.jpg
   uv run src/run.py --task lm --model minigpt --seq 64
@@ -30,6 +35,7 @@ import time
 import torch
 import torch.profiler as profiler
 
+import coload
 import perfcounters
 import pinning
 import yolo_variants
@@ -170,10 +176,12 @@ def latency_stats(ms: list[float]) -> dict | None:
 
 
 def measured_loop(task, prof, mode, frames, soak_minutes, check_thermal,
-                  clock=time.perf_counter):
+                  clock=time.perf_counter, on_first_frame=None):
     """One measured mode: frame 0 under the op profiler, then frames 1.. timed one by one.
 
     Runs `frames` iterations, or (soak_minutes given) until that many minutes have elapsed.
+    `on_first_frame()` (--concurrent: release the second workload) runs once, right after
+    frame 0 so the profiled frame is the primary's alone.
     Returns (frames_done, per-iteration ms for frames >= 1, aten op rows)."""
     op_rows: list[dict] = []
     lat_ms: list[float] = []
@@ -190,12 +198,44 @@ def measured_loop(task, prof, mode, frames, soak_minutes, check_thermal,
                                       record_shapes=True) as p:
                     task.run_one(mode)
                 op_rows += _op_rows(p, mode)
+            if on_first_frame is not None:
+                on_first_frame()
         else:
             t = clock()
             task.run_one(mode)
             lat_ms.append((clock() - t) * 1000.0)
         f += 1
     return f, lat_ms, op_rows
+
+
+def concurrent_block(args, split, worker, frames_done, primary_lat, load2_s,
+                     serve_concurrent: bool) -> dict:
+    """run_meta["concurrent"]: how the second workload ran and what each tag did.
+
+    m0 frame 0 runs alone (op profiler); m0 frames 1.. overlap with the worker."""
+    tag = worker.tag
+    n0 = frames_done.get("forward", 0)
+    return {
+        "mode": "spinner" if args.concurrent == coload.SPINNER else "model",
+        "model": None if args.concurrent == coload.SPINNER else args.concurrent,
+        "tags": [coload.PRIMARY_TAG, tag],
+        "threads_split": split,
+        "worker": "thread of the run.py process (counted by perf -p: created and warmed up "
+                  "before perf attaches)",
+        "sync_envelopes": 1,
+        "layer_events": False,
+        "released": "after primary frame 0 (the profiled frame runs alone); worker stops when "
+                    "the primary's measured loop ends",
+        "serve_concurrent": serve_concurrent,
+        "iterations": {coload.PRIMARY_TAG: n0, tag: worker.iterations},
+        "overlapped_primary_frames": max(0, n0 - 1),
+        "latency_ms": {coload.PRIMARY_TAG: primary_lat,
+                       tag: latency_stats(worker.lat_ms)},
+        "first_call_ms": {tag: worker.first_call_ms},
+        "load_weights_s": {tag: round(load2_s, 4) if load2_s is not None else None},
+        "spinner": ({"dim": coload.SPIN_DIM, "mm_per_step": coload.SPIN_MM_PER_STEP}
+                    if args.concurrent == coload.SPINNER else None),
+    }
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -251,6 +291,13 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--prune", default=None,
                     help="pruned model artifact (pi-power-pruned/1 dict from tools/prune.py); "
                          "cannot be combined with --quant other than fp32")
+    ap.add_argument("--concurrent", default=None, metavar="MODEL.pt|spinner",
+                    help="image task: run a second workload in the same process during the "
+                         "measured forward loop - a second model of the same imgsz/batch/input "
+                         "(tag m1, threads split --threads//2 each) or 'spinner' (one thread "
+                         "of matrix multiplies, tag spin; the primary keeps --threads-1). One "
+                         "sync envelope, step events tagged m0/m1/spin, no per-layer events. "
+                         "Marks the run dataset_version 2")
     ap.add_argument("--cpu-mhz", type=int, default=None,
                     help="pin all cores to this clock via pi-power-pin (1500..2400 step 100)")
     ap.add_argument("--fan-full", action="store_true",
@@ -310,6 +357,17 @@ def parse_args(argv=None):
         ap.error("--quant / --prune are only supported with --task image")
     if args.frames_source == "stream" and (args.live_camera or args.input_image):
         ap.error("--frames-source stream conflicts with --live-camera / --input-image")
+    if args.concurrent is not None:
+        if args.concurrent != coload.SPINNER and not args.concurrent.endswith(".pt"):
+            ap.error(f"--concurrent {args.concurrent!r}: expected a <model>.pt or 'spinner'")
+        if args.task != "image":
+            ap.error("--concurrent is only supported with --task image")
+        if args.soak_minutes is not None:
+            ap.error("--concurrent cannot be combined with --soak-minutes")
+        if args.live_camera:
+            ap.error("--concurrent cannot be combined with --live-camera")
+        if args.prune or args.quant != "fp32":
+            ap.error("--concurrent cannot be combined with --quant / --prune")
     return args
 
 
@@ -317,7 +375,10 @@ def main():
     args = parse_args()
     bmin, bmax = (1.5, 8.0) if args.sampler == "monsoon" else (BASELINE_W_MIN, BASELINE_W_MAX)
 
-    threads_detail = apply_threads(args.threads)
+    split = coload.thread_split(args.concurrent, args.threads) if args.concurrent else None
+    # concurrent: torch's thread count is per calling thread; this is the primary's (main thread)
+    # share, the worker thread sets its own
+    threads_detail = apply_threads(split[coload.PRIMARY_TAG] if split else args.threads)
     args.batch = resolve_batch(args.task, args.batch)
     fan_mode = resolve_fan_mode(args.fan, args.fan_full)
     soak = args.soak_minutes is not None
@@ -387,8 +448,17 @@ def main():
                      f"'{rec['phase']}' (limits 85 abort / 90 hard stop)")
         return thermal_exit_code(details)
 
+    def _check_loop():
+        """_check_thermal plus, in a concurrent run, a dead-worker check."""
+        _check_thermal()
+        if worker is not None:
+            worker.check()
+
     thr0 = sampler.snapshot_env()[2]
     task = None
+    worker = None   # --concurrent second workload (coload.SecondWorkload)
+    worker_task = None
+    load2_s = None
     try:
         sysfs.start()   # first statement in the try: a hard stop on the very first read is handled
         # ---- lifecycle: model load and the first call of each mode are measured phases
@@ -409,7 +479,24 @@ def main():
                     f"params={n_params/1e6:.2f}M | load {load_s:.2f}s")
         if monsoon:
             prof.events = sampler.events
-            task.step = sampler.events.step
+            if split:
+                # two threads share one event log: step events are tagged and depth-free, the
+                # per-layer begin/end events (shared depth counter) are off; labels stay on
+                prof.layer_events = False
+                task.step = sampler.events.step_for(coload.PRIMARY_TAG)
+            else:
+                task.step = sampler.events.step
+        if split:
+            wtag = coload.worker_tag(args.concurrent)
+            if args.concurrent != coload.SPINNER:
+                t_load2 = time.perf_counter()
+                worker_task = make_task("image", args.concurrent, args)
+                load2_s = time.perf_counter() - t_load2
+                logger.info(f"concurrent model '{args.concurrent}' loaded in {load2_s:.2f}s")
+            worker = coload.SecondWorkload(
+                wtag, split[wtag], sampler.events.step_for(wtag) if monsoon else task.step,
+                task=worker_task, warmup=args.warmup)
+            logger.info(f"concurrent: {args.concurrent} as tag {wtag}; torch threads {split}")
         first_ms = {}
         for m in modes:
             phase["name"] = f"first:{m}"
@@ -423,6 +510,8 @@ def main():
 
         # ---- warm-up: sustained inference over ALL modes so temp/DVFS settle
         # before the idle baseline and timed measurements.
+        if worker is not None:
+            worker.start()   # its first call + warm-up run beside the primary's warm-up
         if args.warmup > 0:
             phase["name"] = "warmup"
             sampler.marker("warmup")
@@ -436,6 +525,12 @@ def main():
             prof.exec_order.clear()  # op_sequence reflects measured modes only
             logger.info(f"warm-up: {args.warmup}x {modes} passes | "
                         f"temp {env0[0]}->{env1[0]}C | arm {env0[1]}->{env1[1]}MHz")
+        if worker is not None:
+            # every worker thread (and its OpenMP team) must exist before perf attaches
+            phase["name"] = "warmup"
+            worker.wait_warm(_check_thermal)
+            logger.info(f"concurrent worker {worker.tag} warm (first call "
+                        f"{worker.first_call_ms} ms)")
 
         # perf attaches (-p) only to threads that exist, so start it after warm-up
         if perf_on:
@@ -467,11 +562,16 @@ def main():
             phase["name"] = "soak" if soak else mode
             sampler.marker(mode)  # tag phase so samples.csv carries measured mean-P
             n_done, mode_lat, mode_ops = measured_loop(
-                task, prof, mode, args.frames, args.soak_minutes, _check_thermal)
+                task, prof, mode, args.frames, args.soak_minutes, _check_loop,
+                on_first_frame=worker.release if worker is not None else None)
             op_rows += mode_ops
             lat_ms += mode_lat
             frames_done[mode] = n_done
             logger.info(f"  mode {mode}: {n_done} iterations done")
+        if worker is not None:
+            worker.stop()   # the second workload ends with the primary's measured loop
+            worker.check()
+            logger.info(f"concurrent worker {worker.tag}: {worker.iterations} iterations")
 
         # ---- serve: isolated requests with idle gaps (race-to-idle transitions)
         serve_missed = None
@@ -641,6 +741,8 @@ def main():
         map_ref = yolo_variants.lookup_map_reference(MAP_REFERENCE_PATH, variant_name, args.imgsz)
         inputs = (task.input_identity() if hasattr(task, "input_identity")
                   else {"source": "synthetic", "files": []})
+        concurrent_meta = (concurrent_block(args, split, worker, frames_done, lat_stats, load2_s,
+                                            serve_concurrent=False) if worker is not None else None)
         meta = {
             "task": args.task, "model": args.model, "modes": modes,
             "imgsz": args.imgsz, "conf": args.conf, "seq_len": args.seq,
@@ -665,6 +767,8 @@ def main():
             "serve_missed_deadlines": serve_missed,
             "serve_wall_s": serve_wall_s,
             "soak_minutes": args.soak_minutes,
+            "concurrent": concurrent_meta,
+            **({"layer_events": False} if worker is not None else {}),
             "frames_done": frames_done,
             "latency_ms_per_frame": lat_stats,
             "latency_ms_per_image": lat_img,
@@ -773,6 +877,11 @@ def main():
         errors += yolo_variants.quant_count_errors(args.quant, variant.get("quantized_modules"))
         if args.quant == "fp16":
             errors += yolo_variants.fp16_errors(layer_rows)
+        if worker is not None:
+            if worker.iterations < 1:
+                errors.append(f"concurrent worker {worker.tag} completed no iterations")
+            if worker_task is not None and not worker_task.oracle():
+                errors.append(f"task oracle failed for the concurrent model {args.concurrent}")
         if not task.oracle():
             extra = getattr(task, "_checked", None)
             oracle_note = f" (best_conf={extra:.3f})" if extra is not None else ""
@@ -798,6 +907,11 @@ def main():
         raise
     finally:
         try:   # whatever below raises, a fan-off cell must get its fan back
+            if worker is not None:
+                try:
+                    worker.stop()   # idempotent: an abort or crash must not leave it running
+                except Exception as e:
+                    logger.error(f"concurrent worker stop failed: {e}")
             try:
                 perf.stop()   # best effort, idempotent: an abort or crash must not leave perf running
             except Exception as e:

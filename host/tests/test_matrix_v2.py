@@ -43,11 +43,11 @@ def test_family_counts():
     assert len(m.cells("B", include_fp16=True, include_int8d=True, include_prune=True)) == 30
     assert len(m.cells("C")) == 60
     assert len(m.cells("C", include_optional=True)) == 66
-    assert len(m.cells("D")) == 28
-    assert len(m.cells("D", include_concurrent=True)) == 34
+    assert len(m.cells("D")) == 34                                   # concurrency cells by default
+    assert len(m.cells("D", include_concurrent=False)) == 28
     assert len(m.cells("soak")) == 2
     assert len(m.cells("ref")) == 18
-    assert len(m.cells("all")) == 44 + 6 + 12 + 60 + 28 + 2 + 18
+    assert len(m.cells("all")) == 44 + 6 + 12 + 60 + 34 + 2 + 18
     assert len(m.cells("all", **ALL_FLAGS)) == 44 + 6 + 30 + 66 + 34 + 2 + 18
 
 
@@ -215,7 +215,7 @@ def test_d_cells():
     assert len(c2) == len(cs) == 3
     assert all(arg(r, "--concurrent") == "yolo11n.pt" for r in c2)
     assert all(arg(r, "--concurrent") == "spinner" for r in cs)
-    assert not any("--concurrent" in r["args"] for r in m.cells("D"))
+    assert not any("--concurrent" in r["args"] for r in m.cells("D", include_concurrent=False))
 
 
 def test_soak_cells():
@@ -278,10 +278,10 @@ def test_unknown_family():
 
 def test_pilot():
     rows = m.cells("pilot")
-    assert len(rows) == 29
+    assert len(rows) == 29 + 2                      # the two concurrency cells are on by default
     assert all(r["cell_id"].startswith("pilot_") for r in rows)
     fams = Counter(r["family"] for r in rows)
-    assert fams == {"A": 6, "A-input": 2, "B": 3, "C": 8, "D": 7, "soak": 1, "ref": 2}
+    assert fams == {"A": 6, "A-input": 2, "B": 3, "C": 8, "D": 9, "soak": 1, "ref": 2}
     dv = [r for r in rows if "_dvfs_" in r["cell_id"]]
     assert sorted(r["repeat"] for r in dv) == [0, 1]
     soak = by(rows, family="soak")[0]
@@ -293,9 +293,9 @@ def test_pilot():
     # one per configuration group: no repeated id stem except the 2 DVFS repeats
     stems = Counter(r["cell_id"][:-4] for r in rows)
     assert [s for s, n in stems.items() if n > 1] == ["pilot_yolo11n_640_t4_dvfs"]
-    assert len(m.cells("pilot", **ALL_FLAGS)) == 29 + 3 + 3 + 2 + 0 + 0   # fp16, int8d x3, p30/p50, conc
-    assert len(m.cells("pilot", include_fp16=True)) == 30
-    assert len(m.cells("pilot", include_concurrent=True)) == 31
+    assert len(m.cells("pilot", **ALL_FLAGS)) == 31 + 3 + 3   # + fp16 (1), int8d x3 (3 more with the p30/p50 pair)
+    assert len(m.cells("pilot", include_fp16=True)) == 32
+    assert len(m.cells("pilot", include_concurrent=False)) == 29
 
 
 def test_cli_plan_v2(tmp_path):
@@ -311,3 +311,17 @@ def test_cli_plan_v2(tmp_path):
                           "--smoke", "--out", str(tmp_path / "x.jsonl")],
                          capture_output=True, text=True, cwd=host)
     assert bad.returncode != 0
+
+
+def test_cli_plan_v2_concurrency_cells_on_by_default_and_no_concurrent_drops_them(tmp_path):
+    host = Path(__file__).resolve().parents[1]
+
+    def plan(*extra):
+        out = tmp_path / f"m{len(extra)}.jsonl"
+        r = subprocess.run([sys.executable, str(host / "experiment.py"), "plan", "--v2", "D",
+                            *extra, "--out", str(out)], capture_output=True, text=True, cwd=host)
+        assert r.returncode == 0, r.stderr
+        return [json.loads(x) for x in out.read_text().splitlines()]
+    assert len(plan()) == 34
+    rows = plan("--no-concurrent")
+    assert len(rows) == 28 and not any("--concurrent" in r["args"] for r in rows)
