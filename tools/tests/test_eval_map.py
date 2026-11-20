@@ -117,6 +117,7 @@ def test_tool_version_asks_git_for_tracked_files_only():
     em.tool_version(run=run)
     status = next(c for c in seen if "status" in c)
     assert "--porcelain" in status and "-uno" in status      # untracked files do not make it dirty
+    assert ":(exclude)data/map_reference.json" in status     # nor does the table this tool writes
 
 
 # ---- letterbox shared with the Pi -------------------------------------------------------------
