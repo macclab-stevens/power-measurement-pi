@@ -1,0 +1,33 @@
+[project]
+name = "pi-power-tools"
+version = "0.1.0"
+description = "NUC-side tools for the Pi power-measurement dataset (COCO subsets, mAP, INT8 PTQ, pruning)"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "numpy",
+    "opencv-python-headless",
+    "torch==2.14.0",
+    "torchvision",
+    "torch-pruning",
+    "ultralytics==8.4.152",
+]
+
+[dependency-groups]
+dev = ["pytest"]
+
+# Tools are plain scripts (tools/*.py), not an installable package.
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
