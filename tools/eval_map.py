@@ -308,6 +308,9 @@ def fp32_job(model_path: str, imgsz: int, quant: str = "fp32") -> Job:
 def artifact_job(path: str, root: str, imgsz: int, model: str | None = None) -> Job:
     """Identify a Task 8/9 artifact by its `format` (int8s / pruned) and its `base_model`."""
     yv.register()                      # artifact unpickling repairs (quantized convs)
+    # unpickling prepacks the quantized convs for the ACTIVE engine; the Pi's default ("x86", fbgemm)
+    # has no aarch64 kernels, so select qnnpack first, as run.py does
+    torch.backends.quantized.engine = "qnnpack"
     obj = torch.load(path, map_location="cpu", weights_only=False)
     fmt = obj.get("format") if isinstance(obj, dict) else None
     if fmt not in (yv.INT8S_FORMAT, yv.PRUNED_FORMAT):

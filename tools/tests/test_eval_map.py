@@ -249,6 +249,22 @@ def test_artifact_job_identity_comes_from_the_artifact(tmp_path):
         em.artifact_job(bad, "ROOT", imgsz=640)
 
 
+def test_artifact_job_selects_qnnpack_before_unpickling(tmp_path, monkeypatch):
+    if "qnnpack" not in torch.backends.quantized.supported_engines:
+        pytest.skip("qnnpack not built in")
+    seen = []
+    real = torch.load
+    monkeypatch.setattr(torch, "load", lambda *a, **k: seen.append(torch.backends.quantized.engine) or real(*a, **k))
+    old = torch.backends.quantized.engine
+    torch.backends.quantized.engine = "fbgemm" if "fbgemm" in torch.backends.quantized.supported_engines else old
+    try:
+        p8 = _save_artifact(tmp_path, "yolo11n_int8s.pt", format="pi-power-int8s/1", base_model="yolo11n.pt")
+        em.artifact_job(p8, "ROOT", imgsz=640)
+    finally:
+        torch.backends.quantized.engine = old
+    assert seen == ["qnnpack"]
+
+
 def test_discover_artifacts_lists_models_dir(tmp_path):
     (tmp_path / "models").mkdir()
     for n in ("b.pt", "a.pt", "readme.txt"):
