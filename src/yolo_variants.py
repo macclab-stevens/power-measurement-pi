@@ -7,7 +7,7 @@ torch is imported inside the functions that need it.
   variant_id(model_path, quant, prune_ratio)   yolo11n | yolo11n_int8d | _int8s | _fp16 | _p30
   load_artifact(path, expected_format)         torch.load + format validation (dict artifacts)
   quantize_dynamic_counted(module)             int8-dynamic at load, with the replaced-module count
-  count_quantized_modules(module)              modules living in a torch quantized namespace
+  count_quantized_modules(module)              quantized compute modules (Conv/Linear, fused too), no stubs
   quant_count_errors(quant, n)                 acceptance: never label FP32 data INT8
   executed_conv_dtype(layer_rows)              what the Conv2d leaves really ran in
   fp16_errors(layer_rows)                      acceptance: --quant fp16 must really run float16
@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 QUANT_CHOICES = ("fp32", "int8-dynamic", "int8-static", "fp16")
 QUANT_SUFFIX = {"fp32": "", "int8-dynamic": "int8d", "int8-static": "int8s", "fp16": "fp16"}
@@ -69,12 +70,19 @@ def load_artifact(path: str, expected_format: str) -> dict:
                              expected_format, path)
 
 
+_QUANT_COMPUTE_CLASSES = re.compile(
+    r"^(Conv(Transpose)?[123]d|ConvReLU[123]d|ConvAdd(ReLU)?2d|Linear(ReLU|LeakyReLU|Tanh)?)$")
+
+
 def count_quantized_modules(module) -> int:
-    """Modules whose class lives in a torch quantized namespace (torch.ao.nn.quantized[.dynamic],
-    torch.ao.nn.intrinsic.quantized, ...). Plain float modules never count, and a quantized module's
-    own helpers (e.g. LinearPackedParams) are not counted again."""
-    if ".quantized" in type(module).__module__:
-        return 1
+    """Quantized COMPUTE modules: quantized Conv/ConvTranspose/Linear (and fused ConvReLU, ConvAdd,
+    LinearReLU, ...) living in a torch quantized namespace (torch.ao.nn.quantized[.dynamic],
+    torch.ao.nn.intrinsic.quantized). Quantize/DeQuantize/QFunctional stubs, quantized pooling and
+    activations, a quantized module's own helpers (LinearPackedParams) and plain float modules do
+    not count: a model with stubs but float convs is FP32 and must not be labelled INT8."""
+    t = type(module)
+    if ".quantized" in t.__module__:
+        return 1 if _QUANT_COMPUTE_CLASSES.match(t.__name__) else 0
     return sum(count_quantized_modules(c) for c in module.children())
 
 

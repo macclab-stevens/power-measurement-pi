@@ -88,12 +88,35 @@ def test_merge_refuses_to_clobber_a_corrupt_file(tmp_path):
     assert f.read_text() == "{not json"
 
 
+def _fake_git(head="abc1234\n", porcelain=""):
+    def run(cmd, **k):
+        out = head if "rev-parse" in cmd else porcelain
+        return type("R", (), {"stdout": out, "returncode": 0})()
+    return run
+
+
 def test_tool_version_is_git_short_hash_or_unknown():
-    assert em.tool_version(run=lambda *a, **k: type("R", (), {"stdout": "abc1234\n", "returncode": 0})()) == "abc1234"
+    assert em.tool_version(run=_fake_git()) == "abc1234"
 
     def boom(*a, **k):
         raise OSError("no git")
     assert em.tool_version(run=boom) == "unknown"
+
+
+def test_tool_version_marks_uncommitted_tracked_changes_dirty():
+    assert em.tool_version(run=_fake_git(porcelain=" M tools/eval_map.py\n")) == "abc1234-dirty"
+    assert em.tool_version(run=_fake_git(porcelain="")) == "abc1234"
+
+
+def test_tool_version_asks_git_for_tracked_files_only():
+    seen = []
+
+    def run(cmd, **k):
+        seen.append(cmd)
+        return type("R", (), {"stdout": "abc1234\n", "returncode": 0})()
+    em.tool_version(run=run)
+    status = next(c for c in seen if "status" in c)
+    assert "--porcelain" in status and "-uno" in status      # untracked files do not make it dirty
 
 
 # ---- letterbox shared with the Pi -------------------------------------------------------------

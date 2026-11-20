@@ -655,6 +655,8 @@ def main():
             "prune": variant.get("prune"),
             "quant_weights_sha256": variant.get("quant_weights_sha256"),
             "quantized_modules": variant.get("quantized_modules"),
+            # same number: real quantized Conv/Linear modules only (no Quantize/DeQuantize stubs)
+            "quantized_compute_modules": variant.get("quantized_modules"),
             "executed_dtype": executed_dtype,
             "map_reference": map_ref,
             "serve_requests": args.serve if args.task != "train" else 0,

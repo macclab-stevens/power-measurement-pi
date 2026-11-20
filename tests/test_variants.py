@@ -68,6 +68,26 @@ def test_quantize_dynamic_on_conv_only_model_is_a_noop_with_count_zero():
     assert isinstance(q[0], nn.Conv2d)
 
 
+def test_stubs_alone_are_not_quantized_compute():
+    """R18: Quantize/DeQuantize stubs around float convs must not pass the int8-static gate."""
+    import torch.ao.nn.quantized as nnq
+    m = nn.Sequential(nnq.Quantize(1.0, 0, torch.quint8), nn.Conv2d(3, 4, 3), nnq.DeQuantize())
+    assert yv.count_quantized_modules(m) == 0
+    assert "int8-static quantized 0 modules" in yv.quant_count_errors(
+        "int8-static", yv.count_quantized_modules(m))[0]
+
+
+def test_real_quantized_conv_linear_and_fused_variants_count():
+    import torch.ao.nn.intrinsic.quantized as nniq
+    import torch.ao.nn.quantized as nnq
+    torch.backends.quantized.engine = "qnnpack"
+    qc = nnq.Conv2d(3, 4, 3)
+    qcr = nniq.ConvReLU2d(3, 4, 3)
+    ql = nnq.Linear(4, 2)
+    m = nn.Sequential(nnq.Quantize(1.0, 0, torch.quint8), qc, qcr, ql, nnq.DeQuantize(), nn.Conv2d(3, 4, 3))
+    assert yv.count_quantized_modules(m) == 3
+
+
 def test_zero_quantized_modules_fails_acceptance_with_clear_message():
     _, n = yv.quantize_dynamic_counted(nn.Sequential(nn.Conv2d(3, 4, 3)))
     errs = yv.quant_count_errors("int8-dynamic", n)
@@ -229,6 +249,18 @@ def test_int8_static_loads_artifact_and_hashes_it(tmp_path):
     assert t.variant["quantized_modules"] == 1
     import hashlib
     assert t.variant["quant_weights_sha256"] == hashlib.sha256(open(p, "rb").read()).hexdigest()
+
+
+def test_int8_static_artifact_declared_count_must_match_loaded_count(tmp_path):
+    q, _ = yv.quantize_dynamic_counted(nn.Sequential(nn.Linear(4, 4)))
+    ok = _save(tmp_path, "ok.pt", {"format": yv.INT8S_FORMAT, "model": q, "base_model": "yolo11n.pt",
+                                   "quantized_compute_modules": 1})
+    assert _task(nn.Sequential(nn.Conv2d(3, 4, 3)), quant="int8-static",
+                 quant_weights=ok).variant["quantized_modules"] == 1
+    bad = _save(tmp_path, "bad.pt", {"format": yv.INT8S_FORMAT, "model": q, "base_model": "yolo11n.pt",
+                                     "quantized_compute_modules": 99})
+    with pytest.raises(ValueError, match="declares 99 quantized compute modules but 1"):
+        _task(nn.Sequential(nn.Conv2d(3, 4, 3)), quant="int8-static", quant_weights=bad)
 
 
 def test_int8_static_errors(tmp_path):

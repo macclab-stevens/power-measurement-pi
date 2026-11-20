@@ -5,7 +5,7 @@
     "map50_95": 0.47239,
     "measured": "2026-11-19",
     "n_images": 500,
-    "tool_version": "65c44a9"
+    "tool_version": "f74dd2e"
   },
   "yolo11m@480": {
     "dataset": "coco-val2017-first500",
@@ -13,7 +13,7 @@
     "map50_95": 0.52076,
     "measured": "2026-11-19",
     "n_images": 500,
-    "tool_version": "65c44a9"
+    "tool_version": "f74dd2e"
   },
   "yolo11m@640": {
     "dataset": "coco-val2017-first500",
@@ -21,7 +21,7 @@
     "map50_95": 0.55281,
     "measured": "2026-11-19",
     "n_images": 500,
-    "tool_version": "65c44a9"
+    "tool_version": "f74dd2e"
   },
   "yolo11m@960": {
     "dataset": "coco-val2017-first500",
@@ -29,7 +29,7 @@
     "map50_95": 0.5382,
     "measured": "2026-11-19",
     "n_images": 500,
-    "tool_version": "65c44a9"
+    "tool_version": "f74dd2e"
   },
   "yolo11n@320": {
     "dataset": "coco-val2017-first500",
@@ -37,7 +37,7 @@
     "map50_95": 0.31889,
     "measured": "2026-11-19",
     "n_images": 500,
-    "tool_version": "65c44a9"
+    "tool_version": "f74dd2e"
   },
   "yolo11n@480": {
     "dataset": "coco-val2017-first500",
@@ -45,7 +45,7 @@
     "map50_95": 0.39537,
     "measured": "2026-11-19",
     "n_images": 500,
-    "tool_version": "65c44a9"
+    "tool_version": "f74dd2e"
   },
   "yolo11n@640": {
     "dataset": "coco-val2017-first500",
@@ -53,7 +53,7 @@
     "map50_95": 0.42481,
     "measured": "2026-11-19",
     "n_images": 500,
-    "tool_version": "65c44a9"
+    "tool_version": "f74dd2e"
   },
   "yolo11n@960": {
     "dataset": "coco-val2017-first500",
@@ -61,7 +61,7 @@
     "map50_95": 0.42037,
     "measured": "2026-11-19",
     "n_images": 500,
-    "tool_version": "65c44a9"
+    "tool_version": "f74dd2e"
   },
   "yolo11n_fp16@640": {
     "dataset": "coco-val2017-first500",
@@ -69,7 +69,7 @@
     "map50_95": 0.42466,
     "measured": "2026-11-19",
     "n_images": 500,
-    "tool_version": "65c44a9"
+    "tool_version": "f74dd2e"
   },
   "yolo11s@320": {
     "dataset": "coco-val2017-first500",
@@ -77,7 +77,7 @@
     "map50_95": 0.40821,
     "measured": "2026-11-19",
     "n_images": 500,
-    "tool_version": "65c44a9"
+    "tool_version": "f74dd2e"
   },
   "yolo11s@480": {
     "dataset": "coco-val2017-first500",
@@ -85,7 +85,7 @@
     "map50_95": 0.46968,
     "measured": "2026-11-19",
     "n_images": 500,
-    "tool_version": "65c44a9"
+    "tool_version": "f74dd2e"
   },
   "yolo11s@640": {
     "dataset": "coco-val2017-first500",
@@ -93,7 +93,7 @@
     "map50_95": 0.50127,
     "measured": "2026-11-19",
     "n_images": 500,
-    "tool_version": "65c44a9"
+    "tool_version": "f74dd2e"
   },
   "yolo11s@960": {
     "dataset": "coco-val2017-first500",
@@ -101,7 +101,7 @@
     "map50_95": 0.51334,
     "measured": "2026-11-19",
     "n_images": 500,
-    "tool_version": "65c44a9"
+    "tool_version": "f74dd2e"
   },
   "yolov8m@640": {
     "dataset": "coco-val2017-first500",
@@ -109,7 +109,7 @@
     "map50_95": 0.55286,
     "measured": "2026-11-19",
     "n_images": 500,
-    "tool_version": "65c44a9"
+    "tool_version": "f74dd2e"
   },
   "yolov8n@640": {
     "dataset": "coco-val2017-first500",
@@ -117,7 +117,7 @@
     "map50_95": 0.40125,
     "measured": "2026-11-19",
     "n_images": 500,
-    "tool_version": "65c44a9"
+    "tool_version": "f74dd2e"
   },
   "yolov8s@640": {
     "dataset": "coco-val2017-first500",
@@ -125,6 +125,6 @@
     "map50_95": 0.48909,
     "measured": "2026-11-19",
     "n_images": 500,
-    "tool_version": "65c44a9"
+    "tool_version": "f74dd2e"
   }
 }

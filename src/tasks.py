@@ -226,6 +226,10 @@ class ImageTask(TaskAdapter):
             self._module = art["model"].eval()   # replaces yolo.model for the forward
             self.variant["quant_weights_sha256"] = sha256_file(qweights)
             self.variant["quantized_modules"] = yv.count_quantized_modules(self._module)
+            declared = art.get("quantized_compute_modules")
+            if declared is not None and declared != self.variant["quantized_modules"]:
+                raise ValueError(f"{qweights}: artifact declares {declared} quantized compute modules "
+                                 f"but {self.variant['quantized_modules']} were loaded")
         elif quant == "int8-dynamic":
             self._module, self.variant["quantized_modules"] = yv.quantize_dynamic_counted(self._module)
             self._module.eval()

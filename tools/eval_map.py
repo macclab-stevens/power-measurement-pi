@@ -2,7 +2,7 @@
 
 Writes ../data/map_reference.json entries keyed "<variant_id>@<imgsz>" (src/yolo_variants.py
 `variant_id`); src/run.py looks them up and copies them into every cell's run_meta["map_reference"].
-Entry: {map50_95, map50, n_images, dataset, tool_version (git short hash), measured (ISO date)}.
+Entry: {map50_95, map50, n_images, dataset, tool_version (git short hash, '-dirty' if tracked files were modified), measured (ISO date)}.
 
 Every entry is measured by ONE custom loop so FP32, fp16, INT8 and pruned variants are comparable:
 the Pi's own preprocess (src/tasks.py ImageTask.preprocess: square letterbox, pad 114, centred, /255),
@@ -71,11 +71,17 @@ def entry_key(variant: str, imgsz: int) -> str:
 
 
 def tool_version(run=subprocess.run) -> str:
-    """Git short hash of this checkout, or 'unknown'."""
+    """Git short hash of this checkout, '<hash>-dirty' if tracked files have uncommitted changes
+    (the numbers then come from code that is not that commit), or 'unknown'."""
     try:
         r = run(["git", "-C", REPO, "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
                 timeout=10)
-        return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else "unknown"
+        if r.returncode != 0 or not r.stdout.strip():
+            return "unknown"
+        head = r.stdout.strip()
+        s = run(["git", "-C", REPO, "status", "--porcelain", "-uno"], capture_output=True, text=True,
+                timeout=30)
+        return f"{head}-dirty" if s.returncode == 0 and s.stdout.strip() else head
     except (OSError, subprocess.SubprocessError):
         return "unknown"
 
