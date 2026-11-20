@@ -1,6 +1,7 @@
 """Tests for the pure selection logic and helpers of tools/coco_subset.py."""
 import json
 import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -32,14 +33,37 @@ def test_stream_is_50_sorted_spanning_remaining():
     s = sel["stream"]
     assert len(s) == 50 and s == sorted(s) and len(set(s)) == 50
     assert not set(s) & (set(sel["eval"]) | set(sel["calib"]))
-    assert s[0] == "000000000700.jpg"          # starts at the first remaining image
-    assert int(s[-1][:12]) >= 700 + 300 * 49 // 50 - 1   # reaches the end of the set
+    rest = [f"{i:012d}.jpg" for i in range(700, 1000)]
+    assert s == [rest[i * len(rest) // 50] for i in range(50)]   # exact indices (every 6th)
+    assert s[0] == rest[0] and s[-1] == rest[294]
 
 
 def test_empty_is_first_remaining_zero_label_image():
     entries = synthetic(empty=(10, 720, 950))   # an early empty one is not "remaining"
     sel = cs.select_subsets(entries)
     assert sel["empty"] == "000000000720.jpg"
+
+
+def test_empty_skips_zero_label_images_the_predicate_rejects():
+    seen = []
+
+    def is_empty(name):                       # detector stand-in: 720 has detections, 950 is clean
+        seen.append(name)
+        return name != "000000000720.jpg"
+    sel = cs.select_subsets(synthetic(empty=(720, 950)), is_empty=is_empty)
+    assert sel["empty"] == "000000000950.jpg"
+    assert sel["empty_skipped"] == ["000000000720.jpg"]
+    assert seen == ["000000000720.jpg", "000000000950.jpg"]   # only zero-label candidates, in order
+
+
+def test_empty_default_predicate_is_label_count_only():
+    sel = cs.select_subsets(synthetic(empty=(720, 950)))
+    assert sel["empty"] == "000000000720.jpg" and sel["empty_skipped"] == []
+
+
+def test_empty_raises_when_every_zero_label_image_is_rejected():
+    with pytest.raises(ValueError, match="detector"):
+        cs.select_subsets(synthetic(empty=(720, 950)), is_empty=lambda n: False)
 
 
 def test_crowded_is_max_labels_ties_to_first_sorted():
@@ -182,3 +206,26 @@ def test_build_end_to_end_on_tiny_zips(tmp_path):
     assert man["crowded"]["inputs/crowded.jpg"]["n_labels"] == 30
     assert man["empty"]["inputs/empty.jpg"]["n_labels"] == 0
     assert len(man["stream"]) == 50
+    assert man["empty_detector"]["candidates_skipped"] == 0   # label-only predicate in this build
+
+
+def test_build_records_skipped_candidates_and_uses_detector_on_the_image(tmp_path):
+    n = 760
+    with zipfile.ZipFile(tmp_path / "img.zip", "w") as zi, zipfile.ZipFile(tmp_path / "lab.zip", "w") as zl:
+        for i in range(n):
+            zi.writestr(f"val2017/{i:012d}.jpg", f"img{i}".encode())
+            if i not in (710, 720):                        # two background images
+                zl.writestr(f"coco/labels/val2017/{i:012d}.txt", "0 .5 .5 .1 .1\n")
+    calls = []
+
+    def detects_nothing(path):                             # receives a real file path
+        calls.append(Path(path).read_bytes())
+        return Path(path).read_bytes() != b"img710"
+    sel, man = cs.build(tmp_path / "data", tmp_path / "inputs", tmp_path / "img.zip",
+                        tmp_path / "lab.zip", detects_nothing=detects_nothing,
+                        detector_info={"model": "stub"})
+    assert sel["empty"] == "000000000720.jpg" and calls == [b"img710", b"img720"]
+    assert (tmp_path / "inputs/empty.jpg").read_bytes() == b"img720"
+    d = man["empty_detector"]
+    assert d["candidates_skipped"] == 1 and d["skipped_files"] == ["000000000710.jpg"]
+    assert d["model"] == "stub"

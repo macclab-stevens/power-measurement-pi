@@ -4,7 +4,8 @@ Subsets (all chosen from the val2017 file names sorted ascending, so reruns are 
   eval    first 500 images             -> tools/data/coco500/{images,labels} + tools/data/coco500.yaml
   calib   next 200 images (disjoint)   -> tools/data/calib200/images        (INT8 calibration)
   stream  50 of the remaining images, evenly spaced across them -> inputs/stream50/*.jpg
-  empty   first remaining image with zero label lines           -> inputs/empty.jpg
+  empty   first remaining zero-label image on which yolo11n FP32 (imgsz 640, conf 0.25, iou 0.45)
+          detects nothing                                      -> inputs/empty.jpg
   crowded remaining image with the most label lines             -> inputs/crowded.jpg
 and inputs/MANIFEST.json (rule + {coco_file, sha256, n_labels} per file), the only committed output.
 Downloads, subsets and the YAML live in tools/data/ (gitignored); inputs/*.jpg is gitignored too.
@@ -21,6 +22,7 @@ import argparse
 import hashlib
 import json
 import shutil
+import tempfile
 import urllib.error
 import urllib.request
 import zipfile
@@ -42,7 +44,8 @@ SELECTION_RULE = {
     "eval": "first 500 val2017 images by sorted file name",
     "calib": "next 200 images by sorted file name (disjoint from eval)",
     "stream": "50 of the remaining images (sorted), indices floor(i*N/50) for i in 0..49, N=remaining count",
-    "empty": "first remaining image (sorted) with zero label lines; missing label file counts as zero",
+    "empty": "first remaining image (sorted) with zero label lines (missing label file counts as zero) "
+             "on which the detector in empty_detector finds no detections; rejected candidates are listed",
     "crowded": "remaining image with the most label lines (ties: first in sorted order)",
     "remaining": "all images after the eval and calib subsets; stream/empty/crowded may overlap each other",
 }
@@ -64,9 +67,12 @@ COCO_NAMES = [
 # --------------------------------------------------------------------------
 # Pure selection logic
 # --------------------------------------------------------------------------
-def select_subsets(entries, n_eval=N_EVAL, n_calib=N_CALIB, n_stream=N_STREAM):
-    """entries: iterable of (file_name, n_labels). Returns
-    {"eval": [...], "calib": [...], "stream": [...], "empty": name, "crowded": name}."""
+def select_subsets(entries, n_eval=N_EVAL, n_calib=N_CALIB, n_stream=N_STREAM, is_empty=None):
+    """entries: iterable of (file_name, n_labels). is_empty(file_name) -> bool is asked only about
+    zero-label candidates (in sorted order) and may reject them, e.g. when a detector still fires;
+    the default accepts every zero-label image. Returns
+    {"eval": [...], "calib": [...], "stream": [...], "empty": name, "empty_skipped": [names rejected
+    before it], "crowded": name}."""
     items = sorted(entries)
     n_rest = len(items) - n_eval - n_calib
     if n_rest < n_stream:
@@ -75,14 +81,24 @@ def select_subsets(entries, n_eval=N_EVAL, n_calib=N_CALIB, n_stream=N_STREAM):
     calib = [f for f, _ in items[n_eval:n_eval + n_calib]]
     rest = items[n_eval + n_calib:]
     stream = [rest[i * len(rest) // n_stream][0] for i in range(n_stream)]
-    empties = [f for f, n in rest if n == 0]
-    if not empties:
-        raise ValueError("no empty (zero-label) image among the remaining images")
+    empty, skipped = None, []
+    for f, n in rest:
+        if n != 0:
+            continue
+        if is_empty is None or is_empty(f):
+            empty = f
+            break
+        skipped.append(f)
+    if empty is None:
+        raise ValueError("no empty image among the remaining images: every zero-label candidate "
+                         "was rejected by the detector" if skipped else
+                         "no empty (zero-label) image among the remaining images")
     crowded = rest[0]
     for e in rest:
         if e[1] > crowded[1]:          # strict: ties keep the first in sorted order
             crowded = e
-    return {"eval": eval_, "calib": calib, "stream": stream, "empty": empties[0], "crowded": crowded[0]}
+    return {"eval": eval_, "calib": calib, "stream": stream, "empty": empty,
+            "empty_skipped": skipped, "crowded": crowded[0]}
 
 
 def count_label_lines(text):
@@ -105,6 +121,25 @@ def dataset_yaml(root):
     """Ultralytics dataset YAML for the eval subset; root holds images/ and labels/."""
     names = "\n".join(f"  {i}: {n}" for i, n in enumerate(COCO_NAMES))
     return f"path: {root}\ntrain: images\nval: images\nnames:\n{names}\n"
+
+
+EMPTY_DETECTOR = {"model": "yolo11n.pt (FP32)", "imgsz": 640, "conf": 0.25, "iou": 0.45}
+
+
+def make_detects_nothing(weights, info=EMPTY_DETECTOR):
+    """detects_nothing(image_path) -> bool using an ultralytics YOLO on CPU at the thresholds in info."""
+    from ultralytics import YOLO       # heavy imports, only needed for the real build
+    from ultralytics.utils.downloads import attempt_download_asset
+    weights = Path(weights)
+    if not weights.exists():
+        attempt_download_asset(str(weights))   # fetches the release asset to exactly this path
+    model = YOLO(str(weights))
+
+    def detects_nothing(path):
+        res = model.predict(str(path), imgsz=info["imgsz"], conf=info["conf"], iou=info["iou"],
+                            device="cpu", verbose=False)
+        return len(res[0].boxes) == 0
+    return detects_nothing
 
 
 # --------------------------------------------------------------------------
@@ -177,12 +212,20 @@ def _extract(zf, member, dest):
         shutil.copyfileobj(src, out)
 
 
-def build(data_dir, inputs_dir, images_zip, labels_zip):
+def build(data_dir, inputs_dir, images_zip, labels_zip, detects_nothing=None, detector_info=None):
+    """detects_nothing(image_path) -> bool filters the empty-scene candidates (default: label count only)."""
     data_dir, inputs_dir = Path(data_dir), Path(inputs_dir)
     images = list_images(images_zip)
     counts = read_label_counts(labels_zip)
     n_labels = {f: counts.get(Path(f).stem, 0) for f in images}
-    sel = select_subsets(n_labels.items())
+    with tempfile.TemporaryDirectory() as tmp, zipfile.ZipFile(images_zip) as zi:
+        def is_empty(name):
+            if detects_nothing is None:
+                return True
+            path = Path(tmp) / name
+            _extract(zi, IMAGES_PREFIX + name, path)
+            return detects_nothing(path)
+        sel = select_subsets(n_labels.items(), is_empty=is_empty)
 
     # Rebuild every output from scratch so a rerun never leaves stale files behind.
     eval_dir, calib_dir = data_dir / "coco500", data_dir / "calib200"
@@ -193,7 +236,10 @@ def build(data_dir, inputs_dir, images_zip, labels_zip):
         f.unlink(missing_ok=True)
 
     manifest = {"rule": SELECTION_RULE, "source": {"images": IMAGES_URL, "labels": LABELS_URL},
-                "eval": {}, "calib": {}, "stream": {}, "empty": {}, "crowded": {}}
+                "eval": {}, "calib": {}, "stream": {}, "empty": {}, "crowded": {},
+                "empty_detector": {**(detector_info or {"model": None, "note": "label count only"}),
+                                   "candidates_skipped": len(sel["empty_skipped"]),
+                                   "skipped_files": sel["empty_skipped"]}}
 
     def record(section, key, coco_file, path):
         manifest[section][key] = manifest_entry(coco_file, path, n_labels[coco_file])
@@ -237,14 +283,19 @@ def main(argv=None):
     ap.add_argument("--zips-dir", type=Path, default=None,
                     help="dir holding val2017.zip and coco2017labels.zip "
                          "(default: <data-dir>/downloads; missing/corrupt zips are downloaded)")
+    ap.add_argument("--weights", type=Path, default=REPO / "yolo11n.pt",
+                    help="yolo11n FP32 weights used to reject non-empty 'empty' candidates "
+                         "(default: <repo>/yolo11n.pt, downloaded by ultralytics if absent)")
     args = ap.parse_args(argv)
     zips = args.zips_dir or args.data_dir / "downloads"
     images_zip = ensure_zip(zips / IMAGES_ZIP, IMAGES_URL)
     labels_zip = ensure_zip(zips / LABELS_ZIP, LABELS_URL)
-    sel, manifest = build(args.data_dir, args.inputs_dir, images_zip, labels_zip)
+    sel, manifest = build(args.data_dir, args.inputs_dir, images_zip, labels_zip,
+                          detects_nothing=make_detects_nothing(args.weights), detector_info=EMPTY_DETECTOR)
     print(f"eval {len(sel['eval'])}  calib {len(sel['calib'])}  stream {len(sel['stream'])}  "
           f"empty {sel['empty']}  crowded {sel['crowded']} "
-          f"({manifest['crowded']['inputs/crowded.jpg']['n_labels']} labels)")
+          f"({manifest['crowded']['inputs/crowded.jpg']['n_labels']} labels)  "
+          f"empty candidates skipped {len(sel['empty_skipped'])}")
     print(f"wrote {args.inputs_dir / 'MANIFEST.json'}")
 
 

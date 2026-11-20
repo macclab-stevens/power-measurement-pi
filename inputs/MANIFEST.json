@@ -1010,10 +1010,20 @@
   },
   "empty": {
     "inputs/empty.jpg": {
-      "coco_file": "000000098497.jpg",
+      "coco_file": "000000101022.jpg",
       "n_labels": 0,
-      "sha256": "2314fd57bbc82c8b78f04594f2e61d7dda3e1d18f4e9d2946bc2329ee33f9ea1"
+      "sha256": "0962336a1c3f6e1598c88577eeffc50a20b2c00ef14cf70dccc70b9d0d511528"
     }
+  },
+  "empty_detector": {
+    "candidates_skipped": 1,
+    "conf": 0.25,
+    "imgsz": 640,
+    "iou": 0.45,
+    "model": "yolo11n.pt (FP32)",
+    "skipped_files": [
+      "000000098497.jpg"
+    ]
   },
   "eval": {
     "coco500/images/000000000139.jpg": {
@@ -3520,7 +3530,7 @@
   "rule": {
     "calib": "next 200 images by sorted file name (disjoint from eval)",
     "crowded": "remaining image with the most label lines (ties: first in sorted order)",
-    "empty": "first remaining image (sorted) with zero label lines; missing label file counts as zero",
+    "empty": "first remaining image (sorted) with zero label lines (missing label file counts as zero) on which the detector in empty_detector finds no detections; rejected candidates are listed",
     "eval": "first 500 val2017 images by sorted file name",
     "remaining": "all images after the eval and calib subsets; stream/empty/crowded may overlap each other",
     "stream": "50 of the remaining images (sorted), indices floor(i*N/50) for i in 0..49, N=remaining count"
