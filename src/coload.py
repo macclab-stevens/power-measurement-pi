@@ -37,7 +37,7 @@ PRIMARY_TAG = "m0"
 SPIN_DIM = 256            # torch.mm of two 256x256 float32 matrices ...
 SPIN_MM_PER_STEP = 32     # ... 32 times per "spin" step (tens of ms per step on the Pi 5)
 SPIN_WARMUP_STEPS = 5
-JOIN_TIMEOUT_S = 120.0
+JOIN_TIMEOUT_S = 30.0
 
 
 def worker_tag(concurrent: str) -> str:
@@ -61,7 +61,9 @@ class SecondWorkload:
     ImageTask for a model worker and None for the spinner."""
 
     def __init__(self, tag: str, threads: int, step, task=None, warmup: int = 0,
-                 clock=time.perf_counter) -> None:
+                 clock=time.perf_counter, join_timeout_s: float = JOIN_TIMEOUT_S) -> None:
+        self.join_timeout_s = join_timeout_s
+        self.stop_join_s: float | None = None
         self.tag, self.threads, self.task, self.warmup = tag, threads, task, warmup
         self._step, self._clock = step, clock
         if task is not None:
@@ -133,13 +135,21 @@ class SecondWorkload:
     def release(self) -> None:
         self._go.set()
 
-    def stop(self) -> None:
-        """Ask the worker to finish its current iteration and join it. Idempotent; safe to call
-        before the thread was ever started or released."""
+    def stop(self, strict: bool = True) -> None:
+        """Ask the worker to finish its current iteration and join it (at most join_timeout_s).
+        Idempotent; safe to call before the thread was ever started or released. A worker still
+        running after the timeout would run through the baseline and the benches: strict=True
+        raises RuntimeError (the cell must fail), strict=False (abort path) leaves it to the
+        caller to log alive(). stop_join_s is the time the first join took."""
         self._stop.set()
         self._go.set()
         if self._thread.is_alive():
-            self._thread.join(JOIN_TIMEOUT_S)
+            t0 = self._clock()
+            self._thread.join(self.join_timeout_s)
+            self.stop_join_s = round(self._clock() - t0, 3)
+            if strict and self._thread.is_alive():
+                raise RuntimeError(f"concurrent worker '{self.tag}' did not stop within "
+                                   f"{self.join_timeout_s} s")
 
     def check(self) -> None:
         if self.error is not None:

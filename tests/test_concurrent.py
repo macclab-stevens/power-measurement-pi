@@ -170,6 +170,66 @@ def test_wait_warm_calls_the_thermal_check_while_waiting():
     w.stop()
 
 
+def test_stop_raises_when_the_worker_will_not_stop_but_not_on_the_abort_path():
+    gate = threading.Event()
+    state = {"n": 0}
+
+    class Hang:
+        step = None
+
+        def run_one(self, mode):
+            state["n"] += 1
+            if state["n"] > 1:               # first call passes (warm-up), then block when looping
+                gate.wait(10)
+    w = coload.SecondWorkload("m1", 1, EventLog().step_for("m1"), task=Hang(), warmup=0,
+                              join_timeout_s=0.05)
+    w.start()
+    w.wait_warm()
+    w.release()
+    while state["n"] < 2:
+        threading.Event().wait(0.005)
+    with pytest.raises(RuntimeError, match="did not stop within 0.05 s"):
+        w.stop()
+    assert w.alive() and w.stop_join_s >= 0.05
+    w.stop(strict=False)                      # abort/finally path: no raise, caller logs alive()
+    assert w.alive()
+    gate.set()
+    w.stop()                                  # now it joins cleanly
+    assert not w.alive()
+
+
+def test_stop_records_join_time_and_default_timeout(small_spin):
+    assert coload.JOIN_TIMEOUT_S == 30.0
+    w = coload.SecondWorkload("spin", 1, EventLog().step_for("spin"))
+    assert w.stop_join_s is None
+    w.start()
+    w.wait_warm()
+    w.release()
+    w.stop()
+    assert w.stop_join_s is not None and w.stop_join_s < 5
+
+
+def test_end_concurrent_marks_the_drain_before_stopping_the_worker():
+    order = []
+
+    class W:
+        tag = "m1"
+
+        def stop(self):
+            order.append("stop")
+
+        def check(self):
+            order.append("check")
+    run.end_concurrent(W(), lambda name: order.append(f"marker:{name}"))
+    assert order == ["marker:concurrent_drain", "stop", "check"]
+
+    class Hung(W):
+        def stop(self):
+            raise RuntimeError("did not stop")
+    with pytest.raises(RuntimeError, match="did not stop"):
+        run.end_concurrent(Hung(), lambda name: None)
+
+
 # ---- measured loop hook ------------------------------------------------------------------------
 class _Clock:
     t = 0.0
@@ -224,19 +284,22 @@ def test_layer_events_off_keeps_labels_and_drops_begin_end():
 
 # ---- run_meta block ----------------------------------------------------------------------------
 def test_concurrent_block_records_split_counts_and_latency():
-    w = SimpleNamespace(tag="m1", iterations=40, lat_ms=[100.0, 110.0, 120.0], first_call_ms=900.0)
+    w = SimpleNamespace(tag="m1", iterations=40, lat_ms=[100.0, 110.0, 120.0], first_call_ms=900.0,
+                        stop_join_s=0.31)
     a = run.parse_args(["--concurrent", "yolo11n.pt"])
     b = run.concurrent_block(a, {"m0": 2, "m1": 2}, w, {"forward": 30}, {"mean": 98.0}, 1.25,
                              serve_concurrent=False)
     assert b["mode"] == "model" and b["model"] == "yolo11n.pt" and b["tags"] == ["m0", "m1"]
     assert b["threads_split"] == {"m0": 2, "m1": 2} and b["sync_envelopes"] == 1
     assert b["layer_events"] is False and b["serve_concurrent"] is False
+    assert b["stop_join_s"] == 0.31
     assert b["iterations"] == {"m0": 30, "m1": 40} and b["overlapped_primary_frames"] == 29
     assert b["latency_ms"]["m0"] == {"mean": 98.0}
     assert b["latency_ms"]["m1"]["n"] == 3 and b["first_call_ms"] == {"m1": 900.0}
     assert b["load_weights_s"] == {"m1": 1.25} and b["spinner"] is None
     s = run.concurrent_block(run.parse_args(["--concurrent", "spinner"]), {"m0": 3, "spin": 1},
-                             SimpleNamespace(tag="spin", iterations=5, lat_ms=[], first_call_ms=1.0),
+                             SimpleNamespace(tag="spin", iterations=5, lat_ms=[], first_call_ms=1.0,
+                                             stop_join_s=None),
                              {"forward": 30}, None, None, serve_concurrent=False)
     assert s["mode"] == "spinner" and s["model"] is None and s["spinner"]["dim"] == coload.SPIN_DIM
     assert s["latency_ms"]["spin"] is None and s["load_weights_s"] == {"spin": None}

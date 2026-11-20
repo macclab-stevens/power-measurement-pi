@@ -208,6 +208,15 @@ def measured_loop(task, prof, mode, frames, soak_minutes, check_thermal,
     return f, lat_ms, op_rows
 
 
+def end_concurrent(worker, marker) -> None:
+    """The primary's measured loop is over: label the drain (the worker finishing its current
+    iteration) as its own phase so it is not charged to the primary's last frame, then stop the
+    worker (raises if it will not stop) and re-raise a worker failure."""
+    marker("concurrent_drain")
+    worker.stop()
+    worker.check()
+
+
 def concurrent_block(args, split, worker, frames_done, primary_lat, load2_s,
                      serve_concurrent: bool) -> dict:
     """run_meta["concurrent"]: how the second workload ran and what each tag did.
@@ -227,6 +236,7 @@ def concurrent_block(args, split, worker, frames_done, primary_lat, load2_s,
         "released": "after primary frame 0 (the profiled frame runs alone); worker stops when "
                     "the primary's measured loop ends",
         "serve_concurrent": serve_concurrent,
+        "stop_join_s": worker.stop_join_s,
         "iterations": {coload.PRIMARY_TAG: n0, tag: worker.iterations},
         "overlapped_primary_frames": max(0, n0 - 1),
         "latency_ms": {coload.PRIMARY_TAG: primary_lat,
@@ -569,8 +579,8 @@ def main():
             frames_done[mode] = n_done
             logger.info(f"  mode {mode}: {n_done} iterations done")
         if worker is not None:
-            worker.stop()   # the second workload ends with the primary's measured loop
-            worker.check()
+            phase["name"] = "concurrent_drain"
+            end_concurrent(worker, sampler.marker)   # the second workload ends with the primary
             logger.info(f"concurrent worker {worker.tag}: {worker.iterations} iterations")
 
         # ---- serve: isolated requests with idle gaps (race-to-idle transitions)
@@ -909,7 +919,11 @@ def main():
         try:   # whatever below raises, a fan-off cell must get its fan back
             if worker is not None:
                 try:
-                    worker.stop()   # idempotent: an abort or crash must not leave it running
+                    # idempotent: an abort or crash must not leave it running
+                    worker.stop(strict=False)
+                    if worker.alive():
+                        logger.error(f"concurrent worker {worker.tag} still running "
+                                     f"{worker.join_timeout_s} s after stop")
                 except Exception as e:
                     logger.error(f"concurrent worker stop failed: {e}")
             try:

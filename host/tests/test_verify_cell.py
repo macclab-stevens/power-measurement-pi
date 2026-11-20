@@ -344,7 +344,7 @@ def test_concurrent_cell_passes_and_derived_notes_both_workloads(tmp_path):
     r = verify(_cv(tmp_path, df_over=_conc()))
     assert r["ok"], r["errors"]
     assert r["warnings"] == []
-    assert r["concurrent"]["coverage"] == {"m0": 1.0, "spin": 1.0}
+    assert r["concurrent"]["coverage"] == {"spin": 1.0}      # the primary's own is the step column
     assert r["concurrent"]["overlap"] == {"spin": 1.0}
     c = r["derived"]["concurrent"]
     assert c["tags"] == ["m0", "spin"] and c["iterations"] == {"m0": 2, "spin": 40}
@@ -395,7 +395,46 @@ def test_model_pair_checks_infer_steps_per_tag():
     assert errs == [] and warns == [] and info["overlap"] == {"m1": 1.0}
     errs, _, _ = concurrent_checks(df.assign(tag="m0+m1", step_m1=np.tile(["forward"], n)), meta)
     assert any("workload m1" in e and "preprocess" in e for e in errs)
-    # a train primary expects the train steps, not the inference steps
-    tdf = pd.DataFrame({"step_m0": np.tile(list(TRAIN_STEPS), 5), "tag": "m0"})
-    errs, _, _ = concurrent_checks(tdf, {"tags": ["m0"], "iterations": {"m0": 1}}, TRAIN_STEPS)
-    assert errs == []
+
+
+def test_primary_steps_and_coverage_are_not_reported_twice(tmp_path):
+    from verify_cell import concurrent_checks
+    # the primary's steps/coverage are verify()'s `step` check; concurrent_checks only wants the
+    # column and the iterations for m0
+    sparse = pd.DataFrame({"step_m0": ["forward"] + [""] * 29, "step_m1": ["forward"] * 30,
+                           "tag": "m0+m1"})
+    errs, warns, info = concurrent_checks(sparse, {"tags": ["m0", "m1"],
+                                                   "iterations": {"m0": 1, "m1": 1}})
+    assert not any("workload m0" in x and ("coverage" in x or "steps without" in x)
+                   for x in errs + warns)
+    assert "m0" not in info["coverage"]
+    errs, _, _ = concurrent_checks(sparse.drop(columns="step_m0"),
+                                   {"tags": ["m0", "m1"], "iterations": {"m0": 1, "m1": 1}})
+    assert any("no step_m0 column" in e for e in errs)
+    errs, _, _ = concurrent_checks(sparse, {"tags": ["m0", "m1"], "iterations": {"m0": 0, "m1": 1}})
+    assert any("m0 completed no iterations" in e for e in errs)
+    # a missing primary step is reported once, by the single-workload check
+    r = verify(_cv(tmp_path, df_over=_conc(), drop_step="backward"))
+    assert [e for e in r["errors"] if "backward" in e] == [
+        "steps without samples in mode phases: ['backward']"]
+
+
+def test_concurrent_drain_phase_is_not_charged_to_the_last_frame(tmp_path):
+    def with_drain(df):
+        df = _conc()(df)
+        drain = pd.DataFrame({"phase": "concurrent_drain", "iter": "", "step": "",
+                              "P_W": np.float32(11.0), "step_m0": "", "step_spin": "spin",
+                              "tag": "spin"}, index=range(300))
+        i = int(np.flatnonzero((df["phase"] == "train").to_numpy())[-1]) + 1
+        out = pd.concat([df.iloc[:i], drain, df.iloc[i:]], ignore_index=True)
+        out["t_s"] = np.arange(len(out)) / 5000.0
+        out["ctx_read"] = False
+        return out
+    base = verify(_cv(tmp_path / "a", df_over=_conc()))
+    r = verify(_cv(tmp_path / "b", df_over=with_drain))
+    assert r["ok"], r["errors"]
+    assert r["derived"]["energy_per_frame_mJ"] == base["derived"]["energy_per_frame_mJ"]
+    assert r["derived"]["latency_ms_per_frame"] == base["derived"]["latency_ms_per_frame"]
+    assert r["concurrent"]["coverage"] == base["concurrent"]["coverage"]   # drain is not a mode phase
+    pe = pd.read_csv(tmp_path / "b" / "cell" / "phase_energy.csv", keep_default_na=False)
+    assert pe[pe["phase"] == "concurrent_drain"]["n_samples"].sum() == 300

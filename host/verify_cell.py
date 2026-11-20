@@ -6,8 +6,8 @@ must have run). Fatal checks make `ok` false; soft ones go to `warnings`.
 
 Concurrent cells (run_meta["concurrent"], align.py's `tag` / `step_<tag>` columns) keep the
 primary's step checks (the `step` column is the primary workload's) and add one check per tag:
-its steps are present, they cover its active window, it completed iterations, and the primary
-was inside a step during >= 50 % of every other tag's window (the workloads really overlapped).
+it completed iterations and left a step column; each non-primary tag's steps are present and
+cover its active window; and the primary was inside a step during >= 50 % of every other tag's window (the workloads really overlapped).
 
 v2 cells (dataset_version 2) add: fan mode, DVFS clock range (governor ondemand), perf counter
 coverage, thermal limits and a mAP-reference warning. Every cell also gets derived.json
@@ -127,9 +127,11 @@ def _active_window(col: pd.Series) -> tuple[int, int]:
     return (int(idx[0]), int(idx[-1]) + 1) if idx.size else (0, 0)
 
 
-def concurrent_checks(in_modes: pd.DataFrame, conc: dict,
-                      primary_steps: tuple = INFER_STEPS) -> tuple[list, list, dict]:
-    """Per-tag step coverage and overlap of a --concurrent cell: (errors, warnings, info)."""
+def concurrent_checks(in_modes: pd.DataFrame, conc: dict) -> tuple[list, list, dict]:
+    """Per-tag checks of a --concurrent cell: (errors, warnings, info). Every tag needs
+    iterations and a step_<tag> column; the other tags also need their steps, coverage of their
+    active window and overlap with the primary (the primary's own steps and coverage are checked
+    by verify() on the `step` column, so they are not reported twice)."""
     errs: list[str] = []
     warns: list[str] = []
     info: dict = {"coverage": {}, "overlap": {}}
@@ -144,8 +146,10 @@ def concurrent_checks(in_modes: pd.DataFrame, conc: dict,
         if col is None:
             errs.append(f"no step_{t} column: workload {t} left no step events")
             continue
+        if t == PRIMARY_TAG:
+            continue
         seen = set(col.unique()) - {""}
-        want = primary_steps if t == PRIMARY_TAG else SPIN_STEPS if t == "spin" else INFER_STEPS
+        want = SPIN_STEPS if t == "spin" else INFER_STEPS
         missing = [x for x in want if x not in seen]
         if missing:
             errs.append(f"steps without samples for workload {t}: {missing}")
@@ -157,7 +161,7 @@ def concurrent_checks(in_modes: pd.DataFrame, conc: dict,
             errs.append(f"step coverage of workload {t} {cov:.2f} < {STEP_COVERAGE_FAIL}")
         elif cov < STEP_COVERAGE_WARN:
             warns.append(f"step coverage of workload {t} {cov:.2f} < {STEP_COVERAGE_WARN}")
-        if t != PRIMARY_TAG and PRIMARY_TAG in tags and f"step_{PRIMARY_TAG}" in in_modes:
+        if PRIMARY_TAG in tags and f"step_{PRIMARY_TAG}" in in_modes:
             span = in_modes[f"step_{PRIMARY_TAG}"].iloc[lo:hi]
             ov = float((span != "").mean()) if len(span) else 0.0
             info["overlap"][t] = ov
@@ -287,8 +291,7 @@ def verify(run_dir, cpu_mhz: int | None = None, write: bool = True) -> dict:
         warnings.append(f"step coverage in mode phases {cov:.2f} < {STEP_COVERAGE_WARN}")
 
     if meta.get("concurrent"):
-        c_err, c_warn, res["concurrent"] = concurrent_checks(
-            in_modes, meta["concurrent"], expected_steps(meta))
+        c_err, c_warn, res["concurrent"] = concurrent_checks(in_modes, meta["concurrent"])
         errors.extend(c_err)
         warnings.extend(c_warn)
 

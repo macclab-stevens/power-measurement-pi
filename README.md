@@ -653,7 +653,8 @@ About 0.9-1 A is idle with the fan at full speed; about 0.28 A means the Pi is f
 ### 11.3 `events.csv` (Pi side)
 
 Columns: `t_real_ns` (lab-synced wall clock), `t_mono_ns`, `kind`, `name`, `depth`, `mode`, `iter`,
-`layer_path`, `config_id`, `window_id`.
+`layer_path`, `config_id`, `window_id`, `tag` (empty, or `m0`/`m1`/`spin` on step events of a
+`--concurrent` run; `experiment.py plan --v2 ... --no-concurrent` leaves those cells out).
 
 | `kind` | Written when |
 |---|---|

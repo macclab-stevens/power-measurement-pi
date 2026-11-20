@@ -311,6 +311,27 @@ def test_align_concurrent_labels_tags_and_keeps_primary_mode_iter(tmp_path):
     assert {c for c in df.columns if c.startswith("step_")} == {"step_m0", "step_m1"}
 
 
+def test_align_drain_marker_ends_the_primary_frame_label(tmp_path):
+    D = T0 + 8_000_000_000            # the primary's last step ends at D - 0.1 s; the worker drains until D + 0.3 s
+    ev = [("step_begin", "forward", 0, "", D - 400_000_000, "forward", "7", "m0"),
+          ("step_end", "forward", 0, "", D - 100_000_000, "forward", "7", "m0"),
+          ("marker", "concurrent_drain", 0, "", D - 100_000_000, "forward", "7", ""),
+          ("step_begin", "spin", 0, "", D - 300_000_000, "forward", "7", "m1"),
+          ("step_end", "spin", 0, "", D + 300_000_000, "forward", "7", "m1"),
+          ("marker", "baseline_B", 0, "", D + 400_000_000, "forward", "7", "")]
+    rec, pi, _ = _build(tmp_path, extra_events=ev)
+    align(rec, pi, pi)
+    df = pd.read_parquet(pi / "power_trace.parquet")
+
+    def at(t):
+        return df.iloc[int(np.argmin(np.abs(df["t_pi_ns"].to_numpy() - t)))]
+    inside = at(D - 200_000_000)
+    assert inside["phase"] == "forward" and inside["iter"] == "7" and inside["tag"] == "m0+m1"
+    drain = at(D + 100_000_000)       # the worker's tail: its own phase, no mode/iter of the frame
+    assert drain["phase"] == "concurrent_drain" and drain["mode"] == "" and drain["iter"] == ""
+    assert drain["tag"] == "m1" and drain["step_m1"] == "spin"
+
+
 def test_align_without_tags_adds_no_tag_columns(tmp_path):
     rec, pi, _ = _build(tmp_path)                  # the v1-shaped events.csv has no tag column
     assert "tag" not in open(pi / "events.csv").readline()
