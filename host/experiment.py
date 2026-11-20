@@ -48,7 +48,7 @@ PI_UV = "~/.local/bin/uv"
 RECORDER_URL = "http://localhost:8051"
 RECORDER_CMD = ["systemd-run", "--user", "--unit=monsoon-recorder", "--same-dir", "--collect",
                 os.path.expanduser("~/.local/bin/uv"), "run", "python", "recorder.py",
-                "--vout", "5.25", "--current-limit", "6"]
+                "--vout", "5.35", "--current-limit", "6"]
 THERMAL_MAX_C = 50.0
 THERMAL_WAIT_S = 600
 RUN_TIMEOUT_S = 40 * 60

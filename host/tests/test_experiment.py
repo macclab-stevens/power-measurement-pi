@@ -186,7 +186,7 @@ def test_power_cycle_when_halted(tmp_path, monkeypatch):
     runs = [" ".join(map(str, c)) for k, c in sh.cmds if k == "run"]
     assert "stop monsoon-recorder" in runs[0]
     assert "vout_off.py --confirm-pi-halted" in runs[1]
-    assert "recorder.py --vout 5.25 --current-limit 6" in runs[2]
+    assert "recorder.py --vout 5.35 --current-limit 6" in runs[2]
     assert ex.load_jsonl(tmp_path / "runs" / "power_cycles.jsonl")[0]["mean_A"] == 0.28
 
 
