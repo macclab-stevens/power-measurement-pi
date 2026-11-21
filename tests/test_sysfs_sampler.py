@@ -7,7 +7,8 @@ import time
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-from sysfs_sampler import ROW_KEYS, SysfsSampler, ThermalAbort, thermal_exit_code
+from sysfs_sampler import (ROW_KEYS, SysfsSampler, ThermalAbort, thermal_exit_code,
+                           uv_alarm_errors)
 
 CPU = "sys/devices/system/cpu"
 THERMAL = "sys/class/thermal"
@@ -40,7 +41,7 @@ def _set_temp(root, milli_c):
 
 def test_row_keys_exact():
     assert ROW_KEYS == ["t_real_ns", "cpu0_kHz", "cpu1_kHz", "cpu2_kHz", "cpu3_kHz",
-                        "temp_C", "fan_state"]
+                        "temp_C", "fan_state", "uv_alarm"]
 
 
 def test_read_once_parses_fake_tree(tmp_path):
@@ -48,7 +49,8 @@ def test_read_once_parses_fake_tree(tmp_path):
     s = _sampler(tmp_path)
     row = s.read_once()
     assert row == {"t_real_ns": 1000, "cpu0_kHz": 2400000, "cpu1_kHz": 2400000,
-                   "cpu2_kHz": 1500000, "cpu3_kHz": 2000000, "temp_C": 48.75, "fan_state": 2}
+                   "cpu2_kHz": 1500000, "cpu3_kHz": 2000000, "temp_C": 48.75, "fan_state": 2,
+                   "uv_alarm": None}
     assert isinstance(row["cpu0_kHz"], int) and isinstance(row["fan_state"], int)
     assert isinstance(row["temp_C"], float)
     assert list(row) == ROW_KEYS
@@ -74,6 +76,49 @@ def test_unparseable_and_partial_values_are_none(tmp_path):
     assert row["cpu1_kHz"] is None and row["cpu3_kHz"] is None
     assert row["fan_state"] is None
     assert row["temp_C"] == 48.75
+
+
+HWMON = "sys/class/hwmon"
+
+
+def _hwmon(root, idx, name, alarm=None):
+    _put(root, f"{HWMON}/hwmon{idx}/name", f"{name}\n")
+    if alarm is not None:
+        _put(root, f"{HWMON}/hwmon{idx}/in0_lcrit_alarm", f"{alarm}\n")
+
+
+def test_uv_alarm_is_read_from_the_rpi_volt_hwmon_by_name(tmp_path):
+    _tree(tmp_path)
+    _hwmon(tmp_path, 0, "cpu_thermal", alarm=1)    # decoys with the same file name
+    _hwmon(tmp_path, 1, "rp1_adc", alarm=1)
+    _hwmon(tmp_path, 7, "rpi_volt", alarm=0)       # the index is not 3 here: found by name
+    s = _sampler(tmp_path)
+    assert s.read_once()["uv_alarm"] == 0
+    _put(tmp_path, f"{HWMON}/hwmon7/in0_lcrit_alarm", "1\n")
+    row = s.read_once()
+    assert row["uv_alarm"] == 1 and isinstance(row["uv_alarm"], int)   # live, not sticky
+    _put(tmp_path, f"{HWMON}/hwmon7/in0_lcrit_alarm", "0\n")
+    assert s.read_once()["uv_alarm"] == 0
+
+
+def test_uv_alarm_none_without_rpi_volt_or_with_unreadable_file(tmp_path):
+    _tree(tmp_path)
+    _hwmon(tmp_path, 0, "cpu_thermal", alarm=1)
+    assert _sampler(tmp_path).read_once()["uv_alarm"] is None      # no rpi_volt device
+    _hwmon(tmp_path, 3, "rpi_volt")                                # device without the file
+    assert _sampler(tmp_path).read_once()["uv_alarm"] is None
+    _put(tmp_path, f"{HWMON}/hwmon3/in0_lcrit_alarm", "junk\n")
+    assert _sampler(tmp_path).read_once()["uv_alarm"] is None
+
+
+def test_uv_alarm_path_is_resolved_once(tmp_path):
+    _tree(tmp_path)
+    _hwmon(tmp_path, 3, "rpi_volt", alarm=0)
+    s = _sampler(tmp_path)
+    assert s.read_once()["uv_alarm"] == 0
+    _put(tmp_path, f"{HWMON}/hwmon3/name", "other\n")             # a rename is not re-resolved
+    _put(tmp_path, f"{HWMON}/hwmon3/in0_lcrit_alarm", "1\n")
+    assert s.read_once()["uv_alarm"] == 1
 
 
 def test_max_temp_ignores_none(tmp_path):
@@ -143,6 +188,7 @@ def test_custom_limits(tmp_path):
 
 def test_write_csv_header_and_order(tmp_path):
     _tree(tmp_path)
+    _hwmon(tmp_path, 3, "rpi_volt", alarm=1)
     s = _sampler(tmp_path)
     s.read_once()
     os.remove(tmp_path / THERMAL / "cooling_device0/cur_state")
@@ -152,8 +198,8 @@ def test_write_csv_header_and_order(tmp_path):
     with open(out, newline="") as f:
         lines = list(csv.reader(f))
     assert lines[0] == ROW_KEYS
-    assert lines[1] == ["1000", "2400000", "2400000", "1500000", "2000000", "48.75", "2"]
-    assert lines[2][-1] == ""                           # None -> empty cell
+    assert lines[1] == ["1000", "2400000", "2400000", "1500000", "2000000", "48.75", "2", "1"]
+    assert lines[2][-2:] == ["", "1"]                   # None -> empty cell; uv_alarm is last
     assert len(lines) == 3
 
 
@@ -211,3 +257,10 @@ def test_thermal_abort_exception_carries_details():
     assert e.details == d and "85.5" in str(e)
     with pytest.raises(ThermalAbort):
         raise e
+
+
+def test_uv_alarm_errors_counts_live_samples():
+    rows = [{"uv_alarm": 0}, {"uv_alarm": 1}, {"uv_alarm": None}, {"uv_alarm": 1}, {}]
+    assert uv_alarm_errors(rows) == ["live under-voltage alarm during run (2 samples)"]
+    assert uv_alarm_errors([{"uv_alarm": 0}, {"uv_alarm": None}]) == []
+    assert uv_alarm_errors([]) == []

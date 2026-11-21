@@ -284,3 +284,24 @@ def test_apply_threads_sets_torch_opencv_and_omp_env(monkeypatch):
     finally:
         torch.set_num_threads(t0)
         cv2.setNumThreads(c0)
+
+
+# ---- per-layer events are off for concurrent and soak cells (final review I1) ----------------
+def test_layer_events_off_for_soak_and_concurrent_only():
+    assert run.layer_events_off(_parse()) is False
+    assert run.layer_events_off(_parse("--serve", "5")) is False
+    assert run.layer_events_off(_parse("--soak-minutes", "30")) is True
+    assert run.layer_events_off(_parse("--concurrent", "spinner")) is True
+
+
+# ---- an int8 variant with nothing quantized fails at load (final review M4) -------------------
+def test_require_quantized_modules_fails_fast_with_the_acceptance_message():
+    import yolo_variants
+    for quant in ("int8-dynamic", "int8-static"):
+        with pytest.raises(SystemExit) as e:
+            run.require_quantized_modules(quant, {"quantized_modules": 0})
+        assert str(e.value) == yolo_variants.quant_count_errors(quant, 0)[0]
+        assert f"{quant} quantized 0 modules" in str(e.value)
+    run.require_quantized_modules("int8-dynamic", {"quantized_modules": 5})
+    run.require_quantized_modules("fp32", {"quantized_modules": None})
+    run.require_quantized_modules("fp16", {})

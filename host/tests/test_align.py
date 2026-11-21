@@ -412,8 +412,8 @@ def test_align_merges_counters_and_sysfs(tmp_path):
     _ctr(rows).to_csv(pi / "counters.csv", index=False)
     pd.DataFrame({"t_real_ns": [T0 + k * 1_000_000_000 for k in range(18)],
                   "cpu0_kHz": 2400000, "cpu1_kHz": 2400000, "cpu2_kHz": 2400000,
-                  "cpu3_kHz": 2400000, "temp_C": 61.5, "fan_state": 4}).to_csv(
-        pi / "sysfs.csv", index=False)
+                  "cpu3_kHz": 2400000, "temp_C": 61.5, "fan_state": 4,
+                  "uv_alarm": [0] * 9 + [1] * 9}).to_csv(pi / "sysfs.csv", index=False)
     align(rec, pi, pi)
     df = pd.read_parquet(pi / "power_trace.parquet")
     t = df["t_pi_ns"].to_numpy()
@@ -424,6 +424,11 @@ def test_align_merges_counters_and_sysfs(tmp_path):
     assert (df.loc[inside, "ctr_instructions"].to_numpy() == 1000 + k).all()
     assert df["sys_cpu0_kHz"].notna().all() and (df["sys_temp_C"] == 61.5).all()
     assert (df["sys_fan_state"] == 4).all()
+    # the live under-voltage alarm rides the generic sysfs merge: 0 for the first 9 s, then 1
+    uv = df["sys_uv_alarm"]
+    assert set(uv.dropna().unique()) == {0.0, 1.0}
+    assert (uv[t < T0 + 9_000_000_000].dropna() == 0).all()
+    assert (uv[t >= T0 + 9_000_000_000].dropna() == 1).all()
     assert df["P_W"].dtype == np.float32
 
 

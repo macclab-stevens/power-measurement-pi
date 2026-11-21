@@ -42,7 +42,7 @@ import yolo_variants
 from layers import LayerProfiler
 from microbench import bench_configs
 from powersampler import make_sampler
-from sysfs_sampler import SysfsSampler, ThermalAbort, thermal_exit_code
+from sysfs_sampler import SysfsSampler, ThermalAbort, thermal_exit_code, uv_alarm_errors
 from tasks import make_task
 
 BASELINE_W_MIN, BASELINE_W_MAX = 0.5, 8.0
@@ -215,6 +215,22 @@ def end_concurrent(worker, marker) -> None:
     marker("concurrent_drain")
     worker.stop()
     worker.check()
+
+
+def require_quantized_modules(quant: str, variant: dict) -> None:
+    """SystemExit (acceptance's own message) if an int8 variant loaded with 0 quantized compute
+    modules: it would run in float32 and fail acceptance after a full cell."""
+    errs = yolo_variants.quant_count_errors(quant, variant.get("quantized_modules"))
+    if errs:
+        logging.getLogger("powcap").error(errs[0])
+        raise SystemExit(errs[0])
+
+
+def layer_events_off(args) -> bool:
+    """No per-layer begin/end events in events.csv: concurrent cells (two threads share one depth
+    counter) and soak cells (a 30 min cell would log ~10^7 events and need > 7 GB to verify).
+    Step events and the mode/iter labels stay on."""
+    return bool(args.concurrent) or args.soak_minutes is not None
 
 
 def concurrent_block(args, split, worker, frames_done, primary_lat, load2_s,
@@ -478,9 +494,7 @@ def main():
         task = make_task(args.task, args.model, args)
         load_s = time.perf_counter() - t_load
         variant = getattr(task, "variant", None) or {}
-        if variant.get("quantized_modules") == 0:
-            logger.error(f"--quant {args.quant}: 0 quantized modules, this run will fail "
-                         "acceptance (float32 must not be labelled INT8)")
+        require_quantized_modules(args.quant, variant)   # fail at load, not after the cell
         prof = LayerProfiler(task.module)
         modes = task.modes()
         n_params = sum(p.numel() for p in task.module.parameters())
@@ -489,10 +503,10 @@ def main():
                     f"params={n_params/1e6:.2f}M | load {load_s:.2f}s")
         if monsoon:
             prof.events = sampler.events
+            if layer_events_off(args):
+                prof.layer_events = False   # see layer_events_off(); step events and labels stay
             if split:
-                # two threads share one event log: step events are tagged and depth-free, the
-                # per-layer begin/end events (shared depth counter) are off; labels stay on
-                prof.layer_events = False
+                # two threads share one event log: step events are tagged and depth-free
                 task.step = sampler.events.step_for(coload.PRIMARY_TAG)
             else:
                 task.step = sampler.events.step
@@ -694,8 +708,8 @@ def main():
                 try:
                     perfcounters.write_counters_csv(os.path.join(outdir, "counters.csv"),
                                                     perf.wide_rows(), perf.events)
-                except OSError as e:
-                    logger.error(f"counters.csv not written: {e}")
+                except Exception as e:   # counters must never crash a measurement
+                    logger.error(f"counters.csv not written: {type(e).__name__}: {e}")
                 if perf.error:
                     logger.error(f"perf counters: {perf.error}")
             sampler.marker("done")
@@ -778,7 +792,7 @@ def main():
             "serve_wall_s": serve_wall_s,
             "soak_minutes": args.soak_minutes,
             "concurrent": concurrent_meta,
-            **({"layer_events": False} if worker is not None else {}),
+            **({"layer_events": False} if layer_events_off(args) else {}),
             "frames_done": frames_done,
             "latency_ms_per_frame": lat_stats,
             "latency_ms_per_image": lat_img,
@@ -868,6 +882,7 @@ def main():
         thr = ctx[-1].get("throttle_bits") if ctx else None
         if thr is not None and (thr & 0x1) != 0:
             errors.append(f"throttled during run (throttle_bits=0x{thr:x})")
+        errors += uv_alarm_errors(sysfs.rows())   # live alarm: works while the sticky bit is set
         if args.governor == "ondemand":
             errors += pinning.clock_range_errors(sysfs.rows()) + pinning.throttle_errors(ctx)
         elif args.cpu_mhz is not None:

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import csv
 import os
+import math
 import re
 import shutil
 import signal
@@ -63,7 +64,7 @@ def _parse_count(field: str) -> int | None:
         pass
     try:
         return round(float(field))
-    except ValueError:
+    except (ValueError, OverflowError):   # `inf` overflows round(); `nan` is a ValueError
         return None
 
 
@@ -94,6 +95,8 @@ def parse_interval_csv(text: str, t0_ns: int) -> list[dict]:
         try:
             time_s = float(f[0])
         except ValueError:
+            continue
+        if not math.isfinite(time_s):    # `inf`/`nan` would overflow round() below
             continue
         if time_s != cur_s:
             if cur_s is not None:

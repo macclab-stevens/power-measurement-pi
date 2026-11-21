@@ -4,6 +4,10 @@ Reads only sysfs files, no subprocesses (a sysfs read is far cheaper than a vcge
   {root}/sys/devices/system/cpu/cpu{0..3}/cpufreq/scaling_cur_freq   kHz
   {root}/sys/class/thermal/thermal_zone0/temp                        milli-C
   {root}/sys/class/thermal/cooling_device0/cur_state                 fan state (pwm-fan)
+  {root}/sys/class/hwmon/hwmon*/in0_lcrit_alarm                      uv_alarm (0/1), the hwmon
+      whose `name` is "rpi_volt" (found by name, resolved once; the index is not stable). Unlike
+      vcgencmd get_throttled it is LIVE: it is 1 only while the supply is under-voltage, so a
+      sticky "happened since boot" bit cannot hide a new event. None when there is no rpi_volt.
 Every row is stamped with `time.time_ns()` (the lab wall clock), so sysfs.csv joins to
 power_trace.parquet on t_pi_ns with pandas.merge_asof. An unreadable value is None.
 
@@ -19,6 +23,7 @@ from __future__ import annotations
 
 import _thread
 import csv
+import glob
 import os
 import threading
 import time
@@ -26,7 +31,8 @@ import time
 THERMAL_ABORT_C = 85.0
 THERMAL_HARD_STOP_C = 90.0
 N_CPUS = 4
-ROW_KEYS = ["t_real_ns"] + [f"cpu{i}_kHz" for i in range(N_CPUS)] + ["temp_C", "fan_state"]
+ROW_KEYS = ["t_real_ns"] + [f"cpu{i}_kHz" for i in range(N_CPUS)] + ["temp_C", "fan_state",
+                                                "uv_alarm"]
 
 EXIT_THERMAL_ABORT = 3
 EXIT_THERMAL_HARD_STOP = 4
@@ -49,12 +55,28 @@ def thermal_exit_code(thermal_abort: dict | None) -> int | None:
         else EXIT_THERMAL_ABORT
 
 
+def uv_alarm_errors(rows: list[dict]) -> list[str]:
+    """Acceptance error when any 1 Hz row saw the live under-voltage alarm."""
+    n = sum(1 for r in rows if r.get("uv_alarm") == 1)
+    return [f"live under-voltage alarm during run ({n} samples)"] if n else []
+
+
 def _read_text(path: str) -> str | None:
     try:
         with open(path) as f:
             return f.read().strip()
     except (OSError, ValueError):
         return None
+
+
+def _find_uv_alarm_path(root: str) -> str | None:
+    """`in0_lcrit_alarm` of the hwmon device named rpi_volt (the Pi's under-voltage detector), or
+    None. Matched by name: the hwmon index depends on probe order."""
+    pattern = os.path.join(root, "sys/class/hwmon/hwmon*/name")
+    for name_path in sorted(glob.glob(pattern)):
+        if _read_text(name_path) == "rpi_volt":
+            return os.path.join(os.path.dirname(name_path), "in0_lcrit_alarm")
+    return None
 
 
 def _read_int(path: str) -> int | None:
@@ -81,6 +103,8 @@ class SysfsSampler:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._interrupted = False
+        self._uv_path: str | None = None
+        self._uv_resolved = False
 
     def _path(self, rel: str) -> str:
         return os.path.join(self.root, rel)
@@ -94,10 +118,17 @@ class SysfsSampler:
         milli_c = _read_int(self._path("sys/class/thermal/thermal_zone0/temp"))
         row["temp_C"] = milli_c / 1000.0 if milli_c is not None else None
         row["fan_state"] = _read_int(self._path("sys/class/thermal/cooling_device0/cur_state"))
+        row["uv_alarm"] = self._read_uv_alarm()
         with self._lock:
             self._rows.append(row)
             self._check(row)
         return row
+
+    def _read_uv_alarm(self) -> int | None:
+        if not self._uv_resolved:       # resolved once, on the first reading (sysfs.start())
+            self._uv_path = _find_uv_alarm_path(self.root)
+            self._uv_resolved = True
+        return _read_int(self._uv_path) if self._uv_path else None
 
     def _check(self, row: dict) -> None:   # caller holds the lock
         t = row["temp_C"]

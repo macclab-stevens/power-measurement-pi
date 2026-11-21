@@ -97,6 +97,18 @@ def test_parse_interval_s_is_time_since_previous_interval():
     assert by_end[T0 + END3] == pytest.approx(0.300448125 - 0.200292207)
 
 
+def test_parse_overflowing_or_junk_counts_are_none_not_exceptions():
+    text = "\n".join(["0.100,inf,,cycles:u,1000,100.00,,",
+                      "0.100,nan,,instructions:u,1000,100.00,,",
+                      "0.100,1e999,,cache-misses:u,1000,100.00,,",
+                      "0.100,12.6,,branch-misses:u,1000,100.00,,",
+                      "inf,5,,cycles:u,1000,100.00,,",
+                      "nan,5,,cycles:u,1000,100.00,,"])
+    rows = parse_interval_csv(text, T0)
+    assert [(r["event"], r["count"]) for r in rows] == [
+        ("cycles", None), ("instructions", None), ("cache-misses", None), ("branch-misses", 13)]
+
+
 def test_parse_not_counted_and_not_supported_are_none():
     rows = parse_interval_csv(_fixture_text(), T0)
     third = {r["event"]: r for r in rows if r["t_end_ns"] == T0 + END3}
