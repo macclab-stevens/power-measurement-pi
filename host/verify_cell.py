@@ -4,6 +4,15 @@
 Reads run_meta.json, alignment.json and power_trace.parquet from the run directory (align.py
 must have run). Fatal checks make `ok` false; soft ones go to `warnings`.
 
+Concurrent cells (run_meta["concurrent"], align.py's `tag` / `step_<tag>` columns) keep the
+primary's step checks (the `step` column is the primary workload's) and add one check per tag:
+it completed iterations and left a step column; each non-primary tag's steps are present and
+cover its active window; and the primary was inside a step during >= 50 % of every other tag's window (the workloads really overlapped).
+
+v2 cells (dataset_version 2) add: fan mode, DVFS clock range (governor ondemand), perf counter
+coverage, thermal limits and a mAP-reference warning. Every cell also gets derived.json
+(energy and latency per frame, measured iterations only).
+
     uv run python verify_cell.py ../runs/<cell> [--cpu-mhz 2400]
 """
 from __future__ import annotations
@@ -14,6 +23,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 P_MIN_W, P_MAX_W = 1.0, 25.0
 MAX_NAN_FRACTION = 0.01
@@ -21,6 +32,32 @@ STEP_COVERAGE_FAIL, STEP_COVERAGE_WARN = 0.5, 0.9
 ENERGY_CLOSURE = 0.01
 INFER_STEPS = ("preprocess", "forward", "postprocess")
 TRAIN_STEPS = ("dataload", "zero_grad", "forward", "loss", "backward", "optimizer_step")
+THERMAL_ABORT_C = 85.0                 # same limit run.py enforces on the Pi
+COUNTER_COVERAGE_MIN = 0.95
+DVFS_RANGE_MHZ, DVFS_TOL_MHZ = (1500, 2400), 25
+FAN_MODES = ("full", "auto", "off")
+OVERLAP_FAIL, OVERLAP_WARN = 0.5, 0.9
+PRIMARY_TAG = "m0"
+# power_trace.parquet columns verify() uses; a long v2 cell has ~9 M rows x 38 columns, and reading
+# all of them as pandas objects needs >7 GB (the EliteBook has 7 GB and runs the recorder)
+USED_COLUMNS = ("P_W", "t_s", "phase", "iter", "step", "ctx_read", "ctr_instructions", "tag",
+                "sys_uv_alarm")
+SPIN_STEPS = ("spin",)                 # tag "spin"; "m1" is a second image model: INFER_STEPS
+
+
+def _used_columns(names) -> list[str]:
+    return [c for c in names if c in USED_COLUMNS or c.startswith("step_")
+            or (c.startswith("sys_cpu") and c.endswith("_kHz"))]
+
+
+def read_trace(path) -> pd.DataFrame:
+    """power_trace.parquet with only the columns verify() uses; string columns are read straight
+    into pandas categoricals (never as Python-object arrays)."""
+    schema = pq.read_schema(path)
+    cols = _used_columns(schema.names)
+    strings = [c for c in cols if pa.types.is_string(schema.field(c).type)
+               or pa.types.is_large_string(schema.field(c).type)]
+    return pd.read_parquet(path, columns=cols, read_dictionary=strings)
 
 
 def expected_phases(meta: dict) -> list[str]:
@@ -43,14 +80,168 @@ def phase_energy(df: pd.DataFrame, dt_s: float) -> pd.DataFrame:
 
     Missing (NaN) samples count toward the duration but add no energy (same policy as the
     total), so E_mJ is the sum of the observed samples x dt and mean_P_W their mean."""
-    g = df.groupby(["phase", "iter", "step"], sort=False, dropna=False)
+    keys = ["phase", "iter", "step"]
+    g = df.groupby(keys, sort=False, dropna=False, observed=True)   # observed: categorical keys
     out = g.agg(n_samples=("P_W", "size"), n_finite=("P_W", "count"),
                 P_sum=("P_W", "sum"), mean_P_W=("P_W", "mean"),
                 ctx_read_frac=("ctx_read", "mean"),
                 t_start_s=("t_s", "min"), t_end_s=("t_s", "max")).reset_index()
+    for k in keys:
+        out[k] = out[k].astype(object)      # the table is small; plain strings downstream
     out["dur_ms"] = out["n_samples"] * dt_s * 1000.0
     out["E_mJ"] = out.pop("P_sum") * dt_s * 1000.0
     return out
+
+
+def _frame_table(pe: pd.DataFrame, mode: str) -> pd.DataFrame:
+    """Per measured iteration (frame >= 1) of one mode: energy E_mJ and duration dur_ms.
+
+    Frame 0 is the first call of the mode (cold caches, lazy init) and is excluded."""
+    rows = pe[pe["phase"] == mode]
+    frame = pd.to_numeric(rows["iter"], errors="coerce")
+    rows = rows[frame >= 1].assign(frame=frame[frame >= 1])
+    return rows.groupby("frame")[["E_mJ", "dur_ms"]].sum()
+
+
+def _concurrent_summary(conc: dict) -> dict:
+    """What derived.json says about a concurrent cell: energy_per_frame_mJ is the whole board's
+    draw per primary frame (both workloads), not the primary's own."""
+    return {"mode": conc.get("mode"), "model": conc.get("model"), "tags": conc.get("tags"),
+            "threads_split": conc.get("threads_split"), "iterations": conc.get("iterations"),
+            "latency_ms": conc.get("latency_ms"),
+            "note": "energy per frame covers both workloads running together"}
+
+
+def derived_metrics(pe: pd.DataFrame, meta: dict, baseline_P_W: float) -> dict:
+    """Energy and latency per frame from the per-(phase, iter, step) energy table.
+
+    dyn_energy subtracts baseline_P_W x iteration duration (W x ms = mJ). Single-mode cells
+    (image, train) also get the headline scalars; by_mode always has every mode's values."""
+    batch = int(meta.get("batch") or 1)
+    modes = list(meta.get("modes") or [])
+    by_mode = {}
+    for m in modes:
+        t = _frame_table(pe, m)
+        if t.empty:
+            by_mode[m] = {"n_frames": 0, "energy_per_frame_mJ": None,
+                          "dyn_energy_per_frame_mJ": None, "latency_ms_per_frame": None}
+            continue
+        e = float(t["E_mJ"].mean())
+        by_mode[m] = {"n_frames": int(len(t)), "energy_per_frame_mJ": e,
+                      "dyn_energy_per_frame_mJ": float((t["E_mJ"] - baseline_P_W * t["dur_ms"]).mean()),
+                      "latency_ms_per_frame": float(t["dur_ms"].mean())}
+    head = by_mode[modes[0]] if len(modes) == 1 else {}
+    e = head.get("energy_per_frame_mJ")
+    out = {"energy_per_frame_mJ": e,
+            "dyn_energy_per_frame_mJ": head.get("dyn_energy_per_frame_mJ"),
+            "latency_ms_per_frame": head.get("latency_ms_per_frame"),
+            "energy_per_image_mJ": e / batch if e is not None else None,
+            "n_frames": head.get("n_frames"), "batch": batch, "baseline_mean_P_W": baseline_P_W,
+            "by_mode": by_mode, "variant": meta.get("variant"), "holdout": meta.get("holdout"),
+            "map_reference": meta.get("map_reference")}
+    if meta.get("concurrent"):
+        out["concurrent"] = _concurrent_summary(meta["concurrent"])
+    return out
+
+
+def _active_window(col: pd.Series) -> tuple[int, int]:
+    """Row positions [lo, hi) from the first to the last labelled sample (rows are in time
+    order); (0, 0) if the column is never labelled."""
+    idx = np.flatnonzero((col != "").to_numpy())
+    return (int(idx[0]), int(idx[-1]) + 1) if idx.size else (0, 0)
+
+
+def concurrent_checks(in_modes: pd.DataFrame, conc: dict) -> tuple[list, list, dict]:
+    """Per-tag checks of a --concurrent cell: (errors, warnings, info). Every tag needs
+    iterations and a step_<tag> column; the other tags also need their steps, coverage of their
+    active window and overlap with the primary (the primary's own steps and coverage are checked
+    by verify() on the `step` column, so they are not reported twice)."""
+    errs: list[str] = []
+    warns: list[str] = []
+    info: dict = {"coverage": {}, "overlap": {}}
+    tags = list(conc.get("tags") or [])
+    if "tag" not in in_modes.columns:
+        return ["concurrent cell without a tag column (events.csv had no tagged steps)"], warns, info
+    iters = conc.get("iterations") or {}
+    for t in tags:
+        if not iters.get(t):
+            errs.append(f"concurrent workload {t} completed no iterations")
+        col = in_modes.get(f"step_{t}")
+        if col is None:
+            errs.append(f"no step_{t} column: workload {t} left no step events")
+            continue
+        if t == PRIMARY_TAG:
+            continue
+        seen = set(col.unique()) - {""}
+        want = SPIN_STEPS if t == "spin" else INFER_STEPS
+        missing = [x for x in want if x not in seen]
+        if missing:
+            errs.append(f"steps without samples for workload {t}: {missing}")
+        lo, hi = _active_window(col)
+        win = col.iloc[lo:hi]
+        cov = float((win != "").mean()) if len(win) else 0.0
+        info["coverage"][t] = cov
+        if cov < STEP_COVERAGE_FAIL:
+            errs.append(f"step coverage of workload {t} {cov:.2f} < {STEP_COVERAGE_FAIL}")
+        elif cov < STEP_COVERAGE_WARN:
+            warns.append(f"step coverage of workload {t} {cov:.2f} < {STEP_COVERAGE_WARN}")
+        if PRIMARY_TAG in tags and f"step_{PRIMARY_TAG}" in in_modes:
+            span = in_modes[f"step_{PRIMARY_TAG}"].iloc[lo:hi]
+            ov = float((span != "").mean()) if len(span) else 0.0
+            info["overlap"][t] = ov
+            if ov < OVERLAP_FAIL:
+                errs.append(f"workloads {PRIMARY_TAG} and {t} overlap only {ov:.2f} of {t}'s window")
+            elif ov < OVERLAP_WARN:
+                warns.append(f"workloads {PRIMARY_TAG} and {t} overlap {ov:.2f} < {OVERLAP_WARN}")
+    return errs, warns, info
+
+
+def _is_yolo(meta: dict) -> bool:
+    return Path(str(meta.get("model") or "")).name.lower().startswith("yolo")
+
+
+def _fan_errors(meta: dict) -> list[str]:
+    """full: fan_full must be set. auto/off: the mode must be recorded. Anything else (incl. a
+    v1-style meta without fan_full) is the old "fan_full not set" error."""
+    mode = meta.get("fan_mode", "full" if meta.get("fan_full") else "none")
+    if mode == "full":
+        return [] if meta.get("fan_full") else ["fan_full not set (fan_mode full)"]
+    if mode in FAN_MODES:
+        return []
+    return [f"fan_full not set (fan_mode {mode})"]
+
+
+def _clock_range_errors(in_modes: pd.DataFrame) -> list[str]:
+    cols = [c for c in in_modes.columns if c.startswith("sys_cpu") and c.endswith("_kHz")]
+    vals = in_modes[cols].to_numpy(dtype=np.float64) if cols else np.empty((0, 0))
+    vals = vals[np.isfinite(vals)]
+    if vals.size == 0:
+        return ["no cpu frequency readings in mode phases"]
+    lo, hi = (DVFS_RANGE_MHZ[0] - DVFS_TOL_MHZ) * 1000, (DVFS_RANGE_MHZ[1] + DVFS_TOL_MHZ) * 1000
+    if vals.min() < lo or vals.max() > hi:
+        return [f"cpu clock outside {DVFS_RANGE_MHZ[0]}-{DVFS_RANGE_MHZ[1]} MHz "
+                f"(+/-{DVFS_TOL_MHZ}): min {vals.min() / 1000:.0f} max {vals.max() / 1000:.0f} MHz"]
+    return []
+
+
+def _thermal_errors(run_dir: Path, meta: dict | None) -> list[str]:
+    errs = []
+    t = None
+    try:
+        t = json.loads((run_dir / "thermal_abort.json").read_text())
+    except OSError:
+        pass
+    except ValueError:
+        t = {}
+    if t is None and meta and meta.get("thermal_abort"):
+        t = meta["thermal_abort"]
+    if t is not None:
+        temp = t.get("temp_C") if isinstance(t, dict) else None
+        errs.append(f"thermal abort at {temp} C")
+    max_t = (meta or {}).get("max_temp_C")
+    if max_t is not None and max_t >= THERMAL_ABORT_C:
+        errs.append(f"max_temp_C {max_t} >= {THERMAL_ABORT_C:g}")
+    return errs
 
 
 def verify(run_dir, cpu_mhz: int | None = None, write: bool = True) -> dict:
@@ -62,9 +253,10 @@ def verify(run_dir, cpu_mhz: int | None = None, write: bool = True) -> dict:
     try:
         meta = json.loads((run_dir / "run_meta.json").read_text())
         ali = json.loads((run_dir / "alignment.json").read_text())
-        df = pd.read_parquet(run_dir / "power_trace.parquet")
+        df = read_trace(run_dir / "power_trace.parquet")
     except (OSError, ValueError) as e:
         errors.append(f"missing or unreadable output: {e}")
+        errors.extend(_thermal_errors(run_dir, None))   # an aborted run leaves no run_meta.json
         res["ok"] = False
         return res
 
@@ -72,8 +264,7 @@ def verify(run_dir, cpu_mhz: int | None = None, write: bool = True) -> dict:
         errors.append(f"schema_version {meta.get('schema_version')} != 4")
     if cpu_mhz is not None and meta.get("cpu_mhz_pinned") != cpu_mhz:
         errors.append(f"cpu_mhz_pinned {meta.get('cpu_mhz_pinned')} != {cpu_mhz}")
-    if not meta.get("fan_full"):
-        errors.append("fan_full not set")
+    errors.extend(_fan_errors(meta))
     if not ali.get("pass"):
         errors.append(f"alignment failed: {ali.get('fail_reasons')}")
     if ali.get("slip_warning"):
@@ -104,14 +295,18 @@ def verify(run_dir, cpu_mhz: int | None = None, write: bool = True) -> dict:
                       f"(allowed {P_MIN_W}-{P_MAX_W})")
 
     counts = df["phase"].value_counts()
+    counts = counts[counts > 0]          # a categorical also lists unobserved categories
     missing = [p for p in expected_phases(meta) if counts.get(p, 0) == 0]
     if missing:
         errors.append(f"phases without samples: {missing}")
-    if not meta.get("bench_skipped") and not any(str(p).startswith("bench:") for p in counts.index):
+    benches_off = meta.get("bench_skipped") or meta.get("bench_forced_off")
+    if not benches_off and not any(str(p).startswith("bench:") for p in counts.index):
         errors.append("no bench:* phase although benches were not skipped")
 
     modes = list(meta.get("modes") or [])
-    in_modes = df[df["phase"].isin(modes)]
+    # the mode subset: a boolean mask and only the columns its checks read (no whole-frame copy)
+    in_cols = [c for c in df.columns if c not in ("t_s", "phase", "iter", "ctx_read")]
+    in_modes = df.loc[df["phase"].isin(modes).to_numpy(), in_cols]
     seen_steps = set(in_modes["step"].unique())
     miss_steps = [s for s in expected_steps(meta) if s not in seen_steps]
     if miss_steps:
@@ -121,6 +316,37 @@ def verify(run_dir, cpu_mhz: int | None = None, write: bool = True) -> dict:
         errors.append(f"step coverage in mode phases {cov:.2f} < {STEP_COVERAGE_FAIL}")
     elif cov < STEP_COVERAGE_WARN:
         warnings.append(f"step coverage in mode phases {cov:.2f} < {STEP_COVERAGE_WARN}")
+
+    if meta.get("concurrent"):
+        c_err, c_warn, res["concurrent"] = concurrent_checks(in_modes, meta["concurrent"])
+        errors.extend(c_err)
+        warnings.extend(c_warn)
+
+    v2 = meta.get("dataset_version") == 2
+    if meta.get("governor") == "ondemand":
+        errors.extend(_clock_range_errors(in_modes))
+    if v2:
+        pc = meta.get("perf_counters") or {}
+        if not pc.get("enabled"):
+            errors.append("perf counters not enabled for a dataset_version 2 cell")
+        else:
+            ctr = (in_modes["ctr_instructions"].notna().mean()
+                   if "ctr_instructions" in in_modes and len(in_modes) else 0.0)
+            res["counter_coverage"] = float(ctr)
+            if ctr < COUNTER_COVERAGE_MIN:
+                errors.append(f"counter coverage {ctr:.3f} < {COUNTER_COVERAGE_MIN}")
+    errors.extend(_thermal_errors(run_dir, meta))
+    if "sys_uv_alarm" in df:
+        n_uv = int((df["sys_uv_alarm"] == 1).sum())
+        if n_uv:
+            errors.append(f"live under-voltage alarm (sys_uv_alarm) in {n_uv} trace samples")
+    if _is_yolo(meta) and (v2 or "variant" in meta):
+        ref = meta.get("map_reference")
+        if not ref:
+            warnings.append(f"mAP reference missing for {meta.get('variant')}@{meta.get('imgsz')}")
+        elif (ref.get("measured_on") or {}).get("machine") != "aarch64":
+            warnings.append(f"mAP reference not measured on the Pi "
+                            f"({meta.get('variant')}@{meta.get('imgsz')})")
 
     dt_s = 1.0 / float(ali.get("slip_rate_hz") or 5000.0)
     pe = phase_energy(df, dt_s)
@@ -132,8 +358,8 @@ def verify(run_dir, cpu_mhz: int | None = None, write: bool = True) -> dict:
     if write:
         pe.to_csv(run_dir / "phase_energy.csv", index=False)
 
-    by_phase = df.groupby("phase")["P_W"].mean()
-    by_step = in_modes.groupby("step")["P_W"].mean()
+    by_phase = df.groupby("phase", observed=True)["P_W"].mean()
+    by_step = in_modes.groupby("step", observed=True)["P_W"].mean()
     res.update({
         "n_samples": n, "nan_fraction": nan_frac, "step_coverage": cov,
         "energy_total_J": e_total / 1000.0, "energy_closure": closure,
@@ -143,6 +369,15 @@ def verify(run_dir, cpu_mhz: int | None = None, write: bool = True) -> dict:
         "max_residual_ms": ali.get("max_residual_ms"),
         "slip_samples_total": ali.get("slip_samples_total", 0),
     })
+    if meta.get("max_temp_C") is not None:
+        res["max_temp_C"] = meta["max_temp_C"]
+    bl = [by_phase[k] for k in ("baseline_A", "baseline_B") if k in by_phase]
+    base_w = float(np.mean(bl)) if bl else 0.0       # same definition as run_meta baseline_W
+    res["derived"] = derived_metrics(pe, meta, base_w)
+    if modes and not any(v["n_frames"] for v in res["derived"]["by_mode"].values()):
+        warnings.append("no measured iterations (frame >= 1): derived metrics are empty")
+    if write:
+        (run_dir / "derived.json").write_text(json.dumps(res["derived"], indent=2))
     res["ok"] = not errors
     return res
 

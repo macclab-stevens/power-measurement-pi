@@ -14,21 +14,31 @@ def _cell(cid, rnd=0, mhz=2400):
 
 
 class FakeShell:
-    def __init__(self, run_rc=None, pi_up=True, temps=("temp=42.0'C",), ping=False):
+    def __init__(self, run_rc=None, pi_up=True, temps=("temp=42.0'C",), ping=False,
+                 pi_free_kb=100 * 1024 ** 2, pgrep=None):
+        self.pgrep = list(pgrep or [(1, "")])   # (rc, out) per `pgrep` call, the last repeats
         self.run_rc = dict(run_rc or {})    # cell_id -> [rc per attempt]
         self.pi_up_ = pi_up
         self.temps = list(temps)
         self.ping_ = ping
+        self.pi_free_kb = pi_free_kb
         self.cmds = []
 
     def ssh(self, cmd, timeout):
         self.cmds.append(("ssh", cmd))
+        if cmd.startswith("df -Pk"):
+            return 0, ("bash: warning: setlocale: LC_ALL\nFilesystem 1024-blocks Used Available "
+                       f"Capacity Mounted on\n/dev/sda2 500000000 1 {self.pi_free_kb} 1% /\n")
+        if cmd.startswith("pgrep"):
+            return self.pgrep.pop(0) if len(self.pgrep) > 1 else self.pgrep[0]
+        if cmd.startswith("pkill"):
+            return 0, ""
         if cmd == "true":
             return (0, "") if self._up() else (255, "down")
         if cmd.startswith("vcgencmd"):
             t = self.temps.pop(0) if len(self.temps) > 1 else self.temps[0]
             return 0, "bash: warning: setlocale: LC_ALL\n" + t
-        if "src/run.py" in cmd:
+        if "src/run.py" in cmd and not cmd.startswith(("pgrep", "pkill")):
             cid = cmd.split("--out runs/matrix/")[1].split()[0]
             rcs = self.run_rc.get(cid, [0])
             return (rcs.pop(0) if len(rcs) > 1 else rcs[0]), "out"
@@ -59,8 +69,19 @@ class FakeShell:
         return self.ping_
 
 
+def _rising_status(extra=None, start=1000):
+    """A /status that behaves like a live recorder: n_total grows with every read."""
+    n = {"v": start}
+
+    def status():
+        n["v"] += 10000
+        return {"recording": True, "run_dir": "data/x", "n_total": n["v"], **(extra or {})}
+    return status
+
+
 def _orch(tmp_path, sh, verify_ok=True, **kw):
     calls = {"align": [], "verify": []}
+    kw.setdefault("local_free_fn", lambda p: 100.0)
 
     def align_fn(rec, pi, out):
         calls["align"].append(str(pi))
@@ -71,7 +92,7 @@ def _orch(tmp_path, sh, verify_ok=True, **kw):
         return {"ok": verify_ok, "errors": [] if verify_ok else ["bad"], "warnings": []}
 
     o = ex.Orchestrator(tmp_path / "runs", tmp_path / "runs" / "results.jsonl", sh=sh,
-                        status_fn=lambda: {"recording": True, "run_dir": "data/x"},
+                        status_fn=_rising_status(),
                         align_fn=align_fn, verify_fn=verify_fn, sleep=lambda s: None,
                         log=lambda m: None, **kw)
     return o, calls
@@ -170,7 +191,7 @@ def test_power_cycle_when_halted(tmp_path, monkeypatch):
     runs = [" ".join(map(str, c)) for k, c in sh.cmds if k == "run"]
     assert "stop monsoon-recorder" in runs[0]
     assert "vout_off.py --confirm-pi-halted" in runs[1]
-    assert "recorder.py --vout 5.25 --current-limit 6" in runs[2]
+    assert "recorder.py --vout 5.35 --current-limit 6" in runs[2]
     assert ex.load_jsonl(tmp_path / "runs" / "power_cycles.jsonl")[0]["mean_A"] == 0.28
 
 
@@ -224,9 +245,9 @@ def test_recorder_failure_during_recovery_is_a_recorder_result(tmp_path, monkeyp
 
     def status():
         calls["n"] += 1
-        if calls["n"] > 1:
+        if calls["n"] > 2:
             raise OSError("connection refused")
-        return {"recording": True, "run_dir": "data/x"}
+        return {"recording": True, "run_dir": "data/x", "n_total": calls["n"] * 10000}
 
     sh = FakeShell(pi_up=False)
     o, _ = _orch(tmp_path, sh, auto_power_cycle=3)
@@ -242,9 +263,9 @@ def test_recorder_failure_after_recovery_is_a_recorder_result(tmp_path):
 
     def status():
         calls["n"] += 1
-        if calls["n"] == 2:
+        if calls["n"] == 3:
             raise OSError("gone")
-        return {"recording": True, "run_dir": "data/x"}
+        return {"recording": True, "run_dir": "data/x", "n_total": calls["n"] * 10000}
 
     o, _ = _orch(tmp_path, FakeShell())
     o.status_fn = status
@@ -290,7 +311,7 @@ class _SubdirShell(FakeShell):
         self.timeouts = []
 
     def ssh(self, cmd, timeout):
-        if "src/run.py" in cmd:
+        if "src/run.py" in cmd and not cmd.startswith(("pgrep", "pkill")):
             self.cmds.append(("ssh", cmd))
             self.timeouts.append(timeout)
             return 0, "out"
@@ -301,7 +322,7 @@ def test_orchestrator_custom_subdir_and_timeout(tmp_path, monkeypatch):
     sh = _SubdirShell()
     o, _ = _orch(tmp_path, sh, pi_subdir="runs/lab", run_timeout_s=123)
     assert o.run_cell(_cell("x1"), 1)["status"] == "ok"
-    run = [c for k, c in sh.cmds if k == "ssh" and "src/run.py" in c]
+    run = [c for k, c in sh.cmds if k == "ssh" and c.startswith("cd ") and "src/run.py" in c]
     assert len(run) == 1 and "--out runs/lab/x1 " in run[0] and sh.timeouts == [123]
     srcs = [c[2] for k, c in sh.cmds if k == "run" and c[0] == "rsync"]
     assert srcs == [f"{ex.PI}:{ex.PI_DIR}/runs/lab/x1.log", f"{ex.PI}:{ex.PI_DIR}/runs/lab/x1/"]
@@ -313,3 +334,324 @@ def test_orchestrator_default_timeout_read_at_call_time(tmp_path, monkeypatch):
     monkeypatch.setattr(ex, "RUN_TIMEOUT_S", 77)
     o.run_cell(_cell("x1"), 1)
     assert sh.timeouts == [77]
+
+
+# ---- Task 11: timeouts, thermal abort, disk and recorder pre-checks -------------------------------
+class _RcShell(_SubdirShell):
+    """Like _SubdirShell, but run.py answers with a chosen rc and thermal_abort.json is rsynced."""
+
+    def __init__(self, rc, abort_json=None, **kw):
+        super().__init__()
+        self.rc, self.abort_json = rc, abort_json
+
+    def ssh(self, cmd, timeout):
+        if "src/run.py" in cmd and not cmd.startswith(("pgrep", "pkill")):
+            self.cmds.append(("ssh", cmd))
+            self.timeouts.append(timeout)
+            return self.rc, "out"
+        return super().ssh(cmd, timeout)
+
+    def run(self, cmd, timeout, cwd=None):
+        rc = super().run(cmd, timeout, cwd)
+        if cmd[0] == "rsync" and cmd[-1].endswith("/") and self.abort_json is not None:
+            from pathlib import Path
+            (Path(cmd[-1]) / "thermal_abort.json").write_text(self.abort_json)
+        return rc
+
+
+def test_cell_timeout_overrides_orchestrator_and_default(tmp_path):
+    sh = _SubdirShell()
+    o, _ = _orch(tmp_path, sh, run_timeout_s=123)
+    o.run_cell({**_cell("a"), "timeout_s": 7200}, 1)
+    o.run_cell(_cell("b"), 1)
+    assert sh.timeouts == [7200, 123]
+    sh2 = _SubdirShell()
+    o2, _ = _orch(tmp_path / "two", sh2)
+    o2.run_cell({**_cell("c"), "timeout_s": 5400}, 1)
+    o2.run_cell(_cell("d"), 1)
+    assert sh2.timeouts == [5400, ex.RUN_TIMEOUT_S]
+
+
+@pytest.mark.parametrize("rc", [3, 4])
+def test_thermal_exit_code_is_thermal_abort_with_json_and_not_retried(tmp_path, rc):
+    payload = {"t_real_ns": 1, "temp_C": 85.4, "level": "abort", "phase": "measure"}
+    sh = _RcShell(rc, json.dumps(payload))
+    o, calls = _orch(tmp_path, sh)
+    man = [_cell("a_2400_r00"), _cell("b_2400_r00")]
+    s = o.run(man, max_attempts=2)
+    rows = ex.load_jsonl(tmp_path / "runs" / "results.jsonl")
+    assert [(r["cell_id"], r["stage"], r["attempt"]) for r in rows] == [
+        ("a_2400_r00", "thermal_abort", 1), ("b_2400_r00", "thermal_abort", 1)]
+    assert json.loads(rows[0]["error"]) == payload and rows[0]["run_rc"] == rc
+    assert s["aborted"] is None and calls["align"] == []      # matrix continued; nothing aligned
+    assert ex.cell_state(rows)["a_2400_r00"]["attempts"] == 1
+    # the start-of-cell thermal gate still ran before the second cell
+    assert sum(1 for k, c in sh.cmds if k == "ssh" and c.startswith("vcgencmd")) == 2
+
+
+def test_thermal_abort_without_json_still_reports_stage(tmp_path):
+    o, _ = _orch(tmp_path, _RcShell(3))
+    r = o.run_cell(_cell("a"), 1)
+    assert r["stage"] == "thermal_abort" and "thermal_abort.json" in r["error"]
+
+
+def test_other_nonzero_rc_is_still_run_stage(tmp_path):
+    r = _orch(tmp_path, _RcShell(2))[0].run_cell(_cell("a"), 1)
+    assert r["stage"] == "run"
+
+
+def test_soak_cells_are_not_gated_mid_run(tmp_path):
+    # temperature is read only at the start of a cell, whatever the family
+    sh = _SubdirShell()
+    o, _ = _orch(tmp_path, sh)
+    o.run_cell({**_cell("a"), "family": "soak"}, 1)
+    assert sum(1 for k, c in sh.cmds if k == "ssh" and c.startswith("vcgencmd")) == 1
+
+
+def test_disk_check_thresholds(tmp_path):
+    gb = 1024 ** 2          # KiB per GiB
+    o, _ = _orch(tmp_path, FakeShell(pi_free_kb=5 * gb), local_free_fn=lambda p: 10.0)
+    assert o.disk_check(_cell("a")) is None
+    soak = {**_cell("a"), "family": "soak"}
+    assert "EliteBook" in o.disk_check(soak) and "need 12" in o.disk_check(soak)
+    o, _ = _orch(tmp_path, FakeShell(pi_free_kb=5 * gb), local_free_fn=lambda p: 12.0)
+    assert "Pi" in o.disk_check(soak) and "need 7" in o.disk_check(soak)
+    o, _ = _orch(tmp_path, FakeShell(pi_free_kb=7 * gb), local_free_fn=lambda p: 12.0)
+    assert o.disk_check(soak) is None
+    o, _ = _orch(tmp_path, FakeShell(pi_free_kb=5 * gb - 1), local_free_fn=lambda p: 50.0)
+    assert "Pi" in o.disk_check(_cell("a"))
+    o, _ = _orch(tmp_path, FakeShell(), local_free_fn=lambda p: 9.9)
+    assert "need 10" in o.disk_check(_cell("a"))
+
+
+def test_disk_failure_aborts_matrix_before_run(tmp_path):
+    sh = FakeShell(pi_free_kb=1024)
+    o, calls = _orch(tmp_path, sh)
+    s = o.run([_cell("a_2400_r00"), _cell("b_2400_r00")])
+    rows = ex.load_jsonl(tmp_path / "runs" / "results.jsonl")
+    assert len(rows) == 1 and rows[0]["stage"] == "disk" and s["aborted"].startswith("disk")
+    assert not any("src/run.py" in c for k, c in sh.cmds if k == "ssh")
+    assert not any("vcgencmd" in c for k, c in sh.cmds if k == "ssh")
+
+
+def test_disk_check_fails_closed_when_df_unreadable(tmp_path):
+    class Garbled(FakeShell):
+        def ssh(self, cmd, timeout):
+            return (0, "garbage") if cmd.startswith("df") else super().ssh(cmd, timeout)
+    r = _orch(tmp_path, Garbled())[0].run_cell(_cell("a"), 1)
+    assert r["stage"] == "disk" and "could not read" in r["error"]
+
+
+def test_parse_df_avail_gb():
+    out = "bash: warning: setlocale\nFilesystem 1024-blocks Used Available Capacity Mounted on\n" \
+          "/dev/sda2 100 1 2097152 3% /home\n"
+    assert ex.parse_df_avail_gb(out) == 2.0
+    assert ex.parse_df_avail_gb("garbage") is None
+
+
+def test_local_free_gb_walks_up_to_existing_parent(tmp_path):
+    assert ex.local_free_gb(tmp_path / "not" / "yet") > 0
+
+
+CEIL = 2 ** 32 - 1
+
+
+def test_recorder_stalled_pure():
+    assert ex.recorder_stalled({"n_total": 100}, {"n_total": 200}) is None
+    msg = ex.recorder_stalled({"n_total": CEIL}, {"n_total": CEIL})
+    assert "not sampling" in msg and "README section 8" in msg
+    assert "not sampling" in ex.recorder_stalled({"n_total": 5}, {"n_total": 5})
+    assert "not sampling" in ex.recorder_stalled({"n_total": 9}, {"n_total": 5})
+    limit = CEIL - 5000 * 3600
+    assert ex.recorder_stalled({"n_total": limit - 20}, {"n_total": limit - 1}) is None
+    near = ex.recorder_stalled({"n_total": limit - 1}, {"n_total": limit})
+    assert "ceiling" in near and "README section 8" in near
+    assert "n_total" in ex.recorder_stalled({}, {"n_total": 5})
+    assert "n_total" in ex.recorder_stalled({"n_total": 5}, {"n_total": None})
+
+
+def _flat_status(n):
+    return lambda: {"recording": True, "run_dir": "data/x", "n_total": n}
+
+
+def test_stalled_recorder_fails_cell_and_aborts_matrix_before_anything_else(tmp_path):
+    sh = FakeShell()
+    o, _ = _orch(tmp_path, sh)
+    o.status_fn = _flat_status(CEIL)
+    s = o.run([_cell("a_2400_r00"), _cell("b_2400_r00")])
+    rows = ex.load_jsonl(tmp_path / "runs" / "results.jsonl")
+    assert len(rows) == 1 and rows[0]["stage"] == "recorder" and "README section 8" in rows[0]["error"]
+    assert s["aborted"].startswith("recorder") and sh.cmds == []
+
+
+def test_status_is_read_twice_with_the_injected_sleep(tmp_path):
+    sleeps, reads = [], []
+    sh = FakeShell()
+    o, _ = _orch(tmp_path, sh)
+    base = _rising_status()
+    o.status_fn = lambda: (reads.append(1), base())[1]
+    o.sleep = sleeps.append
+    assert o.run_cell(_cell("a"), 1)["status"] == "ok"
+    assert sleeps[0] == 2 and len(reads) >= 2
+
+
+def test_second_status_read_failure_is_a_recorder_result(tmp_path):
+    calls = {"n": 0}
+
+    def status():
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("reset")
+        return {"recording": True, "run_dir": "data/x", "n_total": 10}
+    o, _ = _orch(tmp_path, FakeShell())
+    o.status_fn = status
+    r = o.run_cell(_cell("a"), 1)
+    assert r["stage"] == "recorder" and "reset" in r["error"]
+
+
+def test_default_local_free_fn_is_resolved_at_call_time(tmp_path, monkeypatch):
+    monkeypatch.setattr(ex, "local_free_gb", lambda p: 1.0)
+    o = ex.Orchestrator(tmp_path, tmp_path / "r.jsonl", sh=FakeShell(), log=lambda m: None)
+    assert "EliteBook" in o.disk_check(_cell("a"))
+
+
+# ---- final review I2: stale run.py, I3: under-voltage in dmesg, M6: df retry ------------------------
+def _ssh_cmds(sh):
+    return [c for k, c in sh.cmds if k == "ssh"]
+
+
+def test_pgrep_pattern_does_not_match_its_own_command_line():
+    import re
+    for cmd in (ex.PI_RUN_PGREP, ex.PI_RUN_PKILL_INT):
+        pattern = shlex.split(cmd)[-1]
+        assert not re.search(pattern, cmd)                          # the ssh command line
+        assert re.search(pattern, "uv run --frozen python src/run.py --task image")
+
+
+def test_pi_busy_stops_the_matrix_before_the_run(tmp_path):
+    sh = FakeShell(pgrep=[(0, "4242 /usr/bin/python src/run.py --task image")])
+    o, calls = _orch(tmp_path, sh)
+    s = o.run([_cell("a_2400_r00"), _cell("b_2400_r00")])
+    rows = ex.load_jsonl(tmp_path / "runs" / "results.jsonl")
+    assert len(rows) == 1 and rows[0]["stage"] == "pi_busy"
+    assert "4242" in rows[0]["error"] and s["aborted"].startswith("pi_busy")
+    assert not any("src/run.py" in c and c.startswith("cd ") for c in _ssh_cmds(sh))
+    assert not any("vcgencmd" in c for c in _ssh_cmds(sh))        # no thermal gate wait either
+
+
+def test_pi_busy_fails_closed_when_the_check_gets_no_answer(tmp_path):
+    r = _orch(tmp_path, FakeShell(pgrep=[(255, "ssh: timeout")]))[0].run_cell(_cell("a"), 1)
+    assert r["stage"] == "pi_busy" and "could not check" in r["error"]
+
+
+def test_no_run_py_on_the_pi_lets_the_cell_run(tmp_path):
+    sh = FakeShell()
+    r = _orch(tmp_path, sh)[0].run_cell(_cell("a_2400_r00"), 1)
+    assert r["status"] == "ok"
+    assert sum(1 for c in _ssh_cmds(sh) if c == ex.PI_RUN_PGREP) == 1
+
+
+def test_timeout_sends_sigint_waits_for_exit_and_records_stage(tmp_path):
+    sleeps = []
+    # busy check (clear), then after SIGINT: still running twice, then gone
+    sh = _RcShell(124)
+    sh.pgrep = [(1, ""), (0, "x"), (0, "x"), (1, "")]
+    o, calls = _orch(tmp_path, sh)
+    o.sleep = sleeps.append
+    r = o.run_cell(_cell("a"), 1)
+    assert r["stage"] == "timeout" and r["status"] == "fail" and r["run_exited"] is True
+    assert "SIGINT sent and exited" in r["error"] and r["run_rc"] == 124
+    cmds = _ssh_cmds(sh)
+    assert ex.PI_RUN_PKILL_INT in cmds
+    assert cmds.index(ex.PI_RUN_PKILL_INT) > next(i for i, c in enumerate(cmds) if "src/run.py" in c)
+    assert [s for s in sleeps if s == ex.RUN_EXIT_POLL_S] == [5, 5]
+    assert calls["align"] == []
+    assert any(k == "run" and c[0] == "rsync" for k, c in sh.cmds)       # logs still fetched
+
+
+def test_timeout_gives_up_after_60_s_and_says_it_is_still_running(tmp_path):
+    sleeps = []
+    sh = _RcShell(124)
+    sh.pgrep = [(1, ""), (0, "still here")]
+    o, _ = _orch(tmp_path, sh)
+    o.sleep = sleeps.append
+    r = o.run_cell(_cell("a"), 1)
+    assert r["stage"] == "timeout" and r["run_exited"] is False and "STILL RUNNING" in r["error"]
+    polls = [s for s in sleeps if s == ex.RUN_EXIT_POLL_S]
+    assert len(polls) == ex.RUN_EXIT_WAIT_S // ex.RUN_EXIT_POLL_S
+
+
+def test_no_sigint_when_run_py_ended_on_its_own(tmp_path):
+    sh = _RcShell(2)
+    _orch(tmp_path, sh)[0].run_cell(_cell("a"), 1)
+    assert ex.PI_RUN_PKILL_INT not in _ssh_cmds(sh)
+
+
+def test_undervoltage_lines_pure():
+    log = ("[ 10.0] usb 1-1: new device\n[ 99.1] hwmon hwmon3: Undervoltage detected!\n"
+           "[ 99.9] hwmon hwmon3: Voltage normalised\n" + "".join(
+               f"[ {i}.0] hwmon hwmon3: Undervoltage detected!\n" for i in range(100, 110)))
+    hits = ex.undervoltage_lines(log)
+    assert len(hits) == 5 and hits[0] == "[ 99.1] hwmon hwmon3: Undervoltage detected!"
+    assert ex.undervoltage_lines("Voltage normalised\nnothing\n") == []
+
+
+class _DmesgShell(FakeShell):
+    """rsync of the run dir works as usual; the dmesg capture file is written by popen."""
+
+    def __init__(self, text, **kw):
+        super().__init__(**kw)
+        self.text = text
+
+    def popen(self, cmd, out_path):
+        from pathlib import Path
+        Path(out_path).write_text(self.text)
+        return super().popen(cmd, out_path)
+
+
+def test_undervoltage_in_cell_dmesg_fails_the_cell_but_not_the_matrix(tmp_path):
+    sh = _DmesgShell("[ 5.0] hwmon hwmon3: Undervoltage detected!\n[ 9.0] hwmon hwmon3: "
+                     "Voltage normalised\n")
+    o, calls = _orch(tmp_path, sh)
+    s = o.run([_cell("a_2400_r00"), _cell("b_2400_r00")], max_attempts=1)
+    rows = ex.load_jsonl(tmp_path / "runs" / "results.jsonl")
+    assert [(r["cell_id"], r["stage"]) for r in rows] == [("a_2400_r00", "undervoltage"),
+                                                          ("b_2400_r00", "undervoltage")]
+    assert "Undervoltage detected" in rows[0]["error"] and "normalised" not in rows[0]["error"]
+    assert s["aborted"] is None and calls["align"] == []
+
+
+def test_undervoltage_cell_is_retried(tmp_path):
+    sh = _DmesgShell("hwmon hwmon3: Undervoltage detected!\n")
+    o, _ = _orch(tmp_path, sh)
+    o.run([_cell("a_2400_r00")], max_attempts=2)
+    assert [r["attempt"] for r in ex.load_jsonl(tmp_path / "runs" / "results.jsonl")] == [1, 2]
+
+
+def test_clean_dmesg_passes(tmp_path):
+    sh = _DmesgShell("[ 5.0] hwmon hwmon3: Voltage normalised\n")
+    assert _orch(tmp_path, sh)[0].run_cell(_cell("a_2400_r00"), 1)["status"] == "ok"
+
+
+def test_disk_check_retries_one_failed_df_after_10_s(tmp_path):
+    class Flaky(FakeShell):
+        def __init__(self, fails):
+            super().__init__()
+            self.fails = fails
+
+        def ssh(self, cmd, timeout):
+            if cmd.startswith("df") and self.fails > 0:
+                self.fails -= 1
+                self.cmds.append(("ssh", cmd))
+                return 255, "ssh: connect timed out"
+            return super().ssh(cmd, timeout)
+    sleeps = []
+    o, _ = _orch(tmp_path, Flaky(1))
+    o.sleep = sleeps.append
+    assert o.disk_check(_cell("a")) is None and sleeps == [ex.DISK_RETRY_WAIT_S] == [10]
+    sleeps.clear()
+    sh2 = Flaky(2)
+    o2, _ = _orch(tmp_path, sh2)
+    o2.sleep = sleeps.append
+    assert "could not read" in o2.disk_check(_cell("a")) and sleeps == [10]
+    assert sum(1 for c in _ssh_cmds(sh2) if c.startswith("df")) == 2        # exactly one retry

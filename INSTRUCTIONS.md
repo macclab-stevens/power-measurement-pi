@@ -31,7 +31,10 @@ It expects the lab to be set up as in the README, section 4:
   `"recording": true`).
 - **SSH:** the EliteBook can log into the Pi without a password (`ssh maccpi@192.168.0.243 true`).
 - **uv:** `~/.local/bin/uv` exists, and `host/` has its environment (`cd host && ~/.local/bin/uv sync`).
-- **Pinning helper:** `sudo -n /usr/local/sbin/pi-power-pin status` works on the Pi.
+- **Pinning helper:** `sudo -n /usr/local/sbin/pi-power-pin status` works on the Pi, and it is the
+  new version (it knows `unpin` and `fan off`; README 4.5 shows how to reinstall it).
+- **For the dataset-v2 presets:** `perf` is installed on the Pi, the Pi's Wi-Fi is off, and the
+  weights, `inputs/` and `models/` are on the Pi ([docs/dataset-v2.md](docs/dataset-v2.md), section 5).
 - **Same code:** the Pi and the EliteBook are on the same git commit (README 12.2).
 
 Log in and go to the project folder:
@@ -74,10 +77,14 @@ What it checks:
 |---|---|
 | recorder | not reachable, not recording, or sampling below 4,900 Hz |
 | recorder age | (warning) sampling for more than 8.5 days; the Monsoon library stops at about 9.9 days |
+| recorder stall | `n_total` did not grow between two `/status` reads 2 s apart (the recorder has stopped sampling although `/status` says recording; seen 2026-10-17), or it is less than an hour from the 32-bit sample ceiling |
 | pi reachable | no SSH answer. It then also shows the ping result and the Pi's current draw (about 0.3 A means it is frozen or halted) |
 | pi temperature | (warning) 50 °C or warmer; runs then wait for it to cool |
-| pi throttling | an under-voltage or throttle **right now**. A flag from earlier since boot (`0x50000`) is only a warning |
+| pi throttling | an under-voltage or throttle **right now**. A flag from earlier since boot (`0x50000`) is a warning: reboot the Pi before a long matrix (the live alarm and the cell's kernel log are watched during runs) |
 | pinning helper | `pi-power-pin` missing or not allowed |
+| helper version | (warning) the installed `pi-power-pin` is the old one, without `unpin` and `fan off`: v2 DVFS and fan cells would fail |
+| pi wifi | (warning) `wlan0` is up; the radio adds power noise |
+| perf | (warning) `perf` is not on the Pi's PATH, so v2 cells cannot record counters |
 | code version | the Pi and the EliteBook are on different commits |
 | idle | a run, a test or the matrix is already running |
 
@@ -92,10 +99,14 @@ Pre-flight checks
   [ok]   recorder        recording, 4992 Hz, serial 36517, .../host/data/20261007T110402
   [WARN] recorder age    sampling for 9.1 days
                          -> the Monsoon library stops at ~9.9 days; restart it the safe way, README 8; this script won't
+  [ok]   recorder stall  sampling (n_total +9985 in 2 s)
   [ok]   pi reachable    maccpi@192.168.0.243
   [ok]   pi temperature  47.2 C (gate 50 C)
-  [WARN] pi throttling   throttled=0x50000: happened earlier since boot (old news)
+  [WARN] pi throttling   throttled=0x50000: under-voltage happened since boot; reboot the Pi before a long matrix (...)
   [ok]   pinning helper  governor=ondemand ... fan_state=1/4
+  [ok]   helper version  pi-power-pin knows unpin and fan off
+  [ok]   pi wifi         wlan0 down
+  [ok]   perf            /usr/bin/perf
   [ok]   code version    fa97080 on both machines
   [ok]   idle            no matrix, no run.py or pytest on the Pi
 Ready (2 warning(s)).
@@ -107,8 +118,8 @@ Ready (2 warning(s)).
 ./lab presets
 ```
 
-Lists the 14 ready-made workloads (the same ones as the experiment matrix), with their settings
-and typical run time:
+Lists the ready-made workloads: first the 14 of the v1 experiment matrix, then the dataset-v2
+configurations. The v1 ones, with their settings and typical run time:
 
 | Preset | What it is | Typical time |
 |---|---|---|
@@ -122,6 +133,34 @@ and typical run time:
 The longer inference times come from the per-layer benchmarks (`bench:*` phases). Use
 `--bench 0` to skip them for a quick look.
 
+**Dataset-v2 presets** (48 of them, all YOLO detection at 4 threads and 640 px unless the name
+says otherwise). A name is the cell name without the repeat number and the clock, for example
+`yolo11n_int8s_640_t4`; the `_dvfs` ones keep their clock word. Each runs with the Monsoon sampler,
+perf counters on and a `--holdout` tag (so it is a dataset-version-2 run), at 2400 MHz unless
+`--cpu-mhz` says otherwise. `./lab presets` prints the model, frame count and details of each.
+
+| Family | Presets | What they are |
+|---|---|---|
+| A | `yolov8s_640_t4`, `yolov8m_640_t4`, `yolo11s_640_t4`, `yolo11m_640_t4` | bigger YOLO models |
+| A-input | `yolo11n_empty_640_t4`, `yolo11n_crowded_640_t4` | yolo11n on a picture with nothing in it / a crowded one |
+| B | `yolo11n_int8s_640_t4`, `yolo11s_int8s_640_t4` | INT8 static (calibrated) models |
+| B (not in the default matrix) | `yolo11n_fp16_640_t4`, `yolo11{n,s}_int8d_640_t4`, `yolov8n_int8d_640_t4`, `yolo11n_p30_640_t4`, `yolo11n_p50_640_t4` | FP16 (runs, but slower than FP32); INT8 dynamic (fails on purpose: it quantizes nothing on YOLO); pruned models (accuracy collapses) |
+| C | `yolo11{n,s,m}_{320,480,960}_t4`, `yolo11n_640_t4_b{2,4,8}`, `yolo11{n,s}_640_t{1,2}`, `yolo11n_{320,960}_t{1,2}`, `yolo11m_640_t{1,2}` | image size, batch size and thread count |
+| D | `yolo11n_640_t4_dvfs`, `yolo11s_640_t4_dvfs`, `yolo11n_fanauto_640_t4`, `yolo11n_fanoff_640_t4`, `yolo11n_serve{1,5,15}_640_t4`, `yolo11n_stream_640_t4`, `yolo11n_conc2_640_t4`, `yolo11n_concspin_640_t4` | free-running clock (the clock is pinned only around the sync pulses), fan on auto or off, serving at 1 / 5 / 15 requests per second, a stream of different pictures, two models at once, a model next to a matrix-multiply spinner |
+| soak | `yolo11n_soak30_640_t4`, `yolo11m_soak30_640_t4` | 30 minutes of continuous inference, fan on auto |
+
+Two of these need care:
+
+- **Fan off** (`yolo11n_fanoff_640_t4`): the fan stays off until 85 °C, where `run.py` stops the
+  run (exit code 3; hard stop at 90 °C). `./lab run` refuses it unless you add `--yes-supervised`,
+  which means you will watch the first one in person.
+- **Soaks** take 30 minutes of measuring plus load and alignment. They carry their own time
+  limit of 50 minutes (a larger `--timeout` still wins) and need 2 GB more free disk.
+
+The presets need the files on the Pi that the preset names: `models/<name>_int8s.pt` for INT8,
+`models/yolo11n_p30.pt` / `_p50.pt` for pruned, `inputs/` for the pictures, and the `.pt` weights.
+Pre-flight does not check for them; a missing file shows up as a failed `run`.
+
 ### 3.3 `./lab run`: measure one or more workloads
 
 ```bash
@@ -130,14 +169,15 @@ The longer inference times come from the per-layer benchmarks (`bench:*` phases)
 ```
 
 With no options, a preset runs **exactly** like a matrix cell at 2400 MHz, so your result can be
-compared with the dataset directly. Any option you type overrides that value for every preset
-given.
+compared with the dataset directly (a v1 preset with dataset v1, a dataset-v2 preset with
+dataset v2). Any option you type overrides that value for every preset given.
 
 For each workload, `./lab run`:
 
 1. Runs the pre-flight checks. Any `[FAIL]` stops it.
 2. Waits until the Pi is below 50 °C.
-3. Pins the CPU clock and runs the fan at full speed.
+3. Pins the CPU clock and runs the fan at full speed (a dataset-v2 preset sets its own: a DVFS
+   preset leaves the clock free, the fan presets set the fan to `auto` or `off`).
 4. Runs the workload on the Pi.
 5. Copies the data back, aligns it with the Monsoon recording, and checks it.
 6. Prints a summary.
@@ -173,17 +213,19 @@ Only the options you type override the preset.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--cpu-mhz MHZ` | 2400 | Lock all 4 cores at this clock: 1500 to 2400 in steps of 100. The matrix uses 2400, 2000 and 1500. The fan always runs at full speed. |
+| `--cpu-mhz MHZ` | 2400 | Lock all 4 cores at this clock: 1500 to 2400 in steps of 100. The matrix uses 2400, 2000 and 1500. The fan runs at full speed, except for dataset-v2 presets that set their own fan mode. For a DVFS preset this is only the clock pinned around the sync pulses. |
 | `--name NAME` | `<preset or model>_<MHz>_<YYYYmmdd-HHMMSS>` | Run folder name (one preset only). Letters, digits, `.`, `_`, `-`. An existing name is refused, so nothing is ever overwritten. |
 
 #### Safety and flow
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--timeout MIN` | 40 | Give up waiting for the run after this many minutes. |
+| `--timeout MIN` | 40 | Give up waiting for the run after this many minutes. Soak presets bring their own 50 minutes if that is longer. |
 | `--no-thermal-gate` | off | Start immediately even if the Pi is warm. By default each run waits (up to 10 min) until the Pi is below 50 °C, as in the matrix. |
 | `--keep-pinned` | off | Leave the clock and fan pinned afterwards. |
 | `--allow-git-mismatch` | off | Run even if the Pi and the EliteBook are on different commits (both are recorded). |
+| `--include-cut` | off | Allow the cut presets (INT8 dynamic `*_int8d_*`, pruned `*_p30_*`, `*_p50_*`): without it `./lab run` refuses them and `./lab presets` does not list them. |
+| `--yes-supervised` | off | Needed for fan-off presets (`yolo11n_fanoff_640_t4`): confirms that you will watch the first one in person. Without it `./lab run` refuses. |
 | `--dry-run` | off | Only print the commands and folders. Contacts no machine. |
 
 #### Examples
@@ -199,6 +241,21 @@ Only the options you type override the preset.
 ./lab run --task train --model torchvision:resnet18 --batch 4 --imgsz 128 --optimizer adam
 ./lab run resnet18 --dry-run                          # show what would run
 ```
+
+Dataset-v2 presets:
+
+```bash
+./lab run yolo11n_int8s_640_t4                        # INT8 static yolo11n, 2400 MHz
+./lab run yolo11n_int8s_640_t4 --cpu-mhz 1500         # the same at another clock
+./lab run yolo11m_640_t4 yolov8m_640_t4               # two bigger models, one after another
+./lab run yolo11n_640_t4_dvfs                         # free-running clock
+./lab run yolo11n_concspin_640_t4                     # yolo11n next to a matrix-multiply spinner
+./lab run yolo11n_fanoff_640_t4 --yes-supervised      # fan off: stand next to the Pi
+./lab run yolo11n_fanoff_640_t4 --dry-run             # show the commands (no flag needed)
+```
+
+The Phase 0 probe commands for dataset v2 are collected in
+[docs/dataset-v2.md](docs/dataset-v2.md#6-phase-0-probes).
 
 For many repeats or clock sweeps, use the matrix (`host/experiment.py plan --only <preset>`,
 README 5.4) instead.
@@ -257,6 +314,9 @@ How to read each line:
 | `runs/lab/<name>/power_trace.parquet` | every power sample (5,000 per second) with its phase, step and layer label |
 | `runs/lab/<name>/phase_energy.csv` | energy and average power per phase, iteration and step |
 | `runs/lab/<name>/run_meta.json`, `alignment.json` | run settings, and how well the alignment worked |
+| `runs/lab/<name>/derived.json` | energy and latency per frame, and the model's mAP reference (README 11.8) |
+| `runs/lab/<name>/counters.csv`, `sysfs.csv` | the Pi's hardware counters (10 Hz) and clock / temperature / fan (1 Hz); already merged into the trace as `ctr_*`, `pct_*` and `sys_*` columns (dataset-v2 runs) |
+| `runs/lab/<name>/thermal_abort.json` | only if the run was stopped for heat (85 or 90 °C) |
 | `runs/lab/<name>.log`, `<name>.dmesg.log` | the Pi's console output and kernel messages during the run |
 | `runs/lab/results.jsonl` | one line per run (status, timings, summary numbers) |
 
@@ -331,6 +391,11 @@ Notes:
 |---|---|---|
 | a pre-flight `[FAIL]` | Something isn't ready. | Follow the hint printed under the check. |
 | `thermal` | The Pi didn't cool below 50 °C within 10 minutes. | Check the fan, or use `--no-thermal-gate`. |
+| `thermal_abort` | `run.py` stopped the run because the Pi reached 85 °C (exit code 3) or 90 °C (exit code 4). `thermal_abort.json` is shown: when, how hot, which phase. | Expected with fan off, fan auto or a soak in a warm room. Let the Pi cool (the next run waits for 50 °C anyway). |
+| `disk` | Less than 10 GB free on the EliteBook runs folder or 5 GB on the Pi project folder (2 GB more for a soak). | Free space; `df -h ~` here and `ssh maccpi@192.168.0.243 df -h Desktop/power-measurement-pi`. Further presets of the same command are skipped. |
+| `pi_busy` | `run.py` is still running on the Pi (an earlier run was abandoned). Further presets are skipped. | `ssh maccpi@192.168.0.243 pgrep -af src/run.py`; wait, or stop it with `ssh maccpi@192.168.0.243 pkill -INT -f src/run.py`. |
+| `timeout` | `run.py` ran longer than `--timeout`. It got SIGINT and up to 60 s to exit; the details say whether it did. | Use a larger `--timeout` or fewer `--frames`. |
+| `undervoltage` | The Pi's kernel logged "Undervoltage detected" during the run (the lines are shown). | Check the cable and the 5.35 V Vout; if `./lab check` showed `0x50000`, reboot the Pi first. |
 | `run` | The workload itself failed on the Pi. The last lines of its log are shown. | Usually under-voltage (cable), a bad option, or a model that can't load. |
 | `align` | The power recording couldn't be lined up, almost always because the Monsoon lost samples during a sync pulse. | Run it again. |
 | `verify` | The data failed a quality check (listed). | Read the listed errors; rerun if unsure. |
@@ -347,6 +412,13 @@ Other situations:
   the recorder the safe way (README section 8: shut the Pi down, stop the recorder, switch the
   output off, start the recorder). `./lab` won't do this for you, because it means powering the
   Pi off and on.
+- **"recorder stall" fails:** the recorder is not sampling any more although `/status` says it is
+  (it stops silently at 2^32 - 1 samples). Same restart as above; restart it at least every 9 days.
+- **"pi wifi" warning:** turn the Pi's Wi-Fi off (`ssh -t maccpi@192.168.0.243 'sudo nmcli con down stevens-iot'`)
+  and measure over ethernet.
+- **"helper version" or "perf" warning:** the one-time setup of dataset v2 is incomplete
+  ([docs/dataset-v2.md](docs/dataset-v2.md#5-one-time-setup)).
+- **"fan-off presets need --yes-supervised":** read the warning, stand next to the Pi, add the flag.
 
 ---
 
@@ -355,4 +427,6 @@ Other situations:
 - The whole setup, explained: `README.md`.
 - How a run works internally, and the meaning of every output column: README sections 6, 10
   and 11.
-- The full 224-run experiment matrix: README section 5.4 (`host/experiment.py`).
+- The full 224-run experiment matrix and the dataset-v2 matrix: README section 5.4
+  (`host/experiment.py`).
+- Dataset v2: [docs/dataset-v2.md](docs/dataset-v2.md).

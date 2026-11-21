@@ -4,14 +4,14 @@ import json
 import numpy as np
 import pandas as pd
 
-from verify_cell import TRAIN_STEPS, verify
+from verify_cell import TRAIN_STEPS, derived_metrics, phase_energy, read_trace, verify
 
 PHASES = ["load_weights", "first:train", "warmup", "sync:start", "baseline_A", "train",
           "baseline_B", "sync:end"]
 
 
 def _run(tmp_path, meta_over=None, drop_phase=None, drop_step=None, p_spike=None,
-         ali_over=None):
+         ali_over=None, df_over=None, files=None):
     d = tmp_path / "cell"
     d.mkdir(parents=True)
     meta = {"schema_version": 4, "task": "train", "modes": ["train"], "warmup_passes": 5,
@@ -41,7 +41,11 @@ def _run(tmp_path, meta_over=None, drop_phase=None, drop_step=None, p_spike=None
         df.loc[: len(df) // 50, "P_W"] = p_spike
     df["t_s"] = np.arange(len(df)) / 5000.0
     df["ctx_read"] = False
+    if df_over:
+        df = df_over(df)
     df.to_parquet(d / "power_trace.parquet")
+    for name, content in (files or {}).items():
+        (d / name).write_text(content)
     return d
 
 
@@ -117,3 +121,361 @@ def test_infinite_power_fails(tmp_path):
     _trace(d, one_inf)
     r = verify(d)
     assert not r["ok"] and any("infinite" in e for e in r["errors"])
+
+
+# ---- v2 checks -------------------------------------------------------------------------
+
+V2 = {"dataset_version": 2, "governor": "pinned", "fan_mode": "full", "fan_full": True,
+      "perf_counters": {"enabled": True, "available": True}, "max_temp_C": 61.0,
+      "thermal_abort": None, "model": "yolo11n.pt", "variant": "yolo11n", "imgsz": 640,
+      "map_reference": {"map50_95": 0.39, "measured_on": {"machine": "aarch64"}}}
+
+
+def _v2(tmp_path, meta_over=None, **kw):
+    return _run(tmp_path, meta_over={**V2, **(meta_over or {})}, **kw)
+
+
+def _cols(**cols):
+    def f(df):
+        for k, v in cols.items():
+            df[k] = v(df) if callable(v) else v
+        return df
+    return f
+
+
+def _ctr_cov(frac):
+    """ctr_instructions non-null for the first `frac` of every phase's samples."""
+    def f(df):
+        pos = df.groupby("phase").cumcount() / df.groupby("phase")["P_W"].transform("size")
+        return np.where(pos < frac, 1.0, np.nan)
+    return f
+
+
+def test_v2_good_cell_passes_with_no_warnings(tmp_path):
+    r = verify(_v2(tmp_path, df_over=_cols(ctr_instructions=_ctr_cov(1.0))), 2400)
+    assert r["ok"], r["errors"]
+    assert r["warnings"] == [] and r["counter_coverage"] == 1.0 and r["max_temp_C"] == 61.0
+
+
+def test_fan_modes(tmp_path):
+    for i, mode in enumerate(("auto", "off")):
+        r = verify(_run(tmp_path / str(i), meta_over={"fan_mode": mode, "fan_full": False}))
+        assert r["ok"], r["errors"]
+    r = verify(_run(tmp_path / "x", meta_over={"fan_mode": "full", "fan_full": False}))
+    assert any("fan_full not set" in e for e in r["errors"])
+    r = verify(_run(tmp_path / "y", meta_over={"fan_mode": "none", "fan_full": False}))
+    assert any("fan_full not set" in e for e in r["errors"])
+    r = verify(_run(tmp_path / "z", meta_over={"fan_full": False}))          # v1 meta
+    assert any("fan_full not set" in e for e in r["errors"])
+
+
+def _dvfs(khz):
+    return _cols(**{f"sys_cpu{i}_kHz": khz for i in range(4)})
+
+
+def test_dvfs_frequency_range(tmp_path):
+    meta = {"governor": "ondemand"}
+    ok = verify(_run(tmp_path / "a", meta_over=meta, df_over=_dvfs(1500000.0)), 2400)
+    assert ok["ok"], ok["errors"]
+    assert verify(_run(tmp_path / "b", meta_over=meta, df_over=_dvfs(2425000.0)))["ok"]
+    for name, khz in (("c", 2426000.0), ("d", 1474000.0)):
+        r = verify(_run(tmp_path / name, meta_over=meta, df_over=_dvfs(khz)))
+        assert any("cpu clock outside" in e for e in r["errors"])
+    r = verify(_run(tmp_path / "e", meta_over=meta))
+    assert any("no cpu frequency readings" in e for e in r["errors"])
+    r = verify(_run(tmp_path / "f", meta_over=meta, df_over=_dvfs(np.nan)))
+    assert any("no cpu frequency readings" in e for e in r["errors"])
+    r = verify(_run(tmp_path / "g", meta_over={**meta, "cpu_mhz_pinned": 1800},
+                    df_over=_dvfs(2000000.0)), 2400)           # sync clock equality is kept
+    assert any("cpu_mhz_pinned" in e for e in r["errors"])
+
+
+def test_frequency_not_checked_for_pinned_governor(tmp_path):
+    assert verify(_run(tmp_path, df_over=_dvfs(100000.0)))["ok"]
+
+
+def test_counter_coverage(tmp_path):
+    r = verify(_v2(tmp_path / "a", df_over=_cols(ctr_instructions=_ctr_cov(0.96))))
+    assert r["ok"], r["errors"]
+    assert 0.95 <= r["counter_coverage"] < 1.0
+    r = verify(_v2(tmp_path / "b", df_over=_cols(ctr_instructions=_ctr_cov(0.90))))
+    assert not r["ok"] and any(e.startswith("counter coverage 0.9") and "< 0.95" in e
+                               for e in r["errors"])
+    r = verify(_v2(tmp_path / "c"))                          # no ctr column at all
+    assert r["counter_coverage"] == 0.0 and any("counter coverage" in e for e in r["errors"])
+    r = verify(_v2(tmp_path / "d", meta_over={"perf_counters": {"enabled": False}},
+                   df_over=_cols(ctr_instructions=1.0)))
+    assert any("perf counters not enabled" in e for e in r["errors"])
+
+
+def test_coverage_counts_only_mode_phases(tmp_path):
+    def f(df):                       # counters only in the train phase
+        df["ctr_instructions"] = np.where(df["phase"] == "train", 1.0, np.nan)
+        return df
+    assert verify(_v2(tmp_path, df_over=f))["ok"]
+
+
+def test_v1_cell_has_no_counter_check(tmp_path):
+    r = verify(_run(tmp_path))
+    assert r["ok"] and "counter_coverage" not in r and "max_temp_C" not in r
+    assert r["warnings"] == []
+
+
+def test_thermal(tmp_path):
+    r = verify(_v2(tmp_path / "a", df_over=_cols(ctr_instructions=1.0),
+                   files={"thermal_abort.json": json.dumps({"temp_C": 86.5, "level": "abort"})}))
+    assert not r["ok"] and "thermal abort at 86.5 C" in r["errors"]
+    r = verify(_v2(tmp_path / "b", df_over=_cols(ctr_instructions=1.0),
+                   meta_over={"thermal_abort": {"temp_C": 85.2, "level": "abort"}}))
+    assert "thermal abort at 85.2 C" in r["errors"]
+    r = verify(_v2(tmp_path / "c", df_over=_cols(ctr_instructions=1.0),
+                   meta_over={"max_temp_C": 85.0}))
+    assert any("max_temp_C" in e for e in r["errors"])
+    r = verify(_v2(tmp_path / "d", df_over=_cols(ctr_instructions=1.0),
+                   meta_over={"max_temp_C": 84.9}))
+    assert r["ok"] and r["max_temp_C"] == 84.9
+
+
+def test_aborted_run_without_meta_still_reports_the_abort(tmp_path):
+    d = tmp_path / "cell"
+    d.mkdir()
+    (d / "thermal_abort.json").write_text(json.dumps({"temp_C": 91.0, "level": "hard_stop"}))
+    r = verify(d)
+    assert not r["ok"] and "thermal abort at 91.0 C" in r["errors"]
+
+
+def test_map_reference_warnings(tmp_path):
+    ctr = _cols(ctr_instructions=1.0)
+    r = verify(_v2(tmp_path / "a", meta_over={"map_reference": None}, df_over=ctr))
+    assert r["ok"] and "mAP reference missing for yolo11n@640" in r["warnings"]
+    r = verify(_v2(tmp_path / "b", df_over=ctr, meta_over={
+        "map_reference": {"map50_95": 0.39, "measured_on": {"machine": "x86_64"}}}))
+    assert r["ok"] and any("mAP reference not measured on the Pi" in w for w in r["warnings"])
+    r = verify(_v2(tmp_path / "c", df_over=ctr, meta_over={"map_reference": {"map50_95": 0.39}}))
+    assert any("not measured on the Pi" in w for w in r["warnings"])
+    r = verify(_v2(tmp_path / "d", df_over=ctr, meta_over={"model": "gpt2", "map_reference": None}))
+    assert not any("mAP" in w for w in r["warnings"])
+    r = verify(_run(tmp_path / "e", meta_over={"model": "yolo11n.pt"}))        # v1 meta: no variant
+    assert not any("mAP" in w for w in r["warnings"])
+    meta = {"variant": None, "map_reference": None}                      # v2 without variant
+    r = verify(_v2(tmp_path / "f", df_over=ctr, meta_over=meta))
+    assert any("mAP reference missing" in w for w in r["warnings"])
+
+
+def test_bench_not_required_when_forced_off(tmp_path):
+    base = {"task": "image", "bench_skipped": False}
+    assert any("bench" in e for e in verify(_run(tmp_path / "a", meta_over=base))["errors"])
+    r = verify(_run(tmp_path / "b", meta_over={**base, "bench_forced_off": "quant"}))
+    assert not any("bench" in e for e in r["errors"])
+
+
+def test_derived_metrics_and_file(tmp_path):
+    d = _v2(tmp_path, meta_over={"batch": 8, "holdout": "primary-s"},
+            df_over=_cols(ctr_instructions=1.0))
+    r = verify(d)
+    assert r["ok"], r["errors"]
+    # frame 1 only: 6 steps x 50 samples x 0.2 ms = 60 ms at 7 W; baseline 5 W
+    x = r["derived"]
+    assert abs(x["energy_per_frame_mJ"] - 420.0) < 1e-6
+    assert abs(x["dyn_energy_per_frame_mJ"] - 120.0) < 1e-6
+    assert abs(x["latency_ms_per_frame"] - 60.0) < 1e-6
+    assert abs(x["energy_per_image_mJ"] - 52.5) < 1e-6
+    assert x["n_frames"] == 1 and x["batch"] == 8 and x["baseline_mean_P_W"] == 5.0
+    assert x["variant"] == "yolo11n" and x["holdout"] == "primary-s"
+    assert x["map_reference"]["map50_95"] == 0.39
+    assert json.loads((d / "derived.json").read_text()) == x
+
+
+def test_derived_not_written_without_write_and_v1_gets_it(tmp_path):
+    d = _run(tmp_path)
+    r = verify(d, write=False)
+    assert not (d / "derived.json").exists() and r["derived"]["energy_per_frame_mJ"] is not None
+    verify(d)
+    assert (d / "derived.json").exists()
+
+
+def test_derived_multi_mode_has_per_mode_values_only(tmp_path):
+    d = _run(tmp_path, meta_over={"modes": ["train"]})
+    meta = json.loads((d / "run_meta.json").read_text())
+    df = pd.read_parquet(d / "power_trace.parquet")
+    pe = phase_energy(df, 0.0002)
+    two = derived_metrics(pe, {**meta, "modes": ["train", "decode"]}, 5.0)
+    assert two["energy_per_frame_mJ"] is None and two["energy_per_image_mJ"] is None
+    assert two["by_mode"]["train"]["n_frames"] == 1 and two["by_mode"]["decode"]["n_frames"] == 0
+
+
+def test_no_measured_iterations_warns(tmp_path):
+    def only_frame0(df):
+        return df[~((df["phase"] == "train") & (df["iter"] == "1"))].reset_index(drop=True)
+    r = verify(_run(tmp_path, df_over=only_frame0))
+    assert r["derived"]["energy_per_frame_mJ"] is None
+    assert any("no measured iterations" in w for w in r["warnings"])
+
+
+# ---- concurrent cells (run.py --concurrent) --------------------------------------------------
+
+CONC = {"mode": "spinner", "model": None, "tags": ["m0", "spin"], "threads_split": {"m0": 3, "spin": 1},
+        "iterations": {"m0": 2, "spin": 40}, "latency_ms": {"m0": None, "spin": None}}
+
+
+def _conc(spin=(100, 500), m0_in_window=True, drop=()):
+    """Train-phase rows 100..500 (frames 0 and 1 are rows 0..300 / 300..600) carry the second
+    workload; step_m0 is the primary's `step` column (what align.py writes)."""
+    def f(df):
+        df["step_m0"] = df["step"]
+        df["step_spin"] = ""
+        rows = np.flatnonzero((df["phase"] == "train").to_numpy())
+        win = rows[spin[0]:spin[1]]
+        df.loc[df.index[win], "step_spin"] = "spin"
+        if not m0_in_window:
+            df.loc[df.index[win], "step_m0"] = ""
+        df["tag"] = np.where(df["step_m0"] != "", "m0", "")
+        df["tag"] = np.where(df["step_spin"] != "", np.where(df["tag"] == "", "spin", "m0+spin"),
+                             df["tag"])
+        return df.drop(columns=list(drop))
+    return f
+
+
+def _cv(tmp_path, meta_over=None, **kw):
+    return _run(tmp_path, meta_over={"concurrent": CONC, **(meta_over or {})}, **kw)
+
+
+def test_concurrent_cell_passes_and_derived_notes_both_workloads(tmp_path):
+    r = verify(_cv(tmp_path, df_over=_conc()))
+    assert r["ok"], r["errors"]
+    assert r["warnings"] == []
+    assert r["concurrent"]["coverage"] == {"spin": 1.0}      # the primary's own is the step column
+    assert r["concurrent"]["overlap"] == {"spin": 1.0}
+    c = r["derived"]["concurrent"]
+    assert c["tags"] == ["m0", "spin"] and c["iterations"] == {"m0": 2, "spin": 40}
+    assert c["threads_split"] == {"m0": 3, "spin": 1} and "both workloads" in c["note"]
+
+
+def test_non_concurrent_cell_has_no_concurrent_keys(tmp_path):
+    r = verify(_run(tmp_path))
+    assert r["ok"] and "concurrent" not in r and "concurrent" not in r["derived"]
+
+
+def test_concurrent_cell_requires_tag_and_step_columns(tmp_path):
+    r = verify(_cv(tmp_path / "a"))                                   # align wrote no tags
+    assert not r["ok"] and any("tag column" in e for e in r["errors"])
+    r = verify(_cv(tmp_path / "b", df_over=_conc(drop=("step_spin",))))
+    assert any("no step_spin column" in e for e in r["errors"])
+
+
+def test_concurrent_cell_needs_iterations_from_every_tag(tmp_path):
+    zero = {**CONC, "iterations": {"m0": 2, "spin": 0}}
+    r = verify(_cv(tmp_path, meta_over={"concurrent": zero}, df_over=_conc()))
+    assert not r["ok"] and any("spin completed no iterations" in e for e in r["errors"])
+
+
+def test_concurrent_cell_fails_when_workloads_do_not_overlap(tmp_path):
+    r = verify(_cv(tmp_path / "a", df_over=_conc(m0_in_window=False)))
+    assert not r["ok"] and any("overlap only 0.00" in e for e in r["errors"])
+
+
+def test_concurrent_step_coverage_is_per_tag(tmp_path):
+    def sparse(df):
+        df = _conc()(df)
+        idx = np.flatnonzero((df["step_spin"] == "spin").to_numpy())
+        df.loc[df.index[idx[::2]], "step_spin"] = ""                 # 50 % of the window
+        df.loc[df.index[idx[0]], "step_spin"] = "spin"
+        return df
+    r = verify(_cv(tmp_path, df_over=sparse))
+    assert any("coverage of workload spin" in w for w in r["warnings"] + r["errors"])
+
+
+def test_model_pair_checks_infer_steps_per_tag():
+    full = ["preprocess", "forward", "postprocess"]
+    n = 30
+    df = pd.DataFrame({"step_m0": np.tile(full, n // 3), "step_m1": np.tile(full, n // 3)})
+    meta = {"tags": ["m0", "m1"], "iterations": {"m0": 5, "m1": 7}}
+    from verify_cell import concurrent_checks
+    errs, warns, info = concurrent_checks(df.assign(tag="m0+m1"), meta)
+    assert errs == [] and warns == [] and info["overlap"] == {"m1": 1.0}
+    errs, _, _ = concurrent_checks(df.assign(tag="m0+m1", step_m1=np.tile(["forward"], n)), meta)
+    assert any("workload m1" in e and "preprocess" in e for e in errs)
+
+
+def test_primary_steps_and_coverage_are_not_reported_twice(tmp_path):
+    from verify_cell import concurrent_checks
+    # the primary's steps/coverage are verify()'s `step` check; concurrent_checks only wants the
+    # column and the iterations for m0
+    sparse = pd.DataFrame({"step_m0": ["forward"] + [""] * 29, "step_m1": ["forward"] * 30,
+                           "tag": "m0+m1"})
+    errs, warns, info = concurrent_checks(sparse, {"tags": ["m0", "m1"],
+                                                   "iterations": {"m0": 1, "m1": 1}})
+    assert not any("workload m0" in x and ("coverage" in x or "steps without" in x)
+                   for x in errs + warns)
+    assert "m0" not in info["coverage"]
+    errs, _, _ = concurrent_checks(sparse.drop(columns="step_m0"),
+                                   {"tags": ["m0", "m1"], "iterations": {"m0": 1, "m1": 1}})
+    assert any("no step_m0 column" in e for e in errs)
+    errs, _, _ = concurrent_checks(sparse, {"tags": ["m0", "m1"], "iterations": {"m0": 0, "m1": 1}})
+    assert any("m0 completed no iterations" in e for e in errs)
+    # a missing primary step is reported once, by the single-workload check
+    r = verify(_cv(tmp_path, df_over=_conc(), drop_step="backward"))
+    assert [e for e in r["errors"] if "backward" in e] == [
+        "steps without samples in mode phases: ['backward']"]
+
+
+def test_concurrent_drain_phase_is_not_charged_to_the_last_frame(tmp_path):
+    def with_drain(df):
+        df = _conc()(df)
+        drain = pd.DataFrame({"phase": "concurrent_drain", "iter": "", "step": "",
+                              "P_W": np.float32(11.0), "step_m0": "", "step_spin": "spin",
+                              "tag": "spin"}, index=range(300))
+        i = int(np.flatnonzero((df["phase"] == "train").to_numpy())[-1]) + 1
+        out = pd.concat([df.iloc[:i], drain, df.iloc[i:]], ignore_index=True)
+        out["t_s"] = np.arange(len(out)) / 5000.0
+        out["ctx_read"] = False
+        return out
+    base = verify(_cv(tmp_path / "a", df_over=_conc()))
+    r = verify(_cv(tmp_path / "b", df_over=with_drain))
+    assert r["ok"], r["errors"]
+    assert r["derived"]["energy_per_frame_mJ"] == base["derived"]["energy_per_frame_mJ"]
+    assert r["derived"]["latency_ms_per_frame"] == base["derived"]["latency_ms_per_frame"]
+    assert r["concurrent"]["coverage"] == base["concurrent"]["coverage"]   # drain is not a mode phase
+    pe = pd.read_csv(tmp_path / "b" / "cell" / "phase_energy.csv", keep_default_na=False)
+    assert pe[pe["phase"] == "concurrent_drain"]["n_samples"].sum() == 300
+
+
+# ---- memory: only the used columns, categorical strings (final review I1) ---------------------
+
+def test_read_trace_keeps_only_used_columns_as_categoricals(tmp_path):
+    extra = _cols(I_A=1.0, layer_path="a.b", depth=np.int16(1), pct_cycles=100.0,
+                  ctr_instructions=2.0, sys_cpu0_kHz=2400000.0, sys_temp_C=50.0,
+                  sys_uv_alarm=0.0, step_m1="", tag="")
+    d = _run(tmp_path, df_over=extra)
+    df = read_trace(d / "power_trace.parquet")
+    assert set(df.columns) == {"P_W", "t_s", "phase", "iter", "step", "ctx_read",
+                               "ctr_instructions", "sys_cpu0_kHz", "sys_uv_alarm", "step_m1",
+                               "tag"}
+    for c in ("phase", "iter", "step", "step_m1", "tag"):
+        assert isinstance(df[c].dtype, pd.CategoricalDtype), c
+
+
+def test_phase_energy_is_the_same_for_categorical_and_object_keys():
+    rng = np.random.default_rng(0)
+    ph = np.repeat(["a", "b", "a2"], 40)
+    df = pd.DataFrame({"phase": ph, "iter": np.tile(["0", "1", ""], 40),
+                       "step": np.tile(["x", "", "y", ""], 30),
+                       "P_W": rng.normal(5, 1, 120).astype(np.float32),
+                       "t_s": np.arange(120) / 5000.0, "ctx_read": rng.random(120) < .1})
+    cat = df.assign(**{k: df[k].astype("category") for k in ("phase", "iter", "step")})
+    a, b = phase_energy(df, 0.0002), phase_energy(cat, 0.0002)
+    pd.testing.assert_frame_equal(a, b)
+    assert not any(isinstance(b[k].dtype, pd.CategoricalDtype) for k in ("phase", "iter", "step"))
+    assert len(b) == len(df.groupby(["phase", "iter", "step"]).size())   # observed combos only
+
+
+def test_live_undervoltage_alarm_in_trace_is_an_error(tmp_path):
+    def uv(df):
+        return np.where(np.arange(len(df)) % 1000 == 0, 1.0, 0.0)
+    r = verify(_run(tmp_path / "a", df_over=_cols(sys_uv_alarm=uv)))
+    assert not r["ok"] and any("under-voltage" in e and "sys_uv_alarm" in e for e in r["errors"])
+    n = int((np.arange(r["n_samples"]) % 1000 == 0).sum())
+    assert any(f"in {n} trace samples" in e for e in r["errors"])
+    assert verify(_run(tmp_path / "b", df_over=_cols(sys_uv_alarm=0.0)))["ok"]
+    assert verify(_run(tmp_path / "c"))["ok"]            # column absent: no check
+    assert verify(_run(tmp_path / "d", df_over=_cols(sys_uv_alarm=np.nan)))["ok"]

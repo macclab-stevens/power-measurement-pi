@@ -6,6 +6,12 @@
    offset(t) = c0 + c1 * (t - ref) over all edges (USB latency + oscillator drift).
 3. Label: each sample gets the latest marker (phase), the latest event's mode/iter,
    and the innermost enclosing layer span.
+4. Merge (v2 runs): counters.csv (perf intervals, ctr_*/pct_*) and sysfs.csv (1 Hz, sys_*)
+   join the samples on t_pi_ns; absent files add no columns.
+5. Concurrent runs (events.csv `tag` column non-empty): `mode`/`iter`/`step` follow the primary
+   workload (tag "" or "m0") only; every tag gets a `step_<tag>` column (its innermost step
+   span) and `tag` lists the workloads inside a step at that sample ("m0+m1"). v1 files have no
+   tag column and get none of these.
 
     uv run python align.py --recorder-dir data/<session> --pi-run ../runs/<cell>
 """
@@ -21,7 +27,8 @@ import pandas as pd
 from clockfit import fit_sample_clock
 from store import load_blocks, open_samples
 
-PASS_MS = 1.0
+PASS_MS = 1.0             # unchanged for every mode. The DVFS (ondemand) design pins the clock
+                          # during the sync pulses, so the edge search/tolerances need no change.
 SEARCH_MS = 60.0          # edge search half-window around the coarse prediction
 SMOOTH = 5                # centered moving average (1 ms), symmetric -> no edge shift
 PAD_S = 5.0
@@ -29,6 +36,8 @@ ENVELOPE_MAX_DEV_MS = 1.0  # coarse-clock lower envelope must be linear to this 
 MAX_DRIFT_PPM = 50.0
 ENVELOPE_SEGMENTS = 20     # same rule as fit_sample_clock
 MIN_ENVELOPE_BLOCKS = 40
+SYSFS_TOLERANCE_NS = 2_000_000_000   # a 1 Hz sysfs reading is attached for at most 2 s
+PRIMARY_TAGS = ("", "m0")   # workload tags whose events label mode/iter/step (run.py --concurrent)
 LABEL_KINDS = ("marker", "begin", "end", "pulse_on", "pulse_off", "step_begin", "step_end")
 
 
@@ -165,11 +174,72 @@ def detect_slips(last_idx, host_ns, rate_hz=None, min_step_ms=1.0, tail_guard_bl
     return out
 
 
+def _assign(df: pd.DataFrame, name: str, src: np.ndarray, idx: np.ndarray, valid: np.ndarray):
+    """df[name] = src[idx] where valid else NaN, built as one float64 column (no frame copy)."""
+    col = np.full(len(df), np.nan, dtype=np.float64)
+    col[valid] = src[idx[valid]]
+    df[name] = col
+
+
+def merge_counters(df: pd.DataFrame, ctr: pd.DataFrame) -> pd.DataFrame:
+    """Add the perf interval that contains each sample (t_start_ns < t_pi_ns <= t_end_ns).
+
+    `ctr` is counters.csv (t_start_ns, t_end_ns, ctr_*, pct_*). Samples outside every interval
+    (before the first, in a gap, after the last) get NaN. A header-only `ctr` (perf was
+    unavailable) adds all-NaN columns so the schema stays the same.
+
+    Index lookup instead of merge_asof + concat: a 30-min soak has 9 M samples, and copying the
+    whole frame several times needs ~5 GB (the host has 7 GB and runs the recorder). Columns are
+    added to `df` in place (which is also returned), one float64 array each."""
+    cols = [c for c in ctr.columns if c.startswith(("ctr_", "pct_"))]
+    ctr = ctr.sort_values("t_end_ns", kind="stable")
+    t_start = ctr["t_start_ns"].to_numpy(dtype=np.int64)
+    t_end = ctr["t_end_ns"].to_numpy(dtype=np.int64)
+    n = len(t_end)
+    t = df["t_pi_ns"].to_numpy()
+    idx = np.searchsorted(t_end, t, side="left")      # first interval ending at/after the sample
+    valid = np.zeros(len(t), dtype=bool)
+    if n:
+        valid = (idx < n) & (t > t_start[np.minimum(idx, n - 1)])   # else: in a gap / outside
+    for c in cols:
+        _assign(df, c, ctr[c].to_numpy(dtype=np.float64), idx, valid)
+    return df
+
+
+def merge_sysfs(df: pd.DataFrame, sysfs: pd.DataFrame) -> pd.DataFrame:
+    """Add the latest 1 Hz sysfs reading (at most SYSFS_TOLERANCE_NS old) as sys_* columns.
+
+    Same in-place, index-based approach as merge_counters."""
+    cols = [c for c in sysfs.columns if c != "t_real_ns"]
+    sysfs = sysfs.sort_values("t_real_ns", kind="stable")
+    t_r = sysfs["t_real_ns"].to_numpy(dtype=np.int64)
+    t = df["t_pi_ns"].to_numpy()
+    idx = np.searchsorted(t_r, t, side="right") - 1   # latest reading at/before the sample
+    valid = np.zeros(len(t), dtype=bool)
+    if len(t_r):
+        valid = (idx >= 0) & (t - t_r[np.maximum(idx, 0)] <= SYSFS_TOLERANCE_NS)
+    for c in cols:
+        _assign(df, f"sys_{c}", sysfs[c].to_numpy(dtype=np.float64), idx, valid)
+    return df
+
+
+def attach_pi_logs(df: pd.DataFrame, pi_run_dir) -> pd.DataFrame:
+    """Merge the Pi's counters.csv / sysfs.csv onto the trace; a missing file adds no columns."""
+    pi_run_dir = Path(pi_run_dir)
+    if (pi_run_dir / "counters.csv").exists():
+        df = merge_counters(df, pd.read_csv(pi_run_dir / "counters.csv"))
+    if (pi_run_dir / "sysfs.csv").exists():
+        df = merge_sysfs(df, pd.read_csv(pi_run_dir / "sysfs.csv"))
+    return df
+
+
 def align(recorder_dir, pi_run_dir, out_dir) -> dict:
     recorder_dir, pi_run_dir, out_dir = Path(recorder_dir), Path(pi_run_dir), Path(out_dir)
     ev = pd.read_csv(pi_run_dir / "events.csv", keep_default_na=False,
                      dtype={"kind": str, "name": str, "mode": str, "iter": str,
-                            "layer_path": str, "config_id": str})
+                            "layer_path": str, "config_id": str, "tag": str})
+    if "tag" not in ev.columns:   # v1 events.csv has no workload tag
+        ev["tag"] = ""
     ev = ev.sort_values("t_real_ns", kind="stable").reset_index(drop=True)
     t_first, t_last = int(ev["t_real_ns"].iloc[0]), int(ev["t_real_ns"].iloc[-1])
 
@@ -282,7 +352,8 @@ def align(recorder_dir, pi_run_dir, out_dir) -> dict:
 
     # mode/iter come from the latest *workload* event; ctx_begin/ctx_end are written by the
     # sampler's context thread, so their labels are arbitrary
-    evw = ev[ev["kind"].isin(LABEL_KINDS)]
+    # (concurrent runs: only the primary workload's events, so mode/iter stay the primary's frame)
+    evw = ev[ev["kind"].isin(LABEL_KINDS) & ev["tag"].isin(PRIMARY_TAGS)]
     et = evw["t_real_ns"].to_numpy(dtype=np.float64)
     k = np.clip(np.searchsorted(et, t_pi, side="right") - 1, 0, None)
     mode = evw["mode"].astype(str).to_numpy()[k].astype(object)
@@ -308,12 +379,9 @@ def align(recorder_dir, pi_run_dir, out_dir) -> dict:
         layer[ok] = paths[j[ok]]
         depth[ok] = d
 
-    step = np.full(t_pi.size, "", dtype=object)
-    for lvl, s in sorted(_step_spans(ev).items()):
-        st, en, names = s[:, 0].astype(np.float64), s[:, 1].astype(np.float64), s[:, 2]
-        j = np.searchsorted(st, t_pi, side="right") - 1
-        ok = (j >= 0) & (t_pi < en[np.clip(j, 0, None)])
-        step[ok] = names[j[ok]]
+    step = _label_steps(ev[ev["tag"].isin(PRIMARY_TAGS)], t_pi)
+    tag_steps = {t: _label_steps(ev[ev["tag"] == t], t_pi)
+                 for t in sorted(set(ev["tag"]) - {""})}
 
     cb = np.sort(ev[ev["kind"] == "ctx_begin"]["t_real_ns"].to_numpy(dtype=np.float64))
     ce = np.sort(ev[ev["kind"] == "ctx_end"]["t_real_ns"].to_numpy(dtype=np.float64))
@@ -330,6 +398,13 @@ def align(recorder_dir, pi_run_dir, out_dir) -> dict:
         "P_W": P.astype(np.float32), "phase": phase, "mode": mode, "iter": it,
         "step": step, "layer_path": layer, "depth": depth, "ctx_read": ctx_read,
     })
+    if tag_steps:   # concurrent run: which workloads were inside a step at each sample
+        tagcol = np.full(t_pi.size, "", dtype=object)
+        for t, names in tag_steps.items():
+            df[f"step_{t}"] = names
+            tagcol = np.where(names != "", np.where(tagcol == "", t, tagcol + "+" + t), tagcol)
+        df["tag"] = tagcol
+    df = attach_pi_logs(df, pi_run_dir)
     df.to_parquet(out_dir / "power_trace.parquet", index=False)
     return res
 
@@ -346,6 +421,17 @@ def _layer_spans(ev) -> dict:
         elif open_.get(key):
             out.setdefault(int(d), []).append((open_[key].pop(), t, path))
     return {d: np.array(sorted(v, key=lambda r: r[0]), dtype=object) for d, v in out.items()}
+
+
+def _label_steps(ev, t_pi) -> np.ndarray:
+    """Name of the innermost step span of `ev` (one workload's events) containing each t_pi."""
+    step = np.full(t_pi.size, "", dtype=object)
+    for lvl, s in sorted(_step_spans(ev).items()):
+        st, en, names = s[:, 0].astype(np.float64), s[:, 1].astype(np.float64), s[:, 2]
+        j = np.searchsorted(st, t_pi, side="right") - 1
+        ok = (j >= 0) & (t_pi < en[np.clip(j, 0, None)])
+        step[ok] = names[j[ok]]
+    return step
 
 
 def _step_spans(ev) -> dict:

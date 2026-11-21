@@ -8,7 +8,8 @@ import pytest
 
 from pathlib import Path
 
-from align import AlignError, _robust_rate_hz, align, detect_slips
+from align import (AlignError, _robust_rate_hz, align, attach_pi_logs, detect_slips,
+                   merge_counters, merge_sysfs)
 from store import SampleStore
 
 FIELDS = ["t_real_ns", "t_mono_ns", "kind", "name", "depth", "mode", "iter",
@@ -75,13 +76,14 @@ def _build(tmp_path, with_pulses=True, extra_events=(), it="0", nan_in_on=False,
     s.close()
     events.sort(key=lambda e: e[4])
     with open(pi / "events.csv", "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=FIELDS)
+        tagged = any(len(e) > 7 for e in events)      # v1-shaped files have no tag column
+        w = csv.DictWriter(f, fieldnames=FIELDS + (["tag"] if tagged else []))
         w.writeheader()
         for kind, name, depth, path, t, *lab in events:
             w.writerow({"t_real_ns": int(t), "t_mono_ns": int(t), "kind": kind, "name": name,
                         "depth": depth, "mode": lab[0] if lab else "forward",
                         "iter": lab[1] if lab else it, "layer_path": path,
-                        "config_id": "", "window_id": 0})
+                        "config_id": "", "window_id": 0, **({"tag": lab[2] if len(lab) > 2 else ""} if tagged else {})})
     return rec, pi, (L0, L1, C0, C1)
 
 
@@ -271,3 +273,167 @@ def test_align_labels_innermost_step(tmp_path):
     assert r["step"] == "forward" and r["layer_path"] == "0"
     assert at(S1 + 100_000_000)["step"] == ""
     assert at(S0 - 100_000_000)["step"] == ""
+
+
+# ---- concurrent runs: tagged step events ---------------------------------------------------
+
+def _tagged_run(tmp_path):
+    """m0 steps (iter 4) every 300 ms and m1 steps (its own labels, iter 99) overlapping them."""
+    ev = []
+    for i in range(6):
+        a = T0 + 7_000_000_000 + i * 300_000_000
+        ev += [("step_begin", "forward", 0, "", a, "forward", "4", "m0"),
+               ("step_end", "forward", 0, "", a + 200_000_000, "forward", "4", "m0")]
+    for i in range(3):
+        a = T0 + 7_100_000_000 + i * 500_000_000
+        ev += [("step_begin", "spin", 0, "", a, "forward", "99", "m1"),
+               ("step_end", "spin", 0, "", a + 300_000_000, "forward", "99", "m1")]
+    return _build(tmp_path, extra_events=ev)
+
+
+def test_align_concurrent_labels_tags_and_keeps_primary_mode_iter(tmp_path):
+    rec, pi, _ = _tagged_run(tmp_path)
+    align(rec, pi, pi)
+    df = pd.read_parquet(pi / "power_trace.parquet")
+
+    def at(t):
+        return df.iloc[int(np.argmin(np.abs(df["t_pi_ns"].to_numpy() - t)))]
+    a0 = T0 + 7_000_000_000
+    both = at(a0 + 150_000_000)                    # m0 step 0 and m1 step 0 are both open
+    assert both["tag"] == "m0+m1" and both["step"] == "forward" and both["step_m1"] == "spin"
+    only_m1 = at(a0 + 250_000_000)                 # m0 between steps, m1 (until +400 ms) running
+    assert only_m1["tag"] == "m1" and only_m1["step"] == "" and only_m1["step_m0"] == ""
+    only_m0 = at(a0 + 450_000_000)                 # m1 step 0 over (+100..+400), step 1 not yet
+    assert only_m0["tag"] == "m0" and only_m0["step_m1"] == ""
+    assert at(a0 - 200_000_000)["tag"] == ""
+    # mode/iter follow the primary's events only (m1 events carry iter 99)
+    assert set(df["iter"]) <= {"", "0", "4"} and "99" not in set(df["iter"])
+    assert {c for c in df.columns if c.startswith("step_")} == {"step_m0", "step_m1"}
+
+
+def test_align_drain_marker_ends_the_primary_frame_label(tmp_path):
+    D = T0 + 8_000_000_000            # the primary's last step ends at D - 0.1 s; the worker drains until D + 0.3 s
+    ev = [("step_begin", "forward", 0, "", D - 400_000_000, "forward", "7", "m0"),
+          ("step_end", "forward", 0, "", D - 100_000_000, "forward", "7", "m0"),
+          ("marker", "concurrent_drain", 0, "", D - 100_000_000, "forward", "7", ""),
+          ("step_begin", "spin", 0, "", D - 300_000_000, "forward", "7", "m1"),
+          ("step_end", "spin", 0, "", D + 300_000_000, "forward", "7", "m1"),
+          ("marker", "baseline_B", 0, "", D + 400_000_000, "forward", "7", "")]
+    rec, pi, _ = _build(tmp_path, extra_events=ev)
+    align(rec, pi, pi)
+    df = pd.read_parquet(pi / "power_trace.parquet")
+
+    def at(t):
+        return df.iloc[int(np.argmin(np.abs(df["t_pi_ns"].to_numpy() - t)))]
+    inside = at(D - 200_000_000)
+    assert inside["phase"] == "forward" and inside["iter"] == "7" and inside["tag"] == "m0+m1"
+    drain = at(D + 100_000_000)       # the worker's tail: its own phase, no mode/iter of the frame
+    assert drain["phase"] == "concurrent_drain" and drain["mode"] == "" and drain["iter"] == ""
+    assert drain["tag"] == "m1" and drain["step_m1"] == "spin"
+
+
+def test_align_without_tags_adds_no_tag_columns(tmp_path):
+    rec, pi, _ = _build(tmp_path)                  # the v1-shaped events.csv has no tag column
+    assert "tag" not in open(pi / "events.csv").readline()
+    align(rec, pi, pi)
+    cols = set(pd.read_parquet(pi / "power_trace.parquet").columns)
+    assert "tag" not in cols and not any(c.startswith("step_") for c in cols)
+
+
+def test_align_untagged_events_with_a_tag_column_add_no_tag_columns(tmp_path):
+    ev = [("step_begin", "forward", 0, "", T0 + 7_000_000_000, "forward", "4", ""),
+          ("step_end", "forward", 0, "", T0 + 7_200_000_000, "forward", "4", "")]
+    rec, pi, _ = _build(tmp_path, extra_events=ev)
+    align(rec, pi, pi)
+    cols = set(pd.read_parquet(pi / "power_trace.parquet").columns)
+    assert "tag" not in cols and "step_m0" not in cols
+
+
+# ---- counters.csv / sysfs.csv merge ----------------------------------------------------
+
+def _ctr(rows):
+    return pd.DataFrame(rows, columns=["t_start_ns", "t_end_ns", "ctr_instructions",
+                                       "pct_instructions"])
+
+
+def test_merge_counters_interval_is_open_closed_and_edges_are_nan():
+    ctr = _ctr([(1000, 2000, 10, 100.0), (2000, 3000, 20, 90.0), (4000, 5000, 40, 80.0)])
+    df = pd.DataFrame({"t_pi_ns": np.array([500, 1000, 1001, 2000, 2001, 3000, 3500, 4000,
+                                            4500, 5000, 5001], dtype=np.int64)})
+    out = merge_counters(df, ctr)
+    got = out["ctr_instructions"].tolist()
+    nan = float("nan")
+    # 500 before the first interval; 1000 == t_start of the first is NOT inside it;
+    # 2000 == end of the first belongs to the first; 3500 is in the gap; 5000 is the last end
+    expect = [nan, nan, 10, 10, 20, 20, nan, nan, 40, 40, nan]
+    assert all((np.isnan(g) and np.isnan(e)) or g == e for g, e in zip(got, expect)), got
+    assert out["pct_instructions"].iloc[4] == 90.0
+    assert out["ctr_instructions"].dtype == np.float64
+    assert "t_start_ns" not in out.columns and "t_end_ns" not in out.columns
+    assert out["t_pi_ns"].tolist() == df["t_pi_ns"].tolist()
+
+
+def test_merge_counters_header_only_gives_nan_columns():
+    out = merge_counters(pd.DataFrame({"t_pi_ns": np.arange(3, dtype=np.int64)}),
+                         _ctr([]))
+    assert out["ctr_instructions"].isna().all() and out["pct_instructions"].isna().all()
+
+
+def test_merge_counters_keeps_missing_cells_as_nan():
+    ctr = _ctr([(0, 1000, np.nan, 0.0)])
+    out = merge_counters(pd.DataFrame({"t_pi_ns": np.array([500], dtype=np.int64)}), ctr)
+    assert np.isnan(out["ctr_instructions"].iloc[0]) and out["pct_instructions"].iloc[0] == 0.0
+
+
+def test_merge_sysfs_backward_with_2s_tolerance():
+    sysfs = pd.DataFrame({"t_real_ns": [1_000_000_000, 2_000_000_000],
+                          "cpu0_kHz": [1500000, 2400000], "temp_C": [50.0, 55.0],
+                          "fan_state": [0, 1]})
+    t = np.array([500_000_000, 1_000_000_000, 1_999_999_999, 2_000_000_000,
+                  3_999_999_999, 4_000_000_001], dtype=np.int64)
+    out = merge_sysfs(pd.DataFrame({"t_pi_ns": t}), sysfs)
+    assert out["sys_cpu0_kHz"].tolist()[1:5] == [1500000, 1500000, 2400000, 2400000]
+    assert np.isnan(out["sys_cpu0_kHz"].iloc[0])          # before the first reading
+    assert np.isnan(out["sys_cpu0_kHz"].iloc[5])          # reading is older than 2 s
+    assert out["sys_temp_C"].iloc[3] == 55.0 and out["sys_fan_state"].iloc[1] == 0
+    assert "sys_t_real_ns" not in out.columns
+
+
+def test_attach_pi_logs_missing_files_add_nothing(tmp_path):
+    df = pd.DataFrame({"t_pi_ns": np.arange(3, dtype=np.int64), "P_W": [1.0, 2.0, 3.0]})
+    assert attach_pi_logs(df, tmp_path).equals(df)
+
+
+def test_align_merges_counters_and_sysfs(tmp_path):
+    rec, pi, _ = _build(tmp_path)
+    t_s = T0 + 5_000_000_000
+    rows = [(t_s + i * 100_000_000, t_s + (i + 1) * 100_000_000, 1000 + i, 100.0)
+            for i in range(20)]
+    _ctr(rows).to_csv(pi / "counters.csv", index=False)
+    pd.DataFrame({"t_real_ns": [T0 + k * 1_000_000_000 for k in range(18)],
+                  "cpu0_kHz": 2400000, "cpu1_kHz": 2400000, "cpu2_kHz": 2400000,
+                  "cpu3_kHz": 2400000, "temp_C": 61.5, "fan_state": 4,
+                  "uv_alarm": [0] * 9 + [1] * 9}).to_csv(pi / "sysfs.csv", index=False)
+    align(rec, pi, pi)
+    df = pd.read_parquet(pi / "power_trace.parquet")
+    t = df["t_pi_ns"].to_numpy()
+    inside = (t > t_s) & (t <= t_s + 2_000_000_000)
+    assert df.loc[inside, "ctr_instructions"].notna().all()
+    assert df.loc[~inside, "ctr_instructions"].isna().all()
+    k = np.minimum((t[inside] - t_s - 1) // 100_000_000, 19)
+    assert (df.loc[inside, "ctr_instructions"].to_numpy() == 1000 + k).all()
+    assert df["sys_cpu0_kHz"].notna().all() and (df["sys_temp_C"] == 61.5).all()
+    assert (df["sys_fan_state"] == 4).all()
+    # the live under-voltage alarm rides the generic sysfs merge: 0 for the first 9 s, then 1
+    uv = df["sys_uv_alarm"]
+    assert set(uv.dropna().unique()) == {0.0, 1.0}
+    assert (uv[t < T0 + 9_000_000_000].dropna() == 0).all()
+    assert (uv[t >= T0 + 9_000_000_000].dropna() == 1).all()
+    assert df["P_W"].dtype == np.float32
+
+
+def test_align_without_pi_logs_has_v1_columns(tmp_path):
+    rec, pi, _ = _build(tmp_path)
+    align(rec, pi, pi)
+    cols = pd.read_parquet(pi / "power_trace.parquet").columns
+    assert not any(c.startswith(("ctr_", "pct_", "sys_")) for c in cols)

@@ -31,7 +31,7 @@ def _flat(names):
 
 
 def test_image_classification_steps():
-    task = make_task("image", "torchvision:mobilenet_v3_small", _opt())
+    task = make_task("image", "torchvision:mobilenet_v3_small", _opt(batch=1))
     ev = EventLog()
     task.step = ev.step
     out = task.run_one("forward")
@@ -109,7 +109,7 @@ def test_topk_bounded_by_number_of_classes():
 
 def test_live_frames_use_shared_preprocess(monkeypatch):
     import numpy as np
-    task = make_task("image", "torchvision:mobilenet_v3_small", _opt(imgsz=96, live_camera=True))
+    task = make_task("image", "torchvision:mobilenet_v3_small", _opt(imgsz=96, live_camera=True, batch=1))
     frames = iter([np.zeros((480, 640, 3), dtype=np.uint8)] * 3)
     monkeypatch.setattr(task, "_camera_frame", lambda: next(frames))
     seen = []
@@ -120,3 +120,107 @@ def test_live_frames_use_shared_preprocess(monkeypatch):
     task.run_one("forward")
     assert seen == [(480, 640, 3)]
     assert _steps(ev) == _flat(["camera_capture", "preprocess", "forward", "postprocess"])
+
+
+# ---- dataset v2 inputs: batch stacking, stream frames, --input-image ---------------------------
+def _write_jpgs(d, n=3):
+    import cv2
+    import numpy as np
+    paths = []
+    for i in range(n):
+        img = np.full((24, 32, 3), 40 * (i + 1), dtype=np.uint8)
+        p = os.path.join(str(d), f"{i:03d}.jpg")
+        cv2.imwrite(p, img)
+        paths.append(p)
+    return paths
+
+
+def test_image_batch_stacks_copies_and_runs_whole_batch():
+    task = make_task("image", "torchvision:mobilenet_v3_small", _opt(imgsz=64, batch=3))
+    ev = EventLog()
+    task.step = ev.step
+    seen = []
+    real = task._module.forward
+    task._module.forward = lambda x: seen.append(tuple(x.shape)) or real(x)
+    out = task.run_one("forward")
+    assert seen == [(3, 3, 64, 64)] and out.shape == (3, 1000)
+    assert _steps(ev) == _flat(["preprocess", "forward", "postprocess"])
+
+
+def test_image_batch_none_or_one_is_single_frame():
+    for b in (None, 1):
+        task = make_task("image", "torchvision:mobilenet_v3_small", _opt(imgsz=64, batch=b))
+        assert task.run_one("forward").shape == (1, 1000)
+
+
+def test_load_stream_frames_sorted_decoded_once(tmp_path):
+    from tasks import load_stream_frames
+    paths = _write_jpgs(tmp_path)
+    (tmp_path / "notes.txt").write_text("ignored")
+    frames = load_stream_frames(str(tmp_path))
+    assert [p for p, _ in frames] == sorted(paths)
+    assert all(f.shape == (24, 32, 3) and f.dtype.name == "uint8" for _, f in frames)
+
+
+def test_load_stream_frames_errors(tmp_path):
+    from tasks import load_stream_frames
+    with pytest.raises(ValueError, match="no \\*.jpg"):
+        load_stream_frames(str(tmp_path))
+    with pytest.raises(ValueError, match="not a directory"):
+        load_stream_frames(str(tmp_path / "missing"))
+
+
+def test_stream_batch_uses_consecutive_images_and_cycles(tmp_path):
+    _write_jpgs(tmp_path, 3)
+    task = make_task("image", "torchvision:mobilenet_v3_small",
+                     _opt(imgsz=64, batch=2, frames_source="stream", stream_dir=str(tmp_path)))
+    xs = [task._batch_input() for _ in range(3)]
+    assert all(x.shape == (2, 3, 64, 64) for x in xs)
+    pre = [task.preprocess(f) for _, f in task._stream]
+    # batches: [0,1] [2,0] [1,2]
+    for x, idx in zip(xs, [(0, 1), (2, 0), (1, 2)]):
+        assert torch.equal(x, torch.cat([pre[i] for i in idx]))
+
+
+def test_input_identity(tmp_path):
+    from tasks import sha256_file
+    paths = _write_jpgs(tmp_path, 3)
+    stream = make_task("image", "torchvision:mobilenet_v3_small",
+                       _opt(frames_source="stream", stream_dir=str(tmp_path)))
+    ident = stream.input_identity()
+    assert ident["source"] == "stream"
+    assert ident["files"] == [{"path": p, "sha256": sha256_file(p)} for p in sorted(paths)]
+    rep = make_task("image", "torchvision:mobilenet_v3_small", _opt(input_image=paths[1]))
+    assert rep.input_identity() == {"source": "repeat",
+                                    "files": [{"path": paths[1], "sha256": sha256_file(paths[1])}]}
+    assert make_task("image", "torchvision:mobilenet_v3_small", _opt()).input_identity() \
+        == {"source": "repeat", "files": []}   # synthetic frame: no file
+    live = make_task("image", "torchvision:mobilenet_v3_small", _opt(live_camera=True))
+    assert live.input_identity() == {"source": "camera", "files": []}
+
+
+def test_input_image_feeds_model_and_check_image_stays_the_oracle(tmp_path):
+    paths = _write_jpgs(tmp_path, 2)
+    task = make_task("image", "torchvision:mobilenet_v3_small",
+                     _opt(input_image=paths[1], check_image=paths[0]))
+    from tasks import read_rgb
+    assert (task._source_frame() == read_rgb(paths[1])).all()
+    assert task._check_image == paths[0]
+    assert task.input_identity()["files"][0]["path"] == paths[1]
+
+
+def test_unreadable_input_image_is_an_error(tmp_path):
+    task = make_task("image", "torchvision:mobilenet_v3_small",
+                     _opt(input_image=str(tmp_path / "nope.jpg")))
+    with pytest.raises(ValueError, match="cannot read"):
+        task._source_frame()
+
+
+def test_live_camera_batch_captures_b_frames(monkeypatch):
+    import numpy as np
+    task = make_task("image", "torchvision:mobilenet_v3_small",
+                     _opt(imgsz=64, live_camera=True, batch=3))
+    n = []
+    monkeypatch.setattr(task, "_camera_frame",
+                        lambda: n.append(1) or np.zeros((48, 64, 3), dtype=np.uint8))
+    assert task._batch_input().shape == (3, 3, 64, 64) and len(n) == 3

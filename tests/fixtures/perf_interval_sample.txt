@@ -1,0 +1,39 @@
+# perf stat -I 100 -x, -o <file> -e <10 DEFAULT_EVENTS> -p <busy python pid>   (perf 6.18.60, Pi 5, paranoid=2)
+# Captured on the Pi 2026-11-19. Intervals 1-3 are real output (every event ran 100 % of the time);
+# in interval 3 the branch-misses and LLC-load-misses lines were edited to the real
+# `<not supported>` / `<not counted>` forms (seen on this PMU when events multiplex).
+# started on Thu Nov 19 18:39:53 2026
+
+0.100109271,239637235,,cycles:u,100057703,100.00,2.395,GHz
+0.100109271,403327456,,instructions:u,100054073,100.00,1.68,insn per cycle
+0.100109271,,,,,,0.12,stalled cycles per insn
+0.100109271,115237881,,cache-references:u,100052795,100.00,1.152,G/sec
+0.100109271,22,,cache-misses:u,100051592,100.00,0.00,of all cache refs
+0.100109271,1,,branch-misses:u,100050221,100.00,,
+0.100109271,47355958,,stalled-cycles-backend:u,100048591,100.00,19.76,backend cycles idle
+0.100109271,14,,LLC-load-misses:u,100046647,100.00,,
+0.100109271,100044573,,task-clock:u,100044517,100.00,1.000,CPUs utilized
+0.100109271,0,,context-switches:u,100043166,100.00,0.000,/sec
+0.100109271,0,,page-faults:u,100042388,100.00,0.000,/sec
+0.200292207,239853465,,cycles:u,100133075,100.00,2.395,GHz
+0.200292207,403681852,,instructions:u,100132946,100.00,1.68,insn per cycle
+0.200292207,,,,,,0.12,stalled cycles per insn
+0.200292207,115338413,,cache-references:u,100132576,100.00,1.152,G/sec
+0.200292207,8,,cache-misses:u,100132482,100.00,0.00,of all cache refs
+0.200292207,0,,branch-misses:u,100132575,100.00,,
+0.200292207,47406856,,stalled-cycles-backend:u,100132594,100.00,19.76,backend cycles idle
+0.200292207,0,,LLC-load-misses:u,100132686,100.00,,
+0.200292207,100132575,,task-clock:u,100132576,100.00,1.001,CPUs utilized
+0.200292207,0,,context-switches:u,100132556,100.00,0.000,/sec
+0.200292207,0,,page-faults:u,100132538,100.00,0.000,/sec
+0.300448125,240092214,,cycles:u,100156481,100.00,2.397,GHz
+0.300448125,404107715,,instructions:u,100156518,100.00,1.68,insn per cycle
+0.300448125,,,,,,0.12,stalled cycles per insn
+0.300448125,115460207,,cache-references:u,100156592,100.00,1.153,G/sec
+0.300448125,3,,cache-misses:u,100156611,100.00,0.00,of all cache refs
+0.300448125,<not supported>,,branch-misses:u,0,100.00,,
+0.300448125,47445752,,stalled-cycles-backend:u,100156537,100.00,19.76,backend cycles idle
+0.300448125,<not counted>,,LLC-load-misses:u,0,0.00,,
+0.300448125,100156481,,task-clock:u,100156462,100.00,1.002,CPUs utilized
+0.300448125,0,,context-switches:u,100156537,100.00,0.000,/sec
+0.300448125,0,,page-faults:u,100156388,100.00,0.000,/sec

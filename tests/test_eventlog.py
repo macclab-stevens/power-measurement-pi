@@ -80,3 +80,38 @@ def test_step_end_is_logged_when_the_body_raises():
     except ValueError:
         pass
     assert [r["kind"] for r in ev.rows()] == ["step_begin", "step_end"]
+
+
+# ---- workload tags (run.py --concurrent) ---------------------------------------------------------
+def test_tag_column_defaults_to_empty_and_is_written(tmp_path):
+    ev = EventLog()
+    ev.marker("forward")
+    with ev.step("forward"):
+        pass
+    with ev.step("forward", tag="m1"):
+        pass
+    assert FIELDS[-1] == "tag"
+    assert [r["tag"] for r in ev.rows()] == ["", "", "", "m1", "m1"]
+    path = tmp_path / "events.csv"
+    ev.write_csv(path)
+    rows = list(csv.DictReader(open(path)))
+    assert [r["tag"] for r in rows] == ["", "", "", "m1", "m1"]
+
+
+def test_step_for_binds_the_tag_and_stays_depth_free():
+    import threading
+    ev = EventLog()
+
+    def work(tag):
+        step = ev.step_for(tag)
+        for _ in range(50):
+            with step("forward"):
+                pass
+    threads = [threading.Thread(target=work, args=(t,)) for t in ("m0", "m1")]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    rows = ev.rows()
+    assert len(rows) == 200 and {r["depth"] for r in rows} == {0}
+    for tag in ("m0", "m1"):   # each tag's own begin/end alternate: its spans pair up
+        kinds = [r["kind"] for r in rows if r["tag"] == tag]
+        assert kinds == ["step_begin", "step_end"] * 50

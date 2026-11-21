@@ -7,7 +7,8 @@ Commands:
   run       Measure one or more workloads: run them on the Pi, copy the data back, align
             it, check it, and print a plain-English summary of each.
   test      Run the unit tests on the Pi (and/or here on the EliteBook).
-  presets   List the ready-made workloads (the 14 models of the experiment matrix).
+  presets   List the ready-made workloads: the 14 models of the v1 experiment matrix, then the
+            dataset-v2 configurations (quantized, pruned, DVFS, fan, serving, soak, ...).
 
 Run `lab.py <command> --help` for every option of a command. Start it with `./lab ...` from
 the project folder, or `~/.local/bin/uv run python lab.py ...` from host/. It must run on the
@@ -48,13 +49,15 @@ from pathlib import Path
 
 import experiment as ex
 import matrix
+import matrix_v2
 
 REPO = ex.HERE.parent
 LAB_SUBDIR = "runs/lab"                       # same relative folder on both machines
 LOCAL_LAB = REPO / "runs" / "lab"
 PI_LAB = f"{ex.PI_DIR}/{LAB_SUBDIR}"
 MATRIX_RESULTS = REPO / "runs" / "matrix" / "results.jsonl"
-PIN = "sudo -n /usr/local/sbin/pi-power-pin"
+PIN_PATH = "/usr/local/sbin/pi-power-pin"
+PIN = f"sudo -n {PIN_PATH}"
 MHZ_CHOICES = list(range(1500, 2401, 100))
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 RECORDER_MIN_HZ = 4900                        # run.py's MONSOON_MIN_HZ
@@ -66,7 +69,12 @@ PR1 = ["tests/test_monsoon_sampler.py::test_snapshot_env_is_bracketed_by_ctx_eve
        "tests/test_tasks_steps.py::test_live_frames_use_shared_preprocess"]
 KNOWN_FAIL = "tests/test_phases.py::test_no_idle_contamination"
 KNOWN_FAIL_DATA = "runs/fix_abab_smoke/samples.csv"
-STOP_STAGES = ("recorder", "pi_down", "pi_crash", "thermal")   # don't start the next preset
+STOP_STAGES = ("recorder", "pi_down", "pi_crash", "thermal", "disk", "pi_busy")  # no next preset after these
+CUT_VARIANTS = ("int8d", "p30", "p50")        # cut from the matrix: R17 (int8d), R23 (pruned)
+CUT_WHY = ("INT8 dynamic quantizes 0 modules on YOLO (it has no Linear layers) and run.py fails it; "
+           "pruning without fine-tuning leaves mAP about 0")
+FANOFF_WARN = ("WARNING: fan-off preset ({names}): the first fan-off cell must be watched in "
+               "person (the Pi is stopped at 85 C, hard stop 90 C).")
 NEVER = "This script never switches power."
 ELITEBOOK_HINT = "run this on the EliteBook (192.168.0.11), where the recorder runs (README 4.7)"
 PI_DOWN_HINT = ("Wait 3 minutes (it sometimes reboots itself), then `./lab check` again. If it "
@@ -136,6 +144,32 @@ def parse_pytest_summary(out: str) -> str | None:
     return None
 
 
+def _v2_presets() -> dict[str, dict]:
+    """Dataset-v2 presets: one per distinct configuration group, named like the cell id without
+    the repeat and (unless DVFS) without the clock, e.g. yolo11n_int8s_640_t4,
+    yolo11n_fanoff_640_t4, yolo11n_640_t4_dvfs. Other clocks of a group: --cpu-mhz.
+    Values: {"args", "family", "timeout_s", "cut"} (the first, 2400 MHz, group of a name wins).
+    "cut" presets (INT8 dynamic, pruned) are hidden from `./lab presets` and refused by
+    `./lab run` unless --include-cut is given."""
+    out: dict[str, dict] = {}
+    for cfg in matrix_v2.configs("all", include_fp16=True, include_optional=True,
+                                 include_int8d=True, include_prune=True):
+        cid = matrix_v2.cell_id(cfg, 0).rsplit("_", 1)[0]
+        name = cid if cfg.dvfs else cid.rsplit("_", 1)[0]
+        if name not in out:
+            r = matrix_v2.row(cfg, 0)
+            out[name] = {"args": r["args"], "family": cfg.family, "timeout_s": r.get("timeout_s"),
+                         "cut": cfg.variant in CUT_VARIANTS}
+    return out
+
+
+V2_PRESETS = _v2_presets()
+
+
+def visible_v2_presets(include_cut: bool = False) -> dict[str, dict]:
+    return {k: v for k, v in V2_PRESETS.items() if include_cut or not v["cut"]}
+
+
 def _short(h: str | None) -> str:
     return h[:7] if h else "unknown"
 
@@ -159,6 +193,58 @@ def pi_down_detail(sh, current_fn, run_dir) -> str:
     except Exception as e:  # noqa: BLE001 - diagnosis only
         cur = f"Monsoon current unreadable ({type(e).__name__})"
     return f"no ssh answer (ping: {ping}). {cur}"
+
+
+def stall_check(st: dict, status_fn, sleep) -> tuple[str, str, str, str]:
+    """Is the recorder really sampling? Two /status reads STALL_READ_GAP_S apart; n_total must
+    have grown and be an hour clear of the 32-bit ceiling (experiment.recorder_stalled)."""
+    sleep(ex.STALL_READ_GAP_S)
+    try:
+        st_b = status_fn()
+    except (OSError, ValueError) as e:
+        return ("recorder stall", "fail", f"second /status read failed: {e}", ELITEBOOK_HINT)
+    why = ex.recorder_stalled(st, st_b)
+    if why:
+        return ("recorder stall", "fail", why, "README 8 (restart the recorder the safe way); "
+                "this script won't")
+    return ("recorder stall", "ok", f"sampling (n_total +{st_b['n_total'] - st['n_total']} in "
+            f"{ex.STALL_READ_GAP_S} s)")
+
+
+def helper_version_check(sh) -> tuple[str, str, str, str]:
+    """The installed pi-power-pin must know `unpin` and `fan off` (dataset v2 fan/DVFS cells)."""
+    rc, out = sh.ssh(f"grep -c unpin {PIN_PATH}", 15)
+    n = next((int(x) for x in _lines(out) if x.isdigit()), 0)
+    if rc == 0 and n > 0:
+        return ("helper version", "ok", "pi-power-pin knows unpin and fan off")
+    return ("helper version", "warn", "the installed pi-power-pin is the old one (no unpin / "
+            "fan off): dataset-v2 DVFS and fan cells will fail",
+            "reinstall tools/pi-power-pin as root-owned /usr/local/sbin/pi-power-pin (README 4.5)")
+
+
+def wifi_check(sh) -> tuple[str, str, str, str]:
+    """The Pi's Wi-Fi radio adds power noise: wlan0 must not be up."""
+    rc, out = sh.ssh("cat /sys/class/net/wlan0/operstate", 15)
+    state = next(iter(_lines(out)), "")
+    if rc != 0 and "No such file" in out:
+        return ("pi wifi", "ok", "no wlan0 interface")
+    if rc != 0:
+        return ("pi wifi", "warn", f"could not read wlan0 operstate (rc={rc})")
+    if state == "up":
+        return ("pi wifi", "warn", "wlan0 is up: the radio adds power noise to the measurement",
+                "turn Wi-Fi off on the Pi (`sudo nmcli con down stevens-iot`), and measure over "
+                "ethernet")
+    return ("pi wifi", "ok", f"wlan0 {state or 'down'}")
+
+
+def perf_check(sh) -> tuple[str, str, str, str]:
+    """perf (Linux perf tools) must be on the Pi's PATH for the dataset-v2 hardware counters."""
+    rc, out = sh.ssh("command -v perf", 15)
+    path = next(iter(_lines(out)), "")
+    if rc == 0 and path:
+        return ("perf", "ok", path)
+    return ("perf", "warn", "perf not found on the Pi: dataset-v2 cells cannot record counters",
+            "install it on the Pi (Debian package linux-perf)")
 
 
 def idle_check(sh, pi_up: bool) -> Check:
@@ -187,7 +273,7 @@ def idle_check(sh, pi_up: bool) -> Check:
 
 
 def preflight(sh, status_fn, current_fn, *, allow_git_mismatch=False, models=(),
-              check_images=()) -> tuple[list[Check], dict]:
+              check_images=(), sleep=time.sleep) -> tuple[list[Check], dict]:
     """Every check, in order. Returns (checks, facts); facts holds git heads and temperature."""
     checks: list[Check] = []
     facts: dict = {"git_host": None, "git_pi": None, "temp": None}
@@ -201,6 +287,7 @@ def preflight(sh, status_fn, current_fn, *, allow_git_mismatch=False, models=(),
         st = None
         add("recorder", "fail", f"unreachable: {e}", ELITEBOOK_HINT)
         add("recorder age", "skip", "recorder unreachable")
+        add("recorder stall", "skip", "recorder unreachable")
     if st is not None:
         run_dir = st.get("run_dir")
         hz = float(st.get("sample_hz") or 0)
@@ -221,6 +308,7 @@ def preflight(sh, status_fn, current_fn, *, allow_git_mismatch=False, models=(),
                 add("recorder age", "ok", f"sampling for {days:.1f} days of ~9.9")
         else:
             add("recorder age", "skip", "unknown (no sample rate yet)")
+        add(*stall_check(st, status_fn, sleep))
 
     # 3. Pi reachable; if not, diagnose and skip the other Pi checks
     pi_up = sh.ssh("true", 15)[0] == 0
@@ -228,7 +316,8 @@ def preflight(sh, status_fn, current_fn, *, allow_git_mismatch=False, models=(),
         add("pi reachable", "ok", ex.PI)
     else:
         add("pi reachable", "fail", pi_down_detail(sh, current_fn, run_dir), PI_DOWN_HINT)
-        for name in ("pi temperature", "pi throttling", "pinning helper", "code version"):
+        for name in ("pi temperature", "pi throttling", "pinning helper", "helper version",
+                     "pi wifi", "perf", "code version"):
             add(name, "skip", "Pi unreachable")
 
     if pi_up:
@@ -249,8 +338,12 @@ def preflight(sh, status_fn, current_fn, *, allow_git_mismatch=False, models=(),
             add("pi throttling", "fail", f"throttled={bits:#x}: under-voltage or throttling now",
                 "check the power cable and the fan (README 9), wait, re-check")
         elif bits & 0xF0000:
-            add("pi throttling", "warn", f"throttled={bits:#x}: happened earlier since boot "
-                "(old news)")
+            add("pi throttling", "warn", f"throttled={bits:#x}: " + (
+                "under-voltage happened since boot; reboot the Pi before a long matrix "
+                "(run.py now also watches the live alarm (sysfs uv_alarm) and the cell dmesg log)"
+                if bits & 0x10000 else
+                "throttling or a clock cap happened since boot; reboot the Pi before a long "
+                "matrix"))
         else:
             add("pi throttling", "ok", "throttled=0x0")
         # 5. pinning helper
@@ -261,6 +354,9 @@ def preflight(sh, status_fn, current_fn, *, allow_git_mismatch=False, models=(),
         else:
             add("pinning helper", "fail", f"missing or not allowed (rc={rc})",
                 "install /usr/local/sbin/pi-power-pin and its sudoers entry (README 4.5)")
+        add(*helper_version_check(sh))
+        add(*wifi_check(sh))
+        add(*perf_check(sh))
 
     # 6. code versions: the full hash on both sides
     rc, out = sh.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], 10)
@@ -336,7 +432,9 @@ def dict_to_args(d: dict) -> list[str]:
 
 def build_args(base: list[str], a) -> list[str]:
     """base (a matrix preset or --task/--model) + only the overrides the user typed, then the
-    matrix's common flags and --cpu-mhz, in the matrix's order (so no overrides == matrix cell)."""
+    matrix's common flags and --cpu-mhz, in the matrix's order (so no overrides == matrix cell).
+    A dataset-v2 preset (it has --fan) keeps all its flags in place; only typed overrides and
+    --cpu-mhz change."""
     d = args_to_dict(base)
     for attr, flag in VALUE_OVERRIDES.items():
         if getattr(a, attr) is not None:
@@ -352,6 +450,11 @@ def build_args(base: list[str], a) -> list[str]:
         d.pop("--check-image", None)
     if a.live_camera:
         d["--live-camera"] = None
+    if "--fan" in d:        # dataset-v2 preset: complete as built by matrix_v2 (sampler, threads,
+        if a.threads is not None:                  # fan mode, clock); no --fan-full on top
+            d["--threads"] = str(a.threads)
+        d["--cpu-mhz"] = str(a.cpu_mhz)
+        return dict_to_args(d)
     common = args_to_dict(matrix.COMMON)
     if a.threads is not None:
         common["--threads"] = str(a.threads)
@@ -371,9 +474,13 @@ def plan_jobs(a, now: datetime.datetime) -> list[dict]:
         raise UsageError("give preset name(s) or --task and --model, not both")
     if not presets and not (a.task and a.model):
         raise UsageError("give a preset (see `./lab presets`) or both --task and --model")
+    include_cut = getattr(a, "include_cut", False)
     for p in presets:
-        if p not in matrix.MODELS:
-            close = difflib.get_close_matches(p, matrix.MODELS, n=3)
+        if V2_PRESETS.get(p, {}).get("cut") and not include_cut:
+            raise UsageError(f"preset {p!r} is cut from the dataset: {CUT_WHY}. "
+                             "Add --include-cut to run it anyway")
+        if p not in matrix.MODELS and p not in V2_PRESETS:
+            close = difflib.get_close_matches(p, [*matrix.MODELS, *visible_v2_presets()], n=3)
             raise UsageError(f"unknown preset {p!r}"
                              + (f"; did you mean {', '.join(close)}?" if close
                                 else "; `./lab presets` lists them"))
@@ -391,14 +498,16 @@ def plan_jobs(a, now: datetime.datetime) -> list[dict]:
     stamp = now.strftime("%Y%m%d-%H%M%S")
     jobs = []
     for key in presets or [None]:
-        base = list(matrix.MODELS[key]) if key else ["--task", a.task, "--model", a.model,
-                                                     *(["--no-bench"] if a.task == "train" else [])]
+        v2 = V2_PRESETS.get(key, {})
+        base = (list(v2.get("args") or matrix.MODELS[key]) if key else
+                ["--task", a.task, "--model", a.model, *(["--no-bench"] if a.task == "train" else [])])
         args = build_args(base, a)
         d = args_to_dict(args)
         if d["--task"] == "train" and int(d.get("--batch", 8)) < 2:
             raise UsageError("--task train needs --batch 2 or more (BatchNorm in training mode)")
         jobs.append({"preset": key, "args": args, "cpu_mhz": a.cpu_mhz, "model": d["--model"],
                      "task": d["--task"], "check_image": d.get("--check-image"),
+                     "family": v2.get("family"), "timeout_s": v2.get("timeout_s"),
                      "name": a.name or f"{key or sanitize(a.model)}_{a.cpu_mhz}_{stamp}"})
     return jobs
 
@@ -436,6 +545,14 @@ def _f(v, fmt=".2f") -> str:
     return "?" if v is None else format(v, fmt)
 
 
+def _fan_text(meta: dict) -> str:
+    """run_meta's fan mode (full | auto | off); 'NOT full' for an untouched fan."""
+    mode = meta.get("fan_mode")
+    if mode is None:                                # older run_meta: fan_full only
+        return "full" if meta.get("fan_full", True) else "NOT full"
+    return "NOT full" if mode == "none" else mode
+
+
 def format_summary(job: dict, res: dict, ver: dict, facts: dict) -> str:
     name = job["name"]
     d = LOCAL_LAB / name
@@ -451,7 +568,7 @@ def format_summary(job: dict, res: dict, ver: dict, facts: dict) -> str:
          f" Workload     {job['model']}, {frames} {'optimizer steps' if train else 'iterations'}"
          " per mode",
          f" Conditions   CPU pinned {meta.get('cpu_mhz_pinned', job['cpu_mhz'])} MHz, fan "
-         f"{'full' if meta.get('fan_full', True) else 'NOT full'}, Pi "
+         f"{_fan_text(meta)}, Pi "
          f"{_f(facts.get('temp'), '.1f')} C at start, git {res.get('git_host')} (EliteBook) / "
          f"{res.get('git_pi')} (Pi)",
          f" Duration     {_dur(res.get('duration_s'))} total (run.py {_dur(res.get('run_s'))})",
@@ -520,6 +637,29 @@ STAGE_HELP = {   # stage -> (what happened, likely cause, what to do)
             "See its last lines below. ACCEPTANCE: under-voltage -> power cable (README 9); "
             "baseline drift -> something else ran on the Pi; a task check -> model or weights.",
             "Fix the cause and run again with a new --name (or the default name)."),
+    "disk": ("Not enough free disk space for the next run (EliteBook runs folder or the Pi "
+             "project folder).",
+             "Earlier runs filled it; v2 cells with counters and soak runs are large.",
+             f"`df -h ~` here and `ssh {ex.PI} df -h {ex.PI_DIR}`; move finished runs elsewhere, "
+             "then run again."),
+    "pi_busy": ("run.py is already running on the Pi (or the check could not be made).",
+                "An earlier run was abandoned after a timeout or Ctrl-C and is still going; a "
+                "second run would corrupt both.",
+                f"`ssh {ex.PI} pgrep -af src/run.py`; wait for it, or stop it with `{STOP_RUN}`; "
+                "then run again."),
+    "timeout": ("run.py took longer than --timeout and was stopped (SIGINT).",
+                "A slow model, too many --frames, or a hung run.",
+                f"Details say whether it exited. If it is still running: `{STOP_RUN}`, check "
+                f"`ssh {ex.PI} pgrep -af src/run.py`. Then run again with a larger --timeout or "
+                "fewer --frames."),
+    "undervoltage": ("The Pi's kernel logged 'Undervoltage detected' during the run.",
+                     "Weak power supply or cable, or the Monsoon's Vout (README 9).",
+                     "Check the Vout setting (5.35 V) and the cable; reboot the Pi if the sticky "
+                     "flag was set before; run again. The kernel lines are below."),
+    "thermal_abort": ("run.py stopped at 85 C (exit 3) or at the 90 C hard stop (exit 4).",
+                      "The Pi got too hot: fan off or on auto, a hot room, or a long soak.",
+                      "Check the fan mode and the room temperature; let the Pi cool; details in "
+                      "thermal_abort.json below."),
     "rsync": ("Copying the results back failed.", "Network problem or a full disk here.",
               f"Check `df -h ~` and the network; the data is still on the Pi in ~/{PI_LAB}."),
     "align": ("The power trace could not be lined up with the Pi's events.",
@@ -533,11 +673,6 @@ STAGE_HELP = {   # stage -> (what happened, likely cause, what to do)
 def format_failure(job: dict, res: dict) -> str:
     name, stage = job["name"], res.get("stage")
     what, cause, todo = STAGE_HELP.get(stage, ("Unknown failure.", "?", "See the details."))
-    if stage == "run" and res.get("run_rc") == 124:
-        what = "run.py took longer than --timeout and was abandoned."
-        cause = "A slow model, too many --frames, or a hung run."
-        todo = (f"It may still be running on the Pi: `ssh {ex.PI} pgrep -af src/run.py`; "
-                f"stop it with `{STOP_RUN}`.")
     bar = "=" * 76
     L = [bar, f" RUN FAILED at '{stage}'  {name}", bar,
          f" What happened  {what}", f" Likely cause   {cause}", f" What to do     {todo}"]
@@ -577,6 +712,12 @@ def restore_pins(sh, keep_pinned: bool, state: str) -> None:
 
 def cmd_run(a, sh, status_fn, current_fn, align_fn, verify_fn, now, sleep) -> int:
     jobs = plan_jobs(a, now())
+    fan_off = [j["name"] for j in jobs if args_to_dict(j["args"]).get("--fan") == "off"]
+    if fan_off:
+        warn = FANOFF_WARN.format(names=", ".join(fan_off))
+        if not (a.yes_supervised or a.dry_run):
+            raise UsageError(f"{warn} Add --yes-supervised to confirm that you will watch it.")
+        safe_print(warn)
     if a.dry_run:
         for j in jobs:
             cell = {"cell_id": j["name"], "args": j["args"]}
@@ -604,7 +745,7 @@ def cmd_run(a, sh, status_fn, current_fn, align_fn, verify_fn, now, sleep) -> in
     sh = sh or LabShell()
     checks, facts = preflight(sh, status_fn, current_fn, allow_git_mismatch=a.allow_git_mismatch,
                               models=[j["model"] for j in jobs],
-                              check_images=[j["check_image"] for j in jobs])
+                              check_images=[j["check_image"] for j in jobs], sleep=sleep)
     safe_print(format_checks(checks))
     if any(c.level == "fail" for c in checks):
         return 1
@@ -639,6 +780,10 @@ def cmd_run(a, sh, status_fn, current_fn, align_fn, verify_fn, now, sleep) -> in
             safe_print(f"watch live: ssh {ex.PI} tail -f {PI_LAB}/{j['name']}.log")
             cell = {"cell_id": j["name"], "model_key": j["preset"] or "custom",
                     "cpu_mhz": j["cpu_mhz"], "repeat": 0, "round": 0, "args": j["args"]}
+            if j["family"]:                     # dataset v2: soak free-space minimum and timeout
+                cell["family"] = j["family"]
+            if j["timeout_s"] and j["timeout_s"] > a.timeout * 60:
+                cell["timeout_s"] = j["timeout_s"]
             res = orch.run_cell(cell, 1)
             res["lab"] = {"preset": j["preset"], "name": j["name"], "args": j["args"]}
             ex.append_jsonl(LOCAL_LAB / "results.jsonl", res)
@@ -748,7 +893,25 @@ def preset_details(key: str) -> str:
     return ", ".join(p for p in parts if p)
 
 
-def cmd_presets() -> int:
+def v2_details(key: str) -> str:
+    d = args_to_dict(V2_PRESETS[key]["args"])
+    parts = [f"family {V2_PRESETS[key]['family']}",
+             f"imgsz {d['--imgsz']}, threads {d['--threads']}",
+             f"batch {d['--batch']}" if "--batch" in d else "",
+             f"fan {d['--fan']}" if d["--fan"] != "full" else "",
+             f"governor {d['--governor']} (clock pinned only around the sync pulses)"
+             if "--governor" in d else "",
+             f"quant {d['--quant']}" if "--quant" in d else "",
+             f"prune {d['--prune']}" if "--prune" in d else "",
+             f"input {d['--input-image']}" if "--input-image" in d else "",
+             f"serve {d['--serve-fps']} fps" if "--serve-fps" in d else "",
+             f"soak {d['--soak-minutes']} min" if "--soak-minutes" in d else "",
+             f"frames from {d['--frames-source']}" if "--frames-source" in d else "",
+             f"concurrent {d['--concurrent']}" if "--concurrent" in d else ""]
+    return ", ".join(p for p in parts if p)
+
+
+def cmd_presets(include_cut: bool = False) -> int:
     durs: dict = {}
     try:
         for r in ex.load_jsonl(MATRIX_RESULTS):
@@ -772,7 +935,18 @@ def cmd_presets() -> int:
         safe_print("")
     safe_print(f"~time: mean of the matrix's ok cells at {matrix.MAIN_MHZ} MHz "
                f"({MATRIX_RESULTS}), when present.\nAll run with --sampler monsoon --fan-full "
-               "--threads 4 --cpu-mhz 2400 unless overridden. Example: ./lab run yolo11n")
+               "--threads 4 --cpu-mhz 2400 unless overridden. Example: ./lab run yolo11n\n")
+    safe_print(f"Dataset v2\n  {'preset':<28} {'model':<14} {'frames':>6}  details")
+    for k, v in visible_v2_presets(include_cut).items():
+        d = args_to_dict(v["args"])
+        safe_print(f"  {k:<28} {d['--model']:<14} {d['--frames']:>6}  {v2_details(k)}"
+                   + ("  [cut]" if v["cut"] else ""))
+    safe_print("\nv2 presets run at 2400 MHz unless --cpu-mhz says otherwise, with perf counters "
+               "on and a --holdout tag.\nFan-off presets need --yes-supervised (watch the first "
+               "one in person). Example: ./lab run yolo11n_int8s_640_t4")
+    if not include_cut:
+        safe_print("INT8-dynamic and pruned presets are cut from the dataset and not listed "
+                   "(--include-cut shows them).")
     return 0
 
 
@@ -822,6 +996,8 @@ Examples:
   ./lab run yolo11n --frames 5 --serve 2 --bench 0       # quick look, about a minute
   ./lab run --task train --model torchvision:resnet18 --batch 4 --imgsz 128 --optimizer adam
   ./lab run resnet18 --dry-run                           # show the commands only
+  ./lab run yolo11n_int8s_640_t4                         # a dataset-v2 preset (./lab presets)
+  ./lab run yolo11n_fanoff_640_t4 --yes-supervised       # fan off: watch the first one
 Many repeats or clock sweeps: experiment.py plan --only <preset> (README 5.4).
 """
 
@@ -836,7 +1012,9 @@ def build_parser() -> argparse.ArgumentParser:
                        "nothing is changed on any machine.\n\nChecks: recorder recording at "
                        ">= 4900 Hz and not near its ~9.9-day limit; Pi reachable\n(if not: ping, "
                        "the Monsoon current and what to do); temperature; throttling; the "
-                       "pinning helper;\nthe same git commit on both machines; nothing else "
+                       "pinning helper (and that it knows unpin and fan off);\nthe recorder really "
+                       "sampling (n_total grows, not near its ceiling); Pi Wi-Fi off; perf "
+                       "installed on the Pi;\nthe same git commit on both machines; nothing else "
                        "running (run.py or pytest on the Pi,\nthe matrix here).",
                        epilog="Exit codes: 0 ready (warnings allowed), 1 at least one [FAIL].\n\n"
                        "Examples:\n  ./lab check\n  ./lab check --allow-git-mismatch")
@@ -907,7 +1085,8 @@ def build_parser() -> argparse.ArgumentParser:
     m.add_argument("--cpu-mhz", type=int, choices=MHZ_CHOICES, default=matrix.MAIN_MHZ,
                    metavar="MHZ",
                    help="lock all 4 cores at this clock, 1500-2400 in steps of 100 (default "
-                   "2400; the matrix also uses 2000 and 1500). The fan always runs at full speed")
+                   "2400; the matrix also uses 2000 and 1500). The fan runs at full speed, except "
+                   "for v2 presets that set their own fan mode")
     m.add_argument("--name", metavar="NAME",
                    help="run folder name (one preset only): letters, digits, '.', '_', '-'. "
                    "Default <preset or model>_<MHz>_<YYYYmmdd-HHMMSS>; an existing name is refused")
@@ -923,6 +1102,12 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument("--allow-git-mismatch", action="store_true",
                    help="run even if the Pi and the EliteBook are on different commits (both "
                    "are recorded in results.jsonl)")
+    f.add_argument("--include-cut", action="store_true",
+                   help="allow the cut presets (INT8 dynamic yolo*_int8d_*, pruned yolo11n_p30/p50_*): "
+                   "they fail or collapse by design, see README 5.4")
+    f.add_argument("--yes-supervised", action="store_true",
+                   help="required for fan-off presets (e.g. yolo11n_fanoff_640_t4): confirms that "
+                   "you watch the first fan-off cell in person")
     f.add_argument("--dry-run", action="store_true",
                    help="only print the run.py and Pi commands and the folders; contacts no "
                    "machine")
@@ -953,10 +1138,13 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--timeout", type=_int(1), default=20, metavar="MIN",
                    help="give up on the Pi tests after this many minutes (default 20)")
 
-    sub.add_parser("presets", formatter_class=raw, help="list the ready-made workloads",
-                   description="List the 14 matrix workloads that `./lab run` accepts by name, "
-                   "with their typical duration\nfrom the matrix results when available.",
+    pp = sub.add_parser("presets", formatter_class=raw, help="list the ready-made workloads",
+                   description="List the workloads that `./lab run` accepts by name: the 14 v1 matrix "
+                   "workloads (with their typical duration\nfrom the matrix results when "
+                   "available) and the dataset-v2 configurations.",
                    epilog="Examples:\n  ./lab presets\n  ./lab run lm64")
+    pp.add_argument("--include-cut", action="store_true",
+                    help="also list the cut presets (INT8 dynamic, pruned)")
     return ap
 
 
@@ -971,11 +1159,12 @@ def main(argv=None, *, sh=None, status_fn=None, current_fn=None, align_fn=None, 
     now = now or datetime.datetime.now
     try:
         if a.cmd == "presets":
-            return cmd_presets()
+            return cmd_presets(a.include_cut)
         if a.cmd == "check":
             sh = sh or LabShell()
             checks, _ = preflight(sh, status_fn, current_fn,
-                                  allow_git_mismatch=a.allow_git_mismatch)
+                                  allow_git_mismatch=a.allow_git_mismatch,
+                                  sleep=sleep or time.sleep)
             safe_print(format_checks(checks))
             return 1 if any(c.level == "fail" for c in checks) else 0
         if a.cmd == "run":

@@ -8,7 +8,7 @@ HTTP on --port:
   GET /status                     -> recording, serial, vout_V, n_total, dropped, sample_hz, run_dir
   GET /window?t0_ns=&t1_ns=       -> count, mean_P (W), max_P (W), complete
 
-    uv run python recorder.py --vout 5.25 --current-limit 6
+    uv run python recorder.py --vout 5.35 --current-limit 6
 """
 from __future__ import annotations
 

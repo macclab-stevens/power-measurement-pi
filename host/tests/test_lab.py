@@ -11,7 +11,7 @@ import matrix
 SETLOCALE = "bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8)"
 HEAD = "a878d93" + "0" * 33
 NOW = datetime.datetime(2026, 10, 16, 14, 2, 33)
-STATUS = {"recording": True, "serial": 36517, "vout_V": 5.25, "sample_hz": 4992.4,
+STATUS = {"recording": True, "serial": 36517, "vout_V": 5.35, "sample_hz": 4992.4,
           "n_total": int(4992.4 * 86400 * 2), "run_dir": "data/20261014T140000"}
 
 
@@ -23,8 +23,25 @@ def no_real_shell(monkeypatch, tmp_path):
             raise AssertionError("a test tried to construct a real Shell")
     monkeypatch.setattr(ex, "Shell", Boom)
     monkeypatch.setattr(lab, "LabShell", Boom)
+    monkeypatch.setattr(ex, "local_free_gb", lambda p: 100.0)   # never depend on the real disk
     monkeypatch.setattr(lab, "LOCAL_LAB", tmp_path / "runs" / "lab")
     monkeypatch.setattr(lab, "MATRIX_RESULTS", tmp_path / "runs" / "matrix" / "results.jsonl")
+
+
+def live_status():
+    """/status of a recorder that is sampling: n_total grows with every read (experiment.py
+    refuses to start a cell on a recorder whose n_total stands still)."""
+    n = {"v": STATUS["n_total"]}
+
+    def status():
+        n["v"] += 10000
+        return dict(STATUS, n_total=n["v"])
+    return status
+
+
+def _run_py_cmd(c):
+    """The cell's run.py command (not experiment.py's pgrep for a stale run.py)."""
+    return c.startswith("cd ") and "src/run.py" in c
 
 
 def default_rules():
@@ -33,17 +50,23 @@ def default_rules():
     return [
         (lambda c: c == "true", (0, "")),
         ("vcgencmd", (0, "temp=42.0'C\nthrottled=0x0")),
+        ("df -Pk", (0, "Filesystem 1024-blocks Used Available Capacity Mounted on\n"
+                       "/dev/sda2 500000000 1000 400000000 1% /home")),
         ("pi-power-pin status", (0, "governor=performance min_kHz=2400000 max_kHz=2400000 "
                                     "cur_kHz=2400000 fan_state=4/4 fan_rpm=7000 temp_mC=42000")),
         ("pi-power-pin restore", (0, "governor=ondemand")),
+        ("grep -c unpin", (0, "4")),
+        ("operstate", (0, "down")),
+        ("command -v perf", (0, "/usr/bin/perf")),
         ("rev-parse HEAD", (0, HEAD)),
         ("[s]rc/run.py", (1, "")),
+        ("pytho[n] src/run.py", (1, "")),      # experiment.py's busy check (before "src/run.py")
         ("[p]ytest", (1, "")),
         ("is-active exp-matrix", (3, "inactive")),
         ("[e]xperiment.py run", (1, "")),
         ("test -e", (1, "")),
         ("test -f", (0, "")),
-        ("src/run.py", (0, "[ok] dataset written")),
+        (_run_py_cmd, (0, "[ok] dataset written")),
         ("pytest -q", (0, "...\n3 passed in 4.21s")),
     ]
 
@@ -133,7 +156,7 @@ def _fakes(calls, verify_ok=True):
 def _run(argv, sh, calls=None, verify_ok=True):
     calls = {} if calls is None else calls
     align_fn, verify_fn = _fakes(calls, verify_ok)
-    return _rc(argv, sh=sh, status_fn=lambda: dict(STATUS), current_fn=lambda d: (0.29, 0.31),
+    return _rc(argv, sh=sh, status_fn=live_status(), current_fn=lambda d: (0.29, 0.31),
                align_fn=align_fn, verify_fn=verify_fn, now=lambda: NOW, sleep=lambda s: None)
 
 
@@ -228,7 +251,7 @@ def test_run_happy_path(capsys):
     assert rows[0]["lab"]["preset"] == "yolo11n"
     assert rows[0]["lab"]["args"] == matrix._cell("yolo11n", 2400, 0, 0)["args"]
     assert calls["verify"] == [(str(lab.LOCAL_LAB / name), 2400)]
-    (run,) = [(c, t) for k, c, t in sh.cmds if k == "ssh" and "src/run.py" in c]
+    (run,) = [(c, t) for k, c, t in sh.cmds if k == "ssh" and _run_py_cmd(c)]
     assert f"--out runs/lab/{name} > runs/lab/{name}.log" in run[0] and run[1] == 300
     assert (f"watch live: ssh maccpi@192.168.0.243 tail -f "
             f"Desktop/power-measurement-pi/runs/lab/{name}.log") in out
@@ -240,7 +263,7 @@ def test_run_happy_path(capsys):
 
 
 def test_run_failure_prints_stage_help_and_exits_1(capsys):
-    sh = ScriptedShell([("src/run.py", (1, "ACCEPTANCE: under-voltage"))])
+    sh = ScriptedShell([(_run_py_cmd, (1, "ACCEPTANCE: under-voltage"))])
     assert _run(["run", "yolo11n"], sh) == 1
     out = capsys.readouterr().out
     assert "RUN FAILED" in out and "'run'" in out and "What to do" in out
@@ -250,7 +273,7 @@ def test_run_failure_prints_stage_help_and_exits_1(capsys):
 
 def test_pi_crash_points_to_readme_and_never_switches_power(capsys):
     up = [(0, ""), (0, ""), (255, "down")]    # pre-flight and pre-run checks fine, then gone
-    sh = ScriptedShell([("src/run.py", (255, "")), (lambda c: c == "true", up)])
+    sh = ScriptedShell([(_run_py_cmd, (255, "")), (lambda c: c == "true", up)])
     assert _run(["run", "yolo11n"], sh) == 1
     out = capsys.readouterr().out
     assert "pi_crash" in out and "README" in out and "rsts" in out
@@ -303,7 +326,7 @@ def test_ctrl_c_reports_remote_state_and_exits_130(capsys):
 
     def align_fn(rec, pi, out):
         raise KeyboardInterrupt
-    rc = _rc(["run", "yolo11n"], sh=sh, status_fn=lambda: dict(STATUS),
+    rc = _rc(["run", "yolo11n"], sh=sh, status_fn=live_status(),
              current_fn=lambda d: (0.9, 1.0), align_fn=align_fn, verify_fn=lambda d, m: {},
              now=lambda: NOW, sleep=lambda s: None)
     out = capsys.readouterr().out
@@ -324,12 +347,17 @@ def test_safe_print_swallows_broken_pipe(monkeypatch):
 
 
 # ---- check ------------------------------------------------------------------------------------
-def _check(sh, status=None, **kw):
+def _check(sh, status=None, status_fn=None, **kw):
+    reads = {"n": 0}
+
     def st():
         if isinstance(status, Exception):
             raise status
-        return dict(STATUS, **(status or {}))
-    checks, _ = lab.preflight(sh, st, lambda d: (0.29, 0.31), **kw)
+        reads["n"] += 1             # a sampling recorder: n_total grows with every read
+        s = dict(STATUS, **(status or {}))
+        return dict(s, n_total=s["n_total"] + 10000 * reads["n"])
+    checks, _ = lab.preflight(sh, status_fn or st, lambda d: (0.29, 0.31), sleep=lambda s: None,
+                              **kw)
     return {c.name: c for c in checks}
 
 
@@ -355,6 +383,13 @@ def test_check_throttled(bits, level):
     assert c["pi throttling"].level == level
 
 
+def test_sticky_undervoltage_bit_is_not_old_news():
+    c = _check(ScriptedShell([("vcgencmd", (0, "temp=42.0'C\nthrottled=0x50000"))]))
+    msg = c["pi throttling"].detail
+    assert "old news" not in msg
+    assert "reboot the Pi before a long matrix" in msg and "uv_alarm" in msg and "dmesg" in msg
+
+
 def test_check_pin_helper_missing():
     c = _check(ScriptedShell([("pi-power-pin status", (1, "sudo: a password is required"))]))
     assert c["pinning helper"].level == "fail" and "4.5" in c["pinning helper"].hint
@@ -367,12 +402,13 @@ def test_check_pin_helper_missing():
 def test_check_busy_fails(rule):
     sh = ScriptedShell([rule])
     assert _check(sh)["idle"].level == "fail"
-    assert not any("src/run.py" in c for k, c, _ in sh.cmds if k == "ssh")
+    assert not any(_run_py_cmd(c) for k, c, _ in sh.cmds if k == "ssh")
 
 
 def test_check_recorder_unreachable_hints_the_elitebook():
     c = _check(ScriptedShell(), OSError("connection refused"))
     assert c["recorder"].level == "fail" and "192.168.0.11" in c["recorder"].hint
+    assert c["recorder stall"].level == "skip"
 
 
 def test_check_recorder_slow_or_old():
@@ -388,7 +424,58 @@ def test_check_pi_down_reports_current_and_skips_the_rest():
     text = c["pi reachable"].detail + c["pi reachable"].hint
     assert "0.29" in text and "never switches power" in text and "README" in text
     assert c["pi temperature"].level == "skip" and c["idle"].level != "fail"
+    assert {c[n].level for n in ("helper version", "pi wifi", "perf")} == {"skip"}
     _no_power_commands(sh)
+
+
+def test_check_recorder_stall_is_an_error_row():
+    frozen = lambda: dict(STATUS)                                    # noqa: E731
+    c = _check(ScriptedShell(), status_fn=frozen)
+    assert c["recorder stall"].level == "fail" and "not sampling" in c["recorder stall"].detail
+    assert "README 8" in c["recorder stall"].hint
+    ceiling = {"n_total": ex.SAMPLE_CEILING - 5000}
+    c = _check(ScriptedShell(), ceiling)
+    assert c["recorder stall"].level == "fail" and "ceiling" in c["recorder stall"].detail
+    assert _check(ScriptedShell())["recorder stall"].level == "ok"
+
+
+def test_check_recorder_stall_waits_between_the_two_reads_and_survives_a_dying_recorder():
+    waits, reads = [], []
+
+    def st():
+        reads.append(len(waits))
+        if len(reads) == 2:
+            raise OSError("connection refused")
+        return dict(STATUS)
+    checks, _ = lab.preflight(ScriptedShell(), st, lambda d: (0.29, 0.31), sleep=waits.append)
+    row = {c.name: c for c in checks}["recorder stall"]
+    assert waits == [ex.STALL_READ_GAP_S] and reads == [0, 1]
+    assert row.level == "fail" and "192.168.0.11" in row.hint
+
+
+def test_check_pi_wifi_up_warns_and_absent_is_fine():
+    c = _check(ScriptedShell([("operstate", (0, "up"))]))
+    assert c["pi wifi"].level == "warn" and "power noise" in c["pi wifi"].detail
+    assert "sudo nmcli con down stevens-iot" in c["pi wifi"].hint and "radio wifi off" not in c["pi wifi"].hint
+    gone = ScriptedShell([("operstate", (1, "cat: /sys/class/net/wlan0/operstate: No such file"))])
+    assert _check(gone)["pi wifi"].level == "ok"
+    assert _check(ScriptedShell([("operstate", (255, "ssh: timeout"))]))["pi wifi"].level == "warn"
+    assert _check(ScriptedShell())["pi wifi"].level == "ok"
+
+
+def test_check_perf_missing_warns():
+    c = _check(ScriptedShell([("command -v perf", (1, ""))]))
+    assert c["perf"].level == "warn" and "counters" in c["perf"].detail
+    assert _check(ScriptedShell())["perf"].detail == "/usr/bin/perf"
+
+
+def test_check_old_pin_helper_warns_with_the_reinstall_hint():
+    sh = ScriptedShell([("grep -c unpin", (1, "0"))])
+    c = _check(sh)
+    assert c["helper version"].level == "warn" and "reinstall" in c["helper version"].hint
+    assert sh.sent("grep -c unpin /usr/local/sbin/pi-power-pin")
+    assert c["pinning helper"].level == "ok"
+    assert _check(ScriptedShell())["helper version"].level == "ok"
 
 
 def test_check_models_and_check_image():
@@ -400,11 +487,11 @@ def test_check_models_and_check_image():
 
 
 def test_check_command_exit_code(capsys):
-    assert _rc(["check"], sh=ScriptedShell(), status_fn=lambda: dict(STATUS),
-               current_fn=lambda d: (0.9, 1.0)) == 0
+    assert _rc(["check"], sh=ScriptedShell(), status_fn=live_status(),
+               current_fn=lambda d: (0.9, 1.0), sleep=lambda s: None) == 0
     sh = ScriptedShell([("vcgencmd", (0, "temp=42.0'C\nthrottled=0x1"))])
-    assert _rc(["check"], sh=sh, status_fn=lambda: dict(STATUS),
-               current_fn=lambda d: (0.9, 1.0)) == 1
+    assert _rc(["check"], sh=sh, status_fn=live_status(), current_fn=lambda d: (0.9, 1.0),
+               sleep=lambda s: None) == 1
     assert "NOT ready" in capsys.readouterr().out
 
 
@@ -456,6 +543,182 @@ def test_presets_lists_every_key_with_durations(capsys):
     assert _rc(["presets"]) == 0
     out = capsys.readouterr().out
     assert all(k in out for k in matrix.MODELS) and "2.0 min" in out
+
+
+def test_presets_has_a_dataset_v2_section(capsys):
+    assert _rc(["presets"]) == 0
+    out = capsys.readouterr().out
+    head, v2 = out.split("Dataset v2\n")
+    assert all(k in head for k in matrix.MODELS) and "yolo11n_int8s" not in head
+    assert all(k in v2 for k in ("yolo11n_int8s_640_t4", "yolo11n_fanoff_640_t4",
+                                 "yolo11n_640_t4_dvfs", "yolo11m_soak30_640_t4",
+                                 "yolo11n_concspin_640_t4", "yolo11n_fp16_640_t4"))
+    assert "--yes-supervised" in v2
+
+
+def test_v2_presets_are_one_per_group_with_the_v1_names_untouched():
+    names = list(lab.V2_PRESETS)
+    assert len(names) == len(set(names)) and not set(names) & set(matrix.MODELS)
+    assert "yolo11n_640_t4_dvfs" in names and "yolo11n_640_t4_2400" not in names
+    assert not any(n[-4:].isdigit() and "_r" in n for n in names)
+    assert lab.V2_PRESETS["yolo11m_soak30_640_t4"]["timeout_s"] == 50 * 60
+    assert lab.V2_PRESETS["yolo11n_fanoff_640_t4"]["family"] == "D"
+
+
+def test_every_v2_preset_builds_with_its_matrix_v2_args():
+    for name, v in lab.V2_PRESETS.items():
+        (job,) = _jobs([name, "--include-cut"])
+        assert job["args"] == v["args"], name
+        assert "--fan-full" not in job["args"] and "--holdout" in job["args"]
+
+
+def test_build_args_fan_off_preset_exact_argv():
+    (job,) = _jobs(["yolo11n_fanoff_640_t4"])
+    assert job["args"] == [
+        "--task", "image", "--model", "yolo11n.pt", "--check-image", "bus.jpg",
+        "--sampler", "monsoon", "--perf-counters", "on", "--holdout", "none",
+        "--threads", "4", "--imgsz", "640", "--cpu-mhz", "2400", "--fan", "off",
+        "--frames", "30", "--warmup", "10", "--no-bench", "--serve", "10",
+        "--serve-gap-ms", "200"]
+    assert job["cpu_mhz"] == 2400 and job["family"] == "D" and job["timeout_s"] is None
+
+
+def test_build_args_dvfs_preset_exact_argv_and_overrides():
+    (job,) = _jobs(["yolo11n_640_t4_dvfs"])
+    assert job["args"] == [
+        "--task", "image", "--model", "yolo11n.pt", "--check-image", "bus.jpg",
+        "--sampler", "monsoon", "--perf-counters", "on", "--holdout", "none",
+        "--threads", "4", "--imgsz", "640", "--cpu-mhz", "2400", "--fan", "full",
+        "--governor", "ondemand", "--frames", "30", "--warmup", "10", "--no-bench",
+        "--serve", "10", "--serve-gap-ms", "200"]
+    (job,) = _jobs(["yolo11n_int8s_640_t4", "--frames", "5", "--threads", "2", "--cpu-mhz", "1500"])
+    a = lab.args_to_dict(job["args"])
+    assert a["--frames"] == "5" and a["--threads"] == "2" and a["--cpu-mhz"] == "1500"
+    assert a["--quant"] == "int8-static" and a["--quant-weights"] == "models/yolo11n_int8s.pt"
+    assert list(a)[:3] == ["--task", "--model", "--check-image"] and job["args"].count("--threads") == 1
+
+
+def test_v2_flags_survive_build_args():
+    for name, flag in (("yolo11n_conc2_640_t4", "--concurrent"), ("yolo11n_serve5_640_t4",
+                       "--serve-fps"), ("yolo11n_stream_640_t4", "--frames-source"),
+                       ("yolo11n_empty_640_t4", "--input-image"),
+                       ("yolo11n_p30_640_t4", "--prune"), ("yolo11n_soak30_640_t4",
+                       "--soak-minutes")):
+        assert flag in _jobs([name, "--include-cut"])[0]["args"], name
+
+
+def test_unknown_preset_suggests_v2_names():
+    with pytest.raises(lab.UsageError, match="yolo11n_int8s_640_t4"):
+        _jobs(["yolo11n_int8s_640_t"])
+
+
+# ---- cut presets (final review M4) ----------------------------------------------------------------
+CUT = ["yolo11n_int8d_640_t4", "yolo11s_int8d_640_t4", "yolov8n_int8d_640_t4",
+       "yolo11n_p30_640_t4", "yolo11n_p50_640_t4"]
+
+
+def test_cut_presets_are_marked_and_hidden_from_the_list(capsys):
+    assert {k for k, v in lab.V2_PRESETS.items() if v["cut"]} == set(CUT)
+    assert _rc(["presets"]) == 0
+    out = capsys.readouterr().out
+    assert not any(k in out for k in CUT) and "yolo11n_int8s_640_t4" in out
+    assert "--include-cut" in out
+    assert _rc(["presets", "--include-cut"]) == 0
+    out = capsys.readouterr().out
+    assert all(k in out for k in CUT)
+
+
+@pytest.mark.parametrize("name", CUT)
+def test_cut_presets_are_refused_without_include_cut(name, capsys):
+    sh = ScriptedShell()
+    assert _run(["run", name], sh) == 2
+    err = capsys.readouterr().err
+    assert "--include-cut" in err and "cut from the dataset" in err and sh.cmds == []
+    assert _rc(["run", name, "--include-cut", "--dry-run"]) == 0
+
+
+def test_unknown_preset_does_not_suggest_cut_presets():
+    with pytest.raises(lab.UsageError) as e:
+        _jobs(["yolo11n_int8d_640_t"])
+    assert "int8d" not in str(e.value).split("did you mean")[-1]
+
+
+# ---- supervised fan-off -------------------------------------------------------------------------
+def test_fan_off_preset_needs_yes_supervised(capsys):
+    sh = ScriptedShell()
+    assert _run(["run", "yolo11n_fanoff_640_t4"], sh) == 2
+    err = capsys.readouterr().err
+    assert "watched in person" in err and "--yes-supervised" in err
+    assert sh.cmds == []
+
+
+def test_fan_off_preset_with_yes_supervised_warns_in_one_line_and_runs(capsys):
+    sh = ScriptedShell()
+    assert _run(["run", "yolo11n_fanoff_640_t4", "--yes-supervised"], sh) == 0
+    out = capsys.readouterr().out
+    warns = [ln for ln in out.splitlines() if "watched in person" in ln]
+    assert len(warns) == 1 and "yolo11n_fanoff_640_t4" in warns[0]
+    (run,) = [c for k, c, _ in sh.cmds if k == "ssh" and _run_py_cmd(c)]
+    assert "--fan off" in run and "--fan-full" not in run
+    assert "fan off" in out                  # the summary names the fan mode of the cell
+
+
+def test_dry_run_of_a_fan_off_preset_needs_no_flag(capsys):
+    assert _run(["run", "yolo11n_fanoff_640_t4", "--dry-run"], ScriptedShell()) == 0
+    assert "watched in person" in capsys.readouterr().out
+
+
+def test_other_presets_need_no_yes_supervised():
+    assert _rc(["run", "yolo11n_640_t4_dvfs", "yolo11n", "--dry-run"]) == 0
+
+
+def test_soak_preset_gets_family_and_a_longer_timeout():
+    sh = ScriptedShell()
+    assert _run(["run", "yolo11n_soak30_640_t4"], sh) == 0
+    (run,) = [(c, t) for k, c, t in sh.cmds if k == "ssh" and _run_py_cmd(c)]
+    assert run[1] == 50 * 60
+
+
+# ---- stages -------------------------------------------------------------------------------------
+def test_disk_and_thermal_abort_stages_have_help_and_disk_stops_the_next_preset():
+    for stage in ("disk", "thermal_abort"):
+        what, cause, todo = lab.STAGE_HELP[stage]
+        assert what and cause and todo
+    assert "85 C" in lab.STAGE_HELP["thermal_abort"][0] and "exit 3" in lab.STAGE_HELP["thermal_abort"][0]
+    assert "disk" in lab.STOP_STAGES and "thermal_abort" not in lab.STOP_STAGES
+
+
+def test_pi_busy_timeout_and_undervoltage_stages_have_help():
+    for stage in ("pi_busy", "timeout", "undervoltage"):
+        what, cause, todo = lab.STAGE_HELP[stage]
+        assert what and cause and todo
+    assert "pi_busy" in lab.STOP_STAGES
+    assert "timeout" not in lab.STOP_STAGES and "undervoltage" not in lab.STOP_STAGES
+
+
+def test_run_while_run_py_is_active_stops_with_pi_busy(capsys):
+    sh = ScriptedShell([("pytho[n] src/run.py", (0, "4242 python src/run.py --task image"))])
+    assert _run(["run", "yolo11n", "lm64"], sh) == 1
+    out = capsys.readouterr().out
+    assert "RUN FAILED at 'pi_busy'" in out and "4242" in out
+    assert "Not starting the remaining presets after a 'pi_busy' failure" in out
+    assert not [c for k, c, _ in sh.cmds if k == "ssh" and _run_py_cmd(c)]
+
+
+def test_timeout_failure_is_explained(capsys):
+    sh = ScriptedShell([(_run_py_cmd, (124, "timeout")),
+                        ("pytho[n] src/run.py", [(1, ""), (0, "9 python src/run.py"), (1, "")])])
+    assert _run(["run", "yolo11n"], sh) == 1
+    out = capsys.readouterr().out
+    assert "RUN FAILED at 'timeout'" in out and "SIGINT sent and exited" in out
+    assert sh.sent("pkill -INT -f 'pytho[n] src/run.py'")
+
+
+def test_thermal_abort_failure_is_explained(capsys):
+    sh = ScriptedShell([(_run_py_cmd, (3, "thermal abort"))])
+    assert _run(["run", "yolo11n_fanoff_640_t4", "--yes-supervised"], sh) == 1
+    out = capsys.readouterr().out
+    assert "RUN FAILED at 'thermal_abort'" in out and "85 C" in out and "fan mode" in out
 
 
 @pytest.mark.parametrize("cmd", [[], ["check"], ["run"], ["test"], ["presets"]])

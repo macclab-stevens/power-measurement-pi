@@ -9,3 +9,9 @@ nohup.out
 handoff_phase_trace_v1/
 host/data/
 host/.venv/
+
+# dataset v2 tools: downloads/subsets, Pi input images (only the manifest is committed), exported models
+tools/data/
+inputs/*
+!inputs/MANIFEST.json
+models/

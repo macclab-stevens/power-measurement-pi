@@ -266,6 +266,7 @@ class LayerProfiler:
         self._modules: dict[str, nn.Module] = {}
         self.exec_order: list[tuple] = []           # (mode, path) first-execution order
         self.events = None                          # optional EventLog sink (Monsoon backend)
+        self.layer_events = True                    # False: keep the mode/iter labels, no begin/end
         self._register()
 
     def _register(self) -> None:
@@ -311,7 +312,7 @@ class LayerProfiler:
             if path not in self.config:
                 self.config[path] = module_config(mod)
             self.calls[path][idx] += 1
-            if self.events is not None:
+            if self.events is not None and self.layer_events:
                 self.events.begin("layer", layer_path=path)
             self._stack[path].append((time.perf_counter(), idx))
         return pre
@@ -322,7 +323,7 @@ class LayerProfiler:
                 return
             t0, idx = self._stack[path].pop()
             dt = (time.perf_counter() - t0) * 1000.0
-            if self.events is not None:
+            if self.events is not None and self.layer_events:
                 self.events.end("layer", layer_path=path)
             self.times[path].append((self.frame, self.mode, idx, dt))
             if self.outputs[path][idx] is None:
