@@ -11,7 +11,7 @@ import matrix
 SETLOCALE = "bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8)"
 HEAD = "a878d93" + "0" * 33
 NOW = datetime.datetime(2026, 10, 16, 14, 2, 33)
-STATUS = {"recording": True, "serial": 36517, "vout_V": 5.35, "sample_hz": 4992.4,
+STATUS = {"recording": True, "serial": 36517, "vout_V": 5.4, "sample_hz": 4992.4,
           "n_total": int(4992.4 * 86400 * 2), "run_dir": "data/20261014T140000"}
 
 

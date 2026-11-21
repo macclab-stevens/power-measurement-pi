@@ -58,7 +58,7 @@ moment, and the Pi knows *what it was doing* at each moment. To line them up:
    of whatever the Pi was doing at that instant.
 
 ```
-        USB-C power (5.35 V)                    USB (data)
+        USB-C power (5.40 V)                    USB (data)
  Pi 5  <====================  Monsoon HVPM  -------------------->  EliteBook
  runs the models               measures V and I                   records 5 kHz power,
  writes events.csv             5,000 times/s                      aligns, checks, stores
@@ -110,7 +110,7 @@ from v1.
 | **Pi 5** (8 GB) | `maccpi@192.168.0.243`, project in `~/Desktop/power-measurement-pi` | Runs the ML workloads (`src/run.py`). Its Wi-Fi must be off while measuring ([section 4.8](#48-extra-setup-for-dataset-v2)). |
 | **EliteBook** (laptop) | `macc2026@192.168.0.11`, project in `~/power-measurement-pi` | Monsoon host: runs the recorder, the experiment orchestrator, alignment and checks. All results end up here. |
 | **NUC** (desktop) | `192.168.0.205`, project in `~/Desktop/power-measurement-pi` | Development machine: where code is edited, tested, committed and sent to the other two. For dataset v2 it also builds the INT8 weights and the COCO picture subsets (`tools/`, [tools/README.md](tools/README.md)). |
-| **Monsoon HVPM** | USB to the EliteBook | Powers the Pi through USB-C at 5.35 V (6 A limit) and measures it. |
+| **Monsoon HVPM** | USB to the EliteBook | Powers the Pi through USB-C at 5.40 V (6 A limit) and measures it. |
 | **Lab time server** | `192.168.0.20` (GPS/PTP) | Keeps the Pi and EliteBook clocks in sync (both run `timemaster`). |
 
 **Why two separate computers for the Pi and the Monsoon?** If the Pi recorded its own power, the
@@ -238,14 +238,14 @@ boots the Pi) and records non-stop into `host/data/<timestamp>/`.
 ```bash
 cd ~/power-measurement-pi/host
 systemd-run --user --unit=monsoon-recorder --same-dir --collect \
-  ~/.local/bin/uv run python recorder.py --vout 5.35 --current-limit 6
+  ~/.local/bin/uv run python recorder.py --vout 5.40 --current-limit 6
 ```
 
 `systemd-run` keeps it running in the background after you log out. Check it:
 
 ```bash
 curl -s localhost:8051/status
-# {"recording": true, "serial": 36517, "vout_V": 5.35, "sample_hz": 4992.4, ...}
+# {"recording": true, "serial": 36517, "vout_V": 5.4, "sample_hz": 4992.4, ...}
 ```
 
 `sample_hz` is about 4,992 (the Monsoon's real rate, slightly under the nominal 5,000).
@@ -269,7 +269,7 @@ Dataset v2 needs a few more things. Short list here; the commands, and why each 
 - **Weights, picture inputs and model files on the Pi:** `*.pt` weights, `inputs/` and `models/`
   are not in git, so they are copied there ([tools/README.md](tools/README.md)).
 - **Pi Wi-Fi off while measuring.** The radio adds power noise. `./lab check` warns when `wlan0` is up.
-- **Monsoon output at 5.35 V** (the recorder command in section 4.7). At 5.25 V the Pi hit
+- **Monsoon output at 5.40 V** (the recorder command in section 4.7). At 5.25 V the Pi hit
   under-voltage under YOLO load (see [section 9](#9-troubleshooting)).
 
 ---
@@ -691,7 +691,7 @@ The Monsoon is the Pi's only power source. Some of its behaviour is surprising:
   without `--confirm-pi-halted`.
 
 **To rewire, change the voltage, or restart the recorder cleanly**, do exactly this, in order
-(the recorder refuses a `--vout` outside 4.80-5.40 V; the lab runs at 5.35 V):
+(the recorder refuses a `--vout` outside 4.80-5.40 V; the lab runs at 5.40 V):
 
 1. Shut the Pi down cleanly: `ssh -t maccpi@192.168.0.243 sudo poweroff`. Wait until it stops
    answering `ping 192.168.0.243`.
@@ -701,6 +701,8 @@ The Monsoon is the Pi's only power source. Some of its behaviour is surprising:
 5. Start the recorder ([section 4.7](#47-start-the-recorder)). The output comes on and the Pi boots.
 
 Every recorder start creates a new folder in `host/data/`; old recordings are kept.
+
+**Raised again to 5.40 V (2026-11-21).** At 5.35 V the n-models ran clean but the s/m models still triggered 17 under-voltage events during the on-Pi mAP runs, and no lower-resistance cable is available. At 5.40 V (the recorder's upper limit) a 25 s yolo11m loop at 2400 MHz with the fan at full kept the Pi's input at 4.91-5.26 V (median 5.23 V), with the live under-voltage alarm at 0 and `throttled=0x0` in all 100 samples.
 
 **Why 5.35 V and not 5.25 V.** After a Monsoon restart and a cable reseat on 2026-11-20 the Pi's
 input sagged under YOLO load: the Pi reported under-voltage (`throttled` bits `0x50005`, the kernel

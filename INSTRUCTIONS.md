@@ -395,7 +395,7 @@ Notes:
 | `disk` | Less than 10 GB free on the EliteBook runs folder or 5 GB on the Pi project folder (2 GB more for a soak). | Free space; `df -h ~` here and `ssh maccpi@192.168.0.243 df -h Desktop/power-measurement-pi`. Further presets of the same command are skipped. |
 | `pi_busy` | `run.py` is still running on the Pi (an earlier run was abandoned). Further presets are skipped. | `ssh maccpi@192.168.0.243 pgrep -af src/run.py`; wait, or stop it with `ssh maccpi@192.168.0.243 pkill -INT -f src/run.py`. |
 | `timeout` | `run.py` ran longer than `--timeout`. It got SIGINT and up to 60 s to exit; the details say whether it did. | Use a larger `--timeout` or fewer `--frames`. |
-| `undervoltage` | The Pi's kernel logged "Undervoltage detected" during the run (the lines are shown). | Check the cable and the 5.35 V Vout; if `./lab check` showed `0x50000`, reboot the Pi first. |
+| `undervoltage` | The Pi's kernel logged "Undervoltage detected" during the run (the lines are shown). | Check the cable and the 5.40 V Vout; if `./lab check` showed `0x50000`, reboot the Pi first. |
 | `run` | The workload itself failed on the Pi. The last lines of its log are shown. | Usually under-voltage (cable), a bad option, or a model that can't load. |
 | `align` | The power recording couldn't be lined up, almost always because the Monsoon lost samples during a sync pulse. | Run it again. |
 | `verify` | The data failed a quality check (listed). | Read the listed errors; rerun if unsure. |

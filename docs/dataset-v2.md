@@ -117,7 +117,7 @@ current entries in `data/map_reference.json` are provisional numbers measured on
 measurement is plan Task 16 and has not been run. Until each entry carries
 `measured_on.machine == "aarch64"`, `verify_cell.py` warns on every YOLO cell.
 
-**Supply voltage 5.25 V to 5.35 V.** After a Monsoon restart and a cable reseat, the Pi hit
+**Supply voltage 5.25 V to 5.35 V, then 5.40 V.** (2026-11-21: 5.40 V, the recorder's cap, after s/m-model runs still hit under-voltage at 5.35 V; a yolo11m loop then stayed at or above 4.91 V with no alarm.) After a Monsoon restart and a cable reseat, the Pi hit
 under-voltage under YOLO load (`throttled` bits `0x50005`) and the firmware throttling cut the
 forward-pass power from about 9.6 W to about 7.5 W. The Monsoon output was raised to 5.35 V (the
 recorder allows up to 5.40 V). After the change, a YOLO loop showed no throttle bits
@@ -218,8 +218,8 @@ rsync -a yolo11n.pt yolo11s.pt yolo11m.pt yolov8n.pt yolov8s.pt yolov8m.pt maccp
 
 Pruned models (`prune_yolo.py`) are only needed with `--include-prune`.
 
-**5.5 Monsoon output at 5.35 V.** The recorder command in
-[README section 4.7](../README.md#47-start-the-recorder) already says `--vout 5.35`. Changing a
+**5.5 Monsoon output at 5.40 V.** The recorder command in
+[README section 4.7](../README.md#47-start-the-recorder) already says `--vout 5.40`. Changing a
 running recorder from 5.25 V means the full procedure of
 [README section 8](../README.md#8-power-safety-turning-the-pi-on-and-off-rewiring) (halt the Pi,
 stop the recorder, switch the output off, start the recorder). Never do it while a measurement

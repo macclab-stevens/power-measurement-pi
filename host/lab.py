@@ -654,7 +654,7 @@ STAGE_HELP = {   # stage -> (what happened, likely cause, what to do)
                 "fewer --frames."),
     "undervoltage": ("The Pi's kernel logged 'Undervoltage detected' during the run.",
                      "Weak power supply or cable, or the Monsoon's Vout (README 9).",
-                     "Check the Vout setting (5.35 V) and the cable; reboot the Pi if the sticky "
+                     "Check the Vout setting (5.40 V) and the cable; reboot the Pi if the sticky "
                      "flag was set before; run again. The kernel lines are below."),
     "thermal_abort": ("run.py stopped at 85 C (exit 3) or at the 90 C hard stop (exit 4).",
                       "The Pi got too hot: fan off or on auto, a hot room, or a long soak.",
