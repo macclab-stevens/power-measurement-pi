@@ -487,6 +487,8 @@ is the pinned MHz or `dvfs` (for example `yolo11n_int8s_640_t4_2400_r00`,
 | `ref` | the v1 cross-check: yolov8n and yolo11n with the **v1 command lines**, 1500 / 2000 / 2400 MHz, 3 repeats, counters **off**, no holdout (so they stay `dataset_version` 1) | 18 |
 | `pilot` | one cell of every configuration group, a 5-minute soak and one `ref` cell per model; see [docs/dataset-v2.md](docs/dataset-v2.md#7-phase-1-and-phase-2) | 31 |
 
+Per-layer benchmarks (`--bench 2`) run on repeat 0 of each `A`, `A-input` and `C` configuration only (repeats 1 and up get `--no-bench`), because per-op steady-state power is a per-configuration property while energy and latency per frame come from the trace of every repeat (Ruling R31, to cut matrix time).
+
 All of the families together (`all`) are 176 cells (44 + 6 + 12 + 60 + 34 + 2 + 18). Some cells
 are left out of that on purpose, and a flag adds them back:
 

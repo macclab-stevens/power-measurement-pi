@@ -96,7 +96,9 @@ def timeout_s(cfg: Config) -> int | None:
     return t if t > DEFAULT_TIMEOUT_S else None
 
 
-def args_for(cfg: Config) -> list[str]:
+def args_for(cfg: Config, repeat: int = 0) -> list[str]:
+    # Ruling R31: per-op isolation benches run on repeat 0 only (per-op steady-state power is a
+    # per-configuration property; energy and latency per frame come from the trace of every repeat).
     tag = holdout_tag(cfg.model)
     a = ["--task", "image", "--model", f"{cfg.model}.pt", "--check-image", "bus.jpg",
          "--sampler", "monsoon", "--perf-counters", "on", "--holdout", tag or "none",
@@ -107,7 +109,7 @@ def args_for(cfg: Config) -> list[str]:
     if cfg.batch:
         a += ["--batch", str(cfg.batch)]
     a += ["--frames", str(_frames(cfg)), "--warmup", "10"]
-    a += ["--bench", "2"] if cfg.bench else ["--no-bench"]
+    a += ["--bench", "2"] if cfg.bench and repeat == 0 else ["--no-bench"]
     if cfg.serve_fps:
         a += ["--serve", str(round(20 * cfg.serve_fps)), "--serve-fps", str(cfg.serve_fps)]
     else:
@@ -120,7 +122,7 @@ def args_for(cfg: Config) -> list[str]:
 def row(cfg: Config, repeat: int, prefix: str = "") -> dict:
     r = {"cell_id": cell_id(cfg, repeat, prefix), "family": cfg.family, "model_key": cfg.model,
          "cpu_mhz": cfg.mhz, "repeat": repeat, "round": repeat, "holdout": holdout_tag(cfg.model),
-         "args": args_for(cfg)}
+         "args": args_for(cfg, repeat)}
     t = timeout_s(cfg)
     if t:
         r["timeout_s"] = t

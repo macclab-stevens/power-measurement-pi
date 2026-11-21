@@ -107,6 +107,8 @@ Dated 2026-11-19 and 2026-11-20 unless stated.
   (verified from the layer profile at run time), but in an informal check whole yolo11n at 640 was
   slower than FP32 (about 553 ms against about 330 ms per frame).
 
+**Per-layer benchmarks run on repeat 0 only (Ruling R31, 2026-11-21).** `--bench 2` runs on repeat 0 of each A / A-input / C configuration; repeats 1 and up get `--no-bench`, because per-op steady-state power is a per-configuration property while energy and latency per frame come from the trace of every repeat (cuts matrix time from about 19 h to about 11 h). B, D, soak and `ref` are unchanged.
+
 **What the INT8 cells are.** INT8 static (FX graph mode, `qnnpack`, 200 calibration pictures) has
 80 quantized convolutions per model. The C2PSA attention blocks, the Detect decode and every SiLU
 stay FP32 (listed in the model file's `fp32_modules`). It is not a fully INT8 network.

@@ -109,14 +109,28 @@ def test_dvfs_cells():
 
 
 def test_bench_flags_per_family():
-    for fam in ("A", "C"):
-        for r in m.cells(fam):
-            assert arg(r, "--bench") == "2" and "--no-bench" not in r["args"]
+    # Ruling R31: benches only on repeat 0 of each A / A-input / C configuration
+    for fam in ("A", "A-input", "C"):
+        rows = m.cells(fam)
+        assert any(r["repeat"] >= 1 for r in rows)
+        for r in rows:
+            if r["repeat"] == 0:
+                assert arg(r, "--bench") == "2" and "--no-bench" not in r["args"], r["cell_id"]
+            else:
+                assert "--no-bench" in r["args"] and "--bench" not in r["args"], r["cell_id"]
     for fam in ("B", "D", "soak"):
         for r in m.cells(fam, **ALL_FLAGS):
             assert "--no-bench" in r["args"] and "--bench" not in r["args"]
-    for r in m.cells("A-input"):
-        assert arg(r, "--bench") == "2"
+    for r in m.cells("pilot"):
+        if r["family"] in ("A", "A-input", "C"):
+            assert r["repeat"] == 0 and arg(r, "--bench") == "2"
+
+
+def test_bench_count_one_per_configuration():
+    for fam in ("A", "A-input", "C"):
+        rows = m.cells(fam)
+        benched = [r for r in rows if "--bench" in r["args"]]
+        assert len(benched) == len({r["cell_id"].rsplit("_r", 1)[0] for r in rows})
 
 
 def test_family_a_grid():
