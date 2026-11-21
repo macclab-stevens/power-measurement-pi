@@ -540,7 +540,7 @@ for B, D and soak.
 - Rounds: like v1, round r holds repeat r of every config; shuffle within a round with
   `random.Random(seed)`.
 - `experiment.py plan --v2 {A,A-input,B,C,D,soak,all,pilot} [--include-fp16]
-  [--include-optional] [--include-concurrent] --out manifest.jsonl` writes the rows. v1 `plan`
+  [--include-optional] [--no-concurrent] --out manifest.jsonl` writes the rows. v1 `plan`
   options unchanged.
 
 Tests: exact counts per family (A 44, A-input 6, B 12 without fp16 / 15 with (27/30 with

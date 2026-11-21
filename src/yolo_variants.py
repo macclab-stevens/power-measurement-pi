@@ -1,8 +1,8 @@
 """Precision / compression variants of a YOLO model: ids, artifact loading, honesty checks.
 
 Used by src/run.py (--quant, --quant-weights, --prune) and, for `variant_id`, by the NUC tools
-(tools/quantize.py, prune.py, map_eval.py), so the top level imports only the standard library;
-torch is imported inside the functions that need it.
+(tools/quantize_yolo.py, tools/prune_yolo.py, tools/eval_map.py), so the top level imports only
+the standard library; torch is imported inside the functions that need it.
 
   variant_id(model_path, quant, prune_ratio)   yolo11n | yolo11n_int8d | _int8s | _fp16 | _p30
   load_artifact(path, expected_format)         torch.load + format validation (dict artifacts)

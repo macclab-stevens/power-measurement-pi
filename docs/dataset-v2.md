@@ -192,8 +192,8 @@ that was not needed and is not done.) The Pi hard-locks occasionally under load,
 reboot wait for `ssh maccpi@192.168.0.243 true` to answer.
 
 **5.3 Wi-Fi off.** The Pi's Wi-Fi profile is `stevens-iot` (the name is case-sensitive), with
-autoconnect off, so it stays off across reboots. Turn it off with the connection, not with
-`nmcli radio wifi off` (the radio is left on, otherwise bringing the connection up again fails):
+autoconnect off, so it stays off across reboots. Turn it off and on with the connection
+(`con down` / `con up stevens-iot`), never with `nmcli radio wifi off`:
 
 ```bash
 ssh -t maccpi@192.168.0.243 'sudo nmcli con down stevens-iot'
