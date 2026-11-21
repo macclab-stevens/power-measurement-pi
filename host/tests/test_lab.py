@@ -39,6 +39,11 @@ def live_status():
     return status
 
 
+def _run_py_cmd(c):
+    """The cell's run.py command (not experiment.py's pgrep for a stale run.py)."""
+    return c.startswith("cd ") and "src/run.py" in c
+
+
 def default_rules():
     """(predicate, answer): predicate is a substring or a callable on the command text; answer is
     (rc, out), a callable(cmd) -> (rc, out), or a list of those used one after another."""
@@ -55,12 +60,13 @@ def default_rules():
         ("command -v perf", (0, "/usr/bin/perf")),
         ("rev-parse HEAD", (0, HEAD)),
         ("[s]rc/run.py", (1, "")),
+        ("pytho[n] src/run.py", (1, "")),      # experiment.py's busy check (before "src/run.py")
         ("[p]ytest", (1, "")),
         ("is-active exp-matrix", (3, "inactive")),
         ("[e]xperiment.py run", (1, "")),
         ("test -e", (1, "")),
         ("test -f", (0, "")),
-        ("src/run.py", (0, "[ok] dataset written")),
+        (_run_py_cmd, (0, "[ok] dataset written")),
         ("pytest -q", (0, "...\n3 passed in 4.21s")),
     ]
 
@@ -245,7 +251,7 @@ def test_run_happy_path(capsys):
     assert rows[0]["lab"]["preset"] == "yolo11n"
     assert rows[0]["lab"]["args"] == matrix._cell("yolo11n", 2400, 0, 0)["args"]
     assert calls["verify"] == [(str(lab.LOCAL_LAB / name), 2400)]
-    (run,) = [(c, t) for k, c, t in sh.cmds if k == "ssh" and "src/run.py" in c]
+    (run,) = [(c, t) for k, c, t in sh.cmds if k == "ssh" and _run_py_cmd(c)]
     assert f"--out runs/lab/{name} > runs/lab/{name}.log" in run[0] and run[1] == 300
     assert (f"watch live: ssh maccpi@192.168.0.243 tail -f "
             f"Desktop/power-measurement-pi/runs/lab/{name}.log") in out
@@ -257,7 +263,7 @@ def test_run_happy_path(capsys):
 
 
 def test_run_failure_prints_stage_help_and_exits_1(capsys):
-    sh = ScriptedShell([("src/run.py", (1, "ACCEPTANCE: under-voltage"))])
+    sh = ScriptedShell([(_run_py_cmd, (1, "ACCEPTANCE: under-voltage"))])
     assert _run(["run", "yolo11n"], sh) == 1
     out = capsys.readouterr().out
     assert "RUN FAILED" in out and "'run'" in out and "What to do" in out
@@ -267,7 +273,7 @@ def test_run_failure_prints_stage_help_and_exits_1(capsys):
 
 def test_pi_crash_points_to_readme_and_never_switches_power(capsys):
     up = [(0, ""), (0, ""), (255, "down")]    # pre-flight and pre-run checks fine, then gone
-    sh = ScriptedShell([("src/run.py", (255, "")), (lambda c: c == "true", up)])
+    sh = ScriptedShell([(_run_py_cmd, (255, "")), (lambda c: c == "true", up)])
     assert _run(["run", "yolo11n"], sh) == 1
     out = capsys.readouterr().out
     assert "pi_crash" in out and "README" in out and "rsts" in out
@@ -377,6 +383,13 @@ def test_check_throttled(bits, level):
     assert c["pi throttling"].level == level
 
 
+def test_sticky_undervoltage_bit_is_not_old_news():
+    c = _check(ScriptedShell([("vcgencmd", (0, "temp=42.0'C\nthrottled=0x50000"))]))
+    msg = c["pi throttling"].detail
+    assert "old news" not in msg
+    assert "reboot the Pi before a long matrix" in msg and "uv_alarm" in msg and "dmesg" in msg
+
+
 def test_check_pin_helper_missing():
     c = _check(ScriptedShell([("pi-power-pin status", (1, "sudo: a password is required"))]))
     assert c["pinning helper"].level == "fail" and "4.5" in c["pinning helper"].hint
@@ -389,7 +402,7 @@ def test_check_pin_helper_missing():
 def test_check_busy_fails(rule):
     sh = ScriptedShell([rule])
     assert _check(sh)["idle"].level == "fail"
-    assert not any("src/run.py" in c for k, c, _ in sh.cmds if k == "ssh")
+    assert not any(_run_py_cmd(c) for k, c, _ in sh.cmds if k == "ssh")
 
 
 def test_check_recorder_unreachable_hints_the_elitebook():
@@ -443,6 +456,7 @@ def test_check_recorder_stall_waits_between_the_two_reads_and_survives_a_dying_r
 def test_check_pi_wifi_up_warns_and_absent_is_fine():
     c = _check(ScriptedShell([("operstate", (0, "up"))]))
     assert c["pi wifi"].level == "warn" and "power noise" in c["pi wifi"].detail
+    assert "sudo nmcli con down stevens-iot" in c["pi wifi"].hint and "radio wifi off" not in c["pi wifi"].hint
     gone = ScriptedShell([("operstate", (1, "cat: /sys/class/net/wlan0/operstate: No such file"))])
     assert _check(gone)["pi wifi"].level == "ok"
     assert _check(ScriptedShell([("operstate", (255, "ssh: timeout"))]))["pi wifi"].level == "warn"
@@ -553,7 +567,7 @@ def test_v2_presets_are_one_per_group_with_the_v1_names_untouched():
 
 def test_every_v2_preset_builds_with_its_matrix_v2_args():
     for name, v in lab.V2_PRESETS.items():
-        (job,) = _jobs([name])
+        (job,) = _jobs([name, "--include-cut"])
         assert job["args"] == v["args"], name
         assert "--fan-full" not in job["args"] and "--holdout" in job["args"]
 
@@ -590,12 +604,43 @@ def test_v2_flags_survive_build_args():
                        ("yolo11n_empty_640_t4", "--input-image"),
                        ("yolo11n_p30_640_t4", "--prune"), ("yolo11n_soak30_640_t4",
                        "--soak-minutes")):
-        assert flag in _jobs([name])[0]["args"], name
+        assert flag in _jobs([name, "--include-cut"])[0]["args"], name
 
 
 def test_unknown_preset_suggests_v2_names():
     with pytest.raises(lab.UsageError, match="yolo11n_int8s_640_t4"):
         _jobs(["yolo11n_int8s_640_t"])
+
+
+# ---- cut presets (final review M4) ----------------------------------------------------------------
+CUT = ["yolo11n_int8d_640_t4", "yolo11s_int8d_640_t4", "yolov8n_int8d_640_t4",
+       "yolo11n_p30_640_t4", "yolo11n_p50_640_t4"]
+
+
+def test_cut_presets_are_marked_and_hidden_from_the_list(capsys):
+    assert {k for k, v in lab.V2_PRESETS.items() if v["cut"]} == set(CUT)
+    assert _rc(["presets"]) == 0
+    out = capsys.readouterr().out
+    assert not any(k in out for k in CUT) and "yolo11n_int8s_640_t4" in out
+    assert "--include-cut" in out
+    assert _rc(["presets", "--include-cut"]) == 0
+    out = capsys.readouterr().out
+    assert all(k in out for k in CUT)
+
+
+@pytest.mark.parametrize("name", CUT)
+def test_cut_presets_are_refused_without_include_cut(name, capsys):
+    sh = ScriptedShell()
+    assert _run(["run", name], sh) == 2
+    err = capsys.readouterr().err
+    assert "--include-cut" in err and "cut from the dataset" in err and sh.cmds == []
+    assert _rc(["run", name, "--include-cut", "--dry-run"]) == 0
+
+
+def test_unknown_preset_does_not_suggest_cut_presets():
+    with pytest.raises(lab.UsageError) as e:
+        _jobs(["yolo11n_int8d_640_t"])
+    assert "int8d" not in str(e.value).split("did you mean")[-1]
 
 
 # ---- supervised fan-off -------------------------------------------------------------------------
@@ -613,7 +658,7 @@ def test_fan_off_preset_with_yes_supervised_warns_in_one_line_and_runs(capsys):
     out = capsys.readouterr().out
     warns = [ln for ln in out.splitlines() if "watched in person" in ln]
     assert len(warns) == 1 and "yolo11n_fanoff_640_t4" in warns[0]
-    (run,) = [c for k, c, _ in sh.cmds if k == "ssh" and "src/run.py" in c]
+    (run,) = [c for k, c, _ in sh.cmds if k == "ssh" and _run_py_cmd(c)]
     assert "--fan off" in run and "--fan-full" not in run
     assert "fan off" in out                  # the summary names the fan mode of the cell
 
@@ -630,7 +675,7 @@ def test_other_presets_need_no_yes_supervised():
 def test_soak_preset_gets_family_and_a_longer_timeout():
     sh = ScriptedShell()
     assert _run(["run", "yolo11n_soak30_640_t4"], sh) == 0
-    (run,) = [(c, t) for k, c, t in sh.cmds if k == "ssh" and "src/run.py" in c]
+    (run,) = [(c, t) for k, c, t in sh.cmds if k == "ssh" and _run_py_cmd(c)]
     assert run[1] == 50 * 60
 
 
@@ -643,8 +688,34 @@ def test_disk_and_thermal_abort_stages_have_help_and_disk_stops_the_next_preset(
     assert "disk" in lab.STOP_STAGES and "thermal_abort" not in lab.STOP_STAGES
 
 
+def test_pi_busy_timeout_and_undervoltage_stages_have_help():
+    for stage in ("pi_busy", "timeout", "undervoltage"):
+        what, cause, todo = lab.STAGE_HELP[stage]
+        assert what and cause and todo
+    assert "pi_busy" in lab.STOP_STAGES
+    assert "timeout" not in lab.STOP_STAGES and "undervoltage" not in lab.STOP_STAGES
+
+
+def test_run_while_run_py_is_active_stops_with_pi_busy(capsys):
+    sh = ScriptedShell([("pytho[n] src/run.py", (0, "4242 python src/run.py --task image"))])
+    assert _run(["run", "yolo11n", "lm64"], sh) == 1
+    out = capsys.readouterr().out
+    assert "RUN FAILED at 'pi_busy'" in out and "4242" in out
+    assert "Not starting the remaining presets after a 'pi_busy' failure" in out
+    assert not [c for k, c, _ in sh.cmds if k == "ssh" and _run_py_cmd(c)]
+
+
+def test_timeout_failure_is_explained(capsys):
+    sh = ScriptedShell([(_run_py_cmd, (124, "timeout")),
+                        ("pytho[n] src/run.py", [(1, ""), (0, "9 python src/run.py"), (1, "")])])
+    assert _run(["run", "yolo11n"], sh) == 1
+    out = capsys.readouterr().out
+    assert "RUN FAILED at 'timeout'" in out and "SIGINT sent and exited" in out
+    assert sh.sent("pkill -INT -f 'pytho[n] src/run.py'")
+
+
 def test_thermal_abort_failure_is_explained(capsys):
-    sh = ScriptedShell([("src/run.py", (3, "thermal abort"))])
+    sh = ScriptedShell([(_run_py_cmd, (3, "thermal abort"))])
     assert _run(["run", "yolo11n_fanoff_640_t4", "--yes-supervised"], sh) == 1
     out = capsys.readouterr().out
     assert "RUN FAILED at 'thermal_abort'" in out and "85 C" in out and "fan mode" in out
