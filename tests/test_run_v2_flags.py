@@ -305,3 +305,21 @@ def test_require_quantized_modules_fails_fast_with_the_acceptance_message():
     run.require_quantized_modules("int8-dynamic", {"quantized_modules": 5})
     run.require_quantized_modules("fp32", {"quantized_modules": None})
     run.require_quantized_modules("fp16", {})
+
+
+# ---- baseline drift acceptance -------------------------------------------------------------
+def test_baseline_drift_error_v1_unchanged():
+    assert run.baseline_drift_error(0.684, None, "none") == "baseline drift 0.684W > 0.5W"
+    assert run.baseline_drift_error(0.684, None, "off") == "baseline drift 0.684W > 0.5W"
+    assert run.baseline_drift_error(0.684, None, "full") == "baseline drift 0.684W > 0.5W"
+    assert run.baseline_drift_error(0.5, None, "none") is None
+    assert run.baseline_drift_error(None, None, "none") == "baseline drift unknown (empty A/B window)"
+
+
+def test_baseline_drift_exempt_for_soak_and_fan_auto():
+    assert run.baseline_drift_error(0.684, 5.0, "full") is None
+    assert run.baseline_drift_error(0.684, 30.0, "auto") is None
+    assert run.baseline_drift_error(0.684, None, "auto") is None
+    assert "soak" in run.baseline_drift_exempt(5.0, "full")
+    assert "fan auto" in run.baseline_drift_exempt(None, "auto")
+    assert run.baseline_drift_exempt(None, "off") is None

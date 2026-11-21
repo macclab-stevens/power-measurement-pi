@@ -147,7 +147,7 @@ perf counters on and a `--holdout` tag (so it is a dataset-version-2 run), at 24
 | B (not in the default matrix) | `yolo11n_fp16_640_t4`, `yolo11{n,s}_int8d_640_t4`, `yolov8n_int8d_640_t4`, `yolo11n_p30_640_t4`, `yolo11n_p50_640_t4` | FP16 (runs, but slower than FP32); INT8 dynamic (fails on purpose: it quantizes nothing on YOLO); pruned models (accuracy collapses) |
 | C | `yolo11{n,s,m}_{320,480,960}_t4`, `yolo11n_640_t4_b{2,4,8}`, `yolo11{n,s}_640_t{1,2}`, `yolo11n_{320,960}_t{1,2}`, `yolo11m_640_t{1,2}` | image size, batch size and thread count |
 | D | `yolo11n_640_t4_dvfs`, `yolo11s_640_t4_dvfs`, `yolo11n_fanauto_640_t4`, `yolo11n_fanoff_640_t4`, `yolo11n_serve{1,5,15}_640_t4`, `yolo11n_stream_640_t4`, `yolo11n_conc2_640_t4`, `yolo11n_concspin_640_t4` | free-running clock (the clock is pinned only around the sync pulses), fan on auto or off, serving at 1 / 5 / 15 requests per second, a stream of different pictures, two models at once, a model next to a matrix-multiply spinner |
-| soak | `yolo11n_soak30_640_t4`, `yolo11m_soak30_640_t4` | 30 minutes of continuous inference, fan on auto |
+| soak | `yolo11n_soak30_640_t4`, `yolo11m_soak30_640_t4` | 30 minutes of continuous inference, fan at full speed |
 
 Two of these need care:
 

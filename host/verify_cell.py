@@ -374,6 +374,9 @@ def verify(run_dir, cpu_mhz: int | None = None, write: bool = True) -> dict:
     bl = [by_phase[k] for k in ("baseline_A", "baseline_B") if k in by_phase]
     base_w = float(np.mean(bl)) if bl else 0.0       # same definition as run_meta baseline_W
     res["derived"] = derived_metrics(pe, meta, base_w)
+    if meta.get("baseline_drift_exempt"):
+        res["derived"]["baseline_note"] = ("baseline = mean(baseline_A, baseline_B); drift check exempt: "
+                                           + meta["baseline_drift_exempt"])
     if modes and not any(v["n_frames"] for v in res["derived"]["by_mode"].values()):
         warnings.append("no measured iterations (frame >= 1): derived metrics are empty")
     if write:

@@ -188,7 +188,7 @@ def configs_d(include_concurrent=True) -> list[Config]:
 
 
 def configs_soak() -> list[Config]:
-    return [Config("soak", m, 1, condition="soak30", fan="auto", soak_minutes=30)
+    return [Config("soak", m, 1, condition="soak30", fan="full", soak_minutes=30)
             for m in ("yolo11n", "yolo11m")]
 
 
@@ -268,7 +268,7 @@ def pilot(seed: int = 7, *, include_fp16=False, include_optional=False, include_
     groups += [Config("C", "yolo11n", 1, threads=1, imgsz=960, bench=True)]
     groups += [replace(c, repeats=2 if c.dvfs else 1) for c in configs_d(include_concurrent)
                if (c.model, c.condition) not in (("yolo11s", ""), ("yolo11n", "serve5"))]
-    groups.append(Config("soak", "yolo11n", 1, condition="soak5", fan="auto", soak_minutes=5))
+    groups.append(Config("soak", "yolo11n", 1, condition="soak5", fan="full", soak_minutes=5))
     rows = [row(c, rep, prefix="pilot_") for c in groups for rep in range(c.repeats)]
     rows += [ref_row(k, MAIN_MHZ, 0, prefix="pilot_") for k in REF_KEYS]
     return _in_rounds(rows, seed)

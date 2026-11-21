@@ -223,7 +223,7 @@ def test_soak_cells():
     assert {r["model_key"] for r in rows} == {"yolo11n", "yolo11m"}
     for r in rows:
         assert r["family"] == "soak" and r["cpu_mhz"] == 2400 and r["timeout_s"] == 3000
-        assert arg(r, "--soak-minutes") == "30" and arg(r, "--fan") == "auto"
+        assert arg(r, "--soak-minutes") == "30" and arg(r, "--fan") == "full"
     assert all("timeout_s" not in r for r in m.cells("all") if r["family"] != "soak")
     assert m.DEFAULT_TIMEOUT_S == experiment.RUN_TIMEOUT_S
 
@@ -254,7 +254,7 @@ def test_ref_family_is_v1_args_with_counters_off():
 
 def test_fan_full_unless_overridden():
     for r in v2_only(m.cells("all", **ALL_FLAGS)):
-        want = "auto" if r["family"] == "soak" or "_fanauto_" in r["cell_id"] else (
+        want = "auto" if "_fanauto_" in r["cell_id"] else (
             "off" if "_fanoff_" in r["cell_id"] else "full")
         assert arg(r, "--fan") == want, r["cell_id"]
 
@@ -287,6 +287,7 @@ def test_pilot():
     soak = by(rows, family="soak")[0]
     assert soak["cell_id"] == "pilot_yolo11n_soak5_640_t4_2400_r00"
     assert arg(soak, "--soak-minutes") == "5" and "timeout_s" not in soak
+    assert arg(soak, "--fan") == "full"
     refs = by(rows, family="ref")
     assert sorted(r["cell_id"] for r in refs) == ["pilot_v1ref_yolo11n_2400_r00",
                                                   "pilot_v1ref_yolov8n_2400_r00"]

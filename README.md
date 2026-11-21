@@ -483,7 +483,7 @@ is the pinned MHz or `dvfs` (for example `yolo11n_int8s_640_t4_2400_r00`,
 | `B` | INT8 static yolo11n (2400, 2000, 1500 MHz) and yolo11s (2400 MHz), 3 repeats each. FP16, INT8 dynamic and pruned cells exist behind flags (below) | 12 |
 | `C` | image size 320 / 480 / 960 (yolo11 n, s, m), batch 2 / 4 / 8, threads 1 / 2 (yolo11 n and s, and yolo11n at 320 and 960 px), 3 repeats each | 60 |
 | `D` | free-running clock (DVFS) for yolo11n and yolo11s (5 repeats); fan `auto` and `off`; serving at 1, 5 and 15 requests per second; a stream of 50 different pictures; two models at once (`conc2`) and a model next to a matrix-multiply spinner (`concspin`); 3 repeats each | 34 |
-| `soak` | 30 minutes of continuous inference, fan `auto`, yolo11n and yolo11m, one run each | 2 |
+| `soak` | 30 minutes of continuous inference, fan `full`, yolo11n and yolo11m, one run each | 2 |
 | `ref` | the v1 cross-check: yolov8n and yolo11n with the **v1 command lines**, 1500 / 2000 / 2400 MHz, 3 repeats, counters **off**, no holdout (so they stay `dataset_version` 1) | 18 |
 | `pilot` | one cell of every configuration group, a 5-minute soak and one `ref` cell per model; see [docs/dataset-v2.md](docs/dataset-v2.md#7-phase-1-and-phase-2) | 31 |
 

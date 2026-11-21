@@ -114,6 +114,25 @@ def restore_fan_if_off(fan_mode: str, apply_mode=pinning.apply_mode, log=None) -
         log(f"fan not restored to auto: {e}")
 
 
+def baseline_drift_error(drift_W, soak_minutes, fan_mode) -> str | None:
+    """Acceptance error for the ABAB baseline drift, or None. Soaks and fan-auto runs are exempt
+    (the device thermal / fan state changes between the baselines by design); see baseline_drift_exempt()."""
+    if drift_W is None:
+        return "baseline drift unknown (empty A/B window)"
+    if drift_W > 0.5 and baseline_drift_exempt(soak_minutes, fan_mode) is None:
+        return f"baseline drift {drift_W:.3f}W > 0.5W"
+    return None
+
+
+def baseline_drift_exempt(soak_minutes, fan_mode) -> str | None:
+    """Reason the baseline drift check does not apply to this run, or None (v1 behaviour)."""
+    if soak_minutes is not None:
+        return "soak: device thermal state changes by design"
+    if fan_mode == "auto":
+        return "fan auto: fan state may change between baselines"
+    return None
+
+
 def sync_pulse_pinned(sampler, tag: str, governor: str, cpu_mhz: int | None,
                       pin=pinning.pin, unpin=pinning.unpin, sleep=time.sleep) -> None:
     """Emit a sync-pulse train. With --governor ondemand the clock is pinned to cpu_mhz only
@@ -645,6 +664,9 @@ def main():
         mS = f"{baseline_W:.4f}" if baseline_W is not None else "None"
         dS = f"{baseline_drift_W:.4f}" if baseline_drift_W is not None else "None"
         logger.info(f"ABAB baseline: A={aS}W B={bS}W mean={mS}W drift={dS}W")
+        drift_exempt = baseline_drift_exempt(args.soak_minutes, fan_mode)
+        if drift_exempt and baseline_drift_W is not None and baseline_drift_W > 0.5:
+            logger.warning(f"baseline drift {baseline_drift_W:.3f}W > 0.5W exempt ({drift_exempt})")
 
         # ---- outputs ---------------------------------------------------------
         layer_rows = prof.aggregated(exclude_frame=0)
@@ -810,6 +832,7 @@ def main():
             "baseline_A_W": round(aP, 6) if aP is not None else None,
             "baseline_B_W": round(bP, 6) if bP is not None else None,
             "baseline_drift_W": round(baseline_drift_W, 6) if baseline_drift_W is not None else None,
+            **({"baseline_drift_exempt": drift_exempt} if drift_exempt else {}),
             "schema_version": 4 if monsoon else 3,
             "sampler": args.sampler,
             "recorder_url": args.recorder_url if monsoon else None,
@@ -875,10 +898,9 @@ def main():
             errors.append(f"achieved sample Hz={achieved_hz:.1f} < {min_hz}")
         if baseline_W is None or not (bmin <= baseline_W <= bmax):
             errors.append(f"baseline_W={baseline_W} out of range")
-        if baseline_drift_W is None:
-            errors.append("baseline drift unknown (empty A/B window)")
-        elif baseline_drift_W > 0.5:
-            errors.append(f"baseline drift {baseline_drift_W:.3f}W > 0.5W")
+        drift_err = baseline_drift_error(baseline_drift_W, args.soak_minutes, fan_mode)
+        if drift_err:
+            errors.append(drift_err)
         thr = ctx[-1].get("throttle_bits") if ctx else None
         if thr is not None and (thr & 0x1) != 0:
             errors.append(f"throttled during run (throttle_bits=0x{thr:x})")

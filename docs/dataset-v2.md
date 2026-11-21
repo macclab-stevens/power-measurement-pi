@@ -33,7 +33,7 @@ in [README section 5.4.2](../README.md#542-the-dataset-v2-matrix) and
 | Image size, batch, threads | 640 px, batch 1, 4 threads | 320 / 480 / 640 / 960 px, batch 1 / 2 / 4 / 8, 1 / 2 / 4 threads |
 | Input picture | one standard picture | also an empty and a crowded picture, and a stream of 50 different pictures |
 | Clock | pinned 1500 / 2000 / 2400 MHz | also free-running (DVFS) |
-| Cooling | fan at full speed | also fan `auto` and fan `off`, and 30-minute soaks |
+| Cooling | fan at full speed | also fan `auto` and fan `off` (soaks keep the fan at full speed), and 30-minute soaks |
 | Serving | 10 requests, 200 ms gaps | also 1, 5 and 15 requests per second, and two workloads at once |
 | Counters | none (a sensor snapshot every 5 s) | `perf` hardware counters 10 times a second and a 1 Hz CPU clock / temperature / fan log on every cell |
 | Accuracy | not recorded | the model's mAP on 500 COCO pictures travels with every YOLO cell (`map_reference`) |

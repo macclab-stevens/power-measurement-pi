@@ -45,7 +45,7 @@ def test_parsed_values_of_special_cells():
     a = rows["yolo11n_stream_640_t4_2400_r00"]
     assert (a.frames_source, a.frames) == ("stream", 50)
     a = rows["yolo11m_soak30_640_t4_2400_r00"]
-    assert (a.soak_minutes, a.fan, a.no_bench) == (30.0, "auto", True)
+    assert (a.soak_minutes, a.fan, a.no_bench) == (30.0, "full", True)
     a = rows["yolo11n_int8s_640_t4_1500_r00"]
     assert (a.quant, a.quant_weights, a.no_bench) == ("int8-static", "models/yolo11n_int8s.pt", True)
     a = rows["yolo11n_p50_640_t4_2400_r00"]
