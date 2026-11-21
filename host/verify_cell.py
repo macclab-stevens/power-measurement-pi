@@ -23,6 +23,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 P_MIN_W, P_MAX_W = 1.0, 25.0
 MAX_NAN_FRACTION = 0.01
@@ -36,7 +38,26 @@ DVFS_RANGE_MHZ, DVFS_TOL_MHZ = (1500, 2400), 25
 FAN_MODES = ("full", "auto", "off")
 OVERLAP_FAIL, OVERLAP_WARN = 0.5, 0.9
 PRIMARY_TAG = "m0"
+# power_trace.parquet columns verify() uses; a long v2 cell has ~9 M rows x 38 columns, and reading
+# all of them as pandas objects needs >7 GB (the EliteBook has 7 GB and runs the recorder)
+USED_COLUMNS = ("P_W", "t_s", "phase", "iter", "step", "ctx_read", "ctr_instructions", "tag",
+                "sys_uv_alarm")
 SPIN_STEPS = ("spin",)                 # tag "spin"; "m1" is a second image model: INFER_STEPS
+
+
+def _used_columns(names) -> list[str]:
+    return [c for c in names if c in USED_COLUMNS or c.startswith("step_")
+            or (c.startswith("sys_cpu") and c.endswith("_kHz"))]
+
+
+def read_trace(path) -> pd.DataFrame:
+    """power_trace.parquet with only the columns verify() uses; string columns are read straight
+    into pandas categoricals (never as Python-object arrays)."""
+    schema = pq.read_schema(path)
+    cols = _used_columns(schema.names)
+    strings = [c for c in cols if pa.types.is_string(schema.field(c).type)
+               or pa.types.is_large_string(schema.field(c).type)]
+    return pd.read_parquet(path, columns=cols, read_dictionary=strings)
 
 
 def expected_phases(meta: dict) -> list[str]:
@@ -59,11 +80,14 @@ def phase_energy(df: pd.DataFrame, dt_s: float) -> pd.DataFrame:
 
     Missing (NaN) samples count toward the duration but add no energy (same policy as the
     total), so E_mJ is the sum of the observed samples x dt and mean_P_W their mean."""
-    g = df.groupby(["phase", "iter", "step"], sort=False, dropna=False)
+    keys = ["phase", "iter", "step"]
+    g = df.groupby(keys, sort=False, dropna=False, observed=True)   # observed: categorical keys
     out = g.agg(n_samples=("P_W", "size"), n_finite=("P_W", "count"),
                 P_sum=("P_W", "sum"), mean_P_W=("P_W", "mean"),
                 ctx_read_frac=("ctx_read", "mean"),
                 t_start_s=("t_s", "min"), t_end_s=("t_s", "max")).reset_index()
+    for k in keys:
+        out[k] = out[k].astype(object)      # the table is small; plain strings downstream
     out["dur_ms"] = out["n_samples"] * dt_s * 1000.0
     out["E_mJ"] = out.pop("P_sum") * dt_s * 1000.0
     return out
@@ -229,7 +253,7 @@ def verify(run_dir, cpu_mhz: int | None = None, write: bool = True) -> dict:
     try:
         meta = json.loads((run_dir / "run_meta.json").read_text())
         ali = json.loads((run_dir / "alignment.json").read_text())
-        df = pd.read_parquet(run_dir / "power_trace.parquet")
+        df = read_trace(run_dir / "power_trace.parquet")
     except (OSError, ValueError) as e:
         errors.append(f"missing or unreadable output: {e}")
         errors.extend(_thermal_errors(run_dir, None))   # an aborted run leaves no run_meta.json
@@ -271,6 +295,7 @@ def verify(run_dir, cpu_mhz: int | None = None, write: bool = True) -> dict:
                       f"(allowed {P_MIN_W}-{P_MAX_W})")
 
     counts = df["phase"].value_counts()
+    counts = counts[counts > 0]          # a categorical also lists unobserved categories
     missing = [p for p in expected_phases(meta) if counts.get(p, 0) == 0]
     if missing:
         errors.append(f"phases without samples: {missing}")
@@ -279,7 +304,9 @@ def verify(run_dir, cpu_mhz: int | None = None, write: bool = True) -> dict:
         errors.append("no bench:* phase although benches were not skipped")
 
     modes = list(meta.get("modes") or [])
-    in_modes = df[df["phase"].isin(modes)]
+    # the mode subset: a boolean mask and only the columns its checks read (no whole-frame copy)
+    in_cols = [c for c in df.columns if c not in ("t_s", "phase", "iter", "ctx_read")]
+    in_modes = df.loc[df["phase"].isin(modes).to_numpy(), in_cols]
     seen_steps = set(in_modes["step"].unique())
     miss_steps = [s for s in expected_steps(meta) if s not in seen_steps]
     if miss_steps:
@@ -309,6 +336,10 @@ def verify(run_dir, cpu_mhz: int | None = None, write: bool = True) -> dict:
             if ctr < COUNTER_COVERAGE_MIN:
                 errors.append(f"counter coverage {ctr:.3f} < {COUNTER_COVERAGE_MIN}")
     errors.extend(_thermal_errors(run_dir, meta))
+    if "sys_uv_alarm" in df:
+        n_uv = int((df["sys_uv_alarm"] == 1).sum())
+        if n_uv:
+            errors.append(f"live under-voltage alarm (sys_uv_alarm) in {n_uv} trace samples")
     if _is_yolo(meta) and (v2 or "variant" in meta):
         ref = meta.get("map_reference")
         if not ref:
@@ -327,8 +358,8 @@ def verify(run_dir, cpu_mhz: int | None = None, write: bool = True) -> dict:
     if write:
         pe.to_csv(run_dir / "phase_energy.csv", index=False)
 
-    by_phase = df.groupby("phase")["P_W"].mean()
-    by_step = in_modes.groupby("step")["P_W"].mean()
+    by_phase = df.groupby("phase", observed=True)["P_W"].mean()
+    by_step = in_modes.groupby("step", observed=True)["P_W"].mean()
     res.update({
         "n_samples": n, "nan_fraction": nan_frac, "step_coverage": cov,
         "energy_total_J": e_total / 1000.0, "energy_closure": closure,

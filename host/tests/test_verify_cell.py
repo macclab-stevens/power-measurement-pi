@@ -4,7 +4,7 @@ import json
 import numpy as np
 import pandas as pd
 
-from verify_cell import TRAIN_STEPS, derived_metrics, phase_energy, verify
+from verify_cell import TRAIN_STEPS, derived_metrics, phase_energy, read_trace, verify
 
 PHASES = ["load_weights", "first:train", "warmup", "sync:start", "baseline_A", "train",
           "baseline_B", "sync:end"]
@@ -438,3 +438,44 @@ def test_concurrent_drain_phase_is_not_charged_to_the_last_frame(tmp_path):
     assert r["concurrent"]["coverage"] == base["concurrent"]["coverage"]   # drain is not a mode phase
     pe = pd.read_csv(tmp_path / "b" / "cell" / "phase_energy.csv", keep_default_na=False)
     assert pe[pe["phase"] == "concurrent_drain"]["n_samples"].sum() == 300
+
+
+# ---- memory: only the used columns, categorical strings (final review I1) ---------------------
+
+def test_read_trace_keeps_only_used_columns_as_categoricals(tmp_path):
+    extra = _cols(I_A=1.0, layer_path="a.b", depth=np.int16(1), pct_cycles=100.0,
+                  ctr_instructions=2.0, sys_cpu0_kHz=2400000.0, sys_temp_C=50.0,
+                  sys_uv_alarm=0.0, step_m1="", tag="")
+    d = _run(tmp_path, df_over=extra)
+    df = read_trace(d / "power_trace.parquet")
+    assert set(df.columns) == {"P_W", "t_s", "phase", "iter", "step", "ctx_read",
+                               "ctr_instructions", "sys_cpu0_kHz", "sys_uv_alarm", "step_m1",
+                               "tag"}
+    for c in ("phase", "iter", "step", "step_m1", "tag"):
+        assert isinstance(df[c].dtype, pd.CategoricalDtype), c
+
+
+def test_phase_energy_is_the_same_for_categorical_and_object_keys():
+    rng = np.random.default_rng(0)
+    ph = np.repeat(["a", "b", "a2"], 40)
+    df = pd.DataFrame({"phase": ph, "iter": np.tile(["0", "1", ""], 40),
+                       "step": np.tile(["x", "", "y", ""], 30),
+                       "P_W": rng.normal(5, 1, 120).astype(np.float32),
+                       "t_s": np.arange(120) / 5000.0, "ctx_read": rng.random(120) < .1})
+    cat = df.assign(**{k: df[k].astype("category") for k in ("phase", "iter", "step")})
+    a, b = phase_energy(df, 0.0002), phase_energy(cat, 0.0002)
+    pd.testing.assert_frame_equal(a, b)
+    assert not any(isinstance(b[k].dtype, pd.CategoricalDtype) for k in ("phase", "iter", "step"))
+    assert len(b) == len(df.groupby(["phase", "iter", "step"]).size())   # observed combos only
+
+
+def test_live_undervoltage_alarm_in_trace_is_an_error(tmp_path):
+    def uv(df):
+        return np.where(np.arange(len(df)) % 1000 == 0, 1.0, 0.0)
+    r = verify(_run(tmp_path / "a", df_over=_cols(sys_uv_alarm=uv)))
+    assert not r["ok"] and any("under-voltage" in e and "sys_uv_alarm" in e for e in r["errors"])
+    n = int((np.arange(r["n_samples"]) % 1000 == 0).sum())
+    assert any(f"in {n} trace samples" in e for e in r["errors"])
+    assert verify(_run(tmp_path / "b", df_over=_cols(sys_uv_alarm=0.0)))["ok"]
+    assert verify(_run(tmp_path / "c"))["ok"]            # column absent: no check
+    assert verify(_run(tmp_path / "d", df_over=_cols(sys_uv_alarm=np.nan)))["ok"]
