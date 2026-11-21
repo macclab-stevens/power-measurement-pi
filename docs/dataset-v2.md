@@ -98,11 +98,11 @@ Dated 2026-11-19 and 2026-11-20 unless stated.
 
 - **INT8 dynamic is cut.** Dynamic quantization only replaces Linear-type layers, and YOLO is
   almost all convolutions, so it quantizes 0 modules. `run.py` fails such a run rather than label
-  float32 data INT8. The flag `--include-int8d` keeps the 9 cells buildable.
+  float32 data INT8. The flag `--include-int8d` keeps the 9 cells buildable, and `./lab run` refuses these presets without `--include-cut`.
 - **Pruning is cut.** Structured pruning of yolo11n without fine-tuning gives mAP50-95 of about 0
   at 30 % and 50 % (0.021 at 10 % in a one-off check, not recorded in `data/map_reference.json`), even after re-estimating the BatchNorm statistics on 200
   calibration pictures. The tool, the model files and the numbers are kept
-  ([../tools/README.md](../tools/README.md)); `--include-prune` keeps the 6 cells buildable.
+  ([../tools/README.md](../tools/README.md)); `--include-prune` keeps the 6 cells buildable (`./lab run` needs `--include-cut`).
 - **FP16 is optional (`--include-fp16`, 3 cells).** FP16 really executes in float16 on the Pi CPU
   (verified from the layer profile at run time), but in an informal check whole yolo11n at 640 was
   slower than FP32 (about 553 ms against about 330 ms per frame).
@@ -322,6 +322,10 @@ What to check afterwards, before planning Phase 3:
 - **Disk and memory.** EliteBook free space; and the peak memory of `align` + `verify` on the
   5-minute soak. The EliteBook has 7 GB shared with the recorder, so know the 5-minute figure before
   scheduling the 30-minute soaks (which have 6 times more samples).
+  Soak cells log no per-layer begin/end events (`layer_events: false`; step events and labels
+  stay), and `verify_cell.py` reads only the columns it uses, as categoricals. On a synthetic
+  9-million-row, 38-column trace its peak memory is 2.3 GB (it was 6.4 GB, measured on the NUC with
+  the same pandas/pyarrow). `align` is not covered by that figure.
 - **Verification.** Every pilot cell passes `verify_cell.py`, including counter coverage of at least
   95 %. The first concurrent cell has tagged events, one sync envelope and counter coverage.
 - **Naming and manifests.** Cell ids and holdout tags are as expected (`primary-s`, `secondary-m`).

@@ -287,7 +287,8 @@ ssh macc2026@192.168.0.11 'curl -s localhost:8051/status'          # "recording"
 
 # Pi: reachable, no power problems, cool?
 ssh maccpi@192.168.0.243 'vcgencmd get_throttled; vcgencmd measure_temp'
-#   throttled=0x0 is ideal. 0x50000 means an under-voltage happened earlier since boot (old news).
+#   throttled=0x0 is ideal. 0x50000 means an under-voltage happened since boot: reboot the Pi
+#   before a long matrix (run.py also watches the live alarm, sysfs uv_alarm, and the cell dmesg log).
 #   A low bit set (0x1, 0x4, ...) means a problem right now.
 
 # Same code version on both?
@@ -336,6 +337,8 @@ cd ~/power-measurement-pi
   if any check fails. It waits until the Pi is below 50 °C, as the matrix does
   (`--no-thermal-gate` to skip). It prints a line to follow the Pi's output live:
   `ssh maccpi@192.168.0.243 tail -f Desktop/power-measurement-pi/runs/lab/<name>.log`.
+- **Cut presets** (INT8 dynamic `*_int8d_*`, pruned `*_p30_*` / `*_p50_*`) are not listed by
+  `./lab presets` and `./lab run` refuses them unless you add `--include-cut`.
 - **Fan-off presets need `--yes-supervised`.** The fan stays off until 85 °C, where `run.py`
   stops the run, so the first such run must be watched in person. Without the flag `./lab run`
   refuses (`--dry-run` still works).
@@ -514,9 +517,16 @@ matter for v2):
 - **Before every cell** it also checks that the recorder is really sampling (`n_total` grows, and
   is at least an hour clear of its ceiling) and that there is enough free disk: 10 GB on the
   EliteBook runs folder and 5 GB on the Pi project folder (2 GB more for soak cells). A failure
-  there stops the whole experiment (stages `recorder` and `disk`).
+  there stops the whole experiment (stages `recorder` and `disk`; the Pi's `df` is retried once
+  after 10 s). It also checks that no `run.py` is still running on the Pi (a leftover one would
+  corrupt the cell): if one is, the experiment stops at stage `pi_busy`.
 - **Per-cell time limit:** 40 minutes, except a cell that carries its own `timeout_s` (the 30-minute
-  soaks get 50 minutes).
+  soaks get 50 minutes). On a timeout the orchestrator sends SIGINT to `run.py` on the Pi, waits up
+  to 60 s for it to exit (so it restores the fan and stops `perf`), and ends the cell at stage
+  `timeout` (the error says whether `run.py` exited; a cell that is retried meets `pi_busy` if it
+  did not).
+- **Under-voltage:** if the cell's `dmesg` log contains "Undervoltage detected", the cell fails at
+  stage `undervoltage` (retried like other failures; the experiment goes on).
 - **Thermal stop:** `run.py` aborts a run at 85 °C (exit code 3) and stops hard at 90 °C (exit
   code 4). The orchestrator marks that cell as failed at stage `thermal_abort`, shows the Pi's
   `thermal_abort.json`, does **not** retry it, and goes on with the next cell.
@@ -566,6 +576,7 @@ A v2 cell has more columns, added by `align.py` from the Pi's own logs:
 | `pct_<event>` | The share of that interval (0-100) in which `<event>` was really being counted. Under 100 means the CPU had to share its counters between events and `perf` scaled the count up. The default event set was chosen so this stays at 100. |
 | `sys_cpu0_kHz` ... `sys_cpu3_kHz` | Each core's clock, in kHz, from the latest 1 Hz reading (at most 2 s old). |
 | `sys_temp_C`, `sys_fan_state` | SoC temperature and fan state (0 = off, up to 4 = full) from the same reading. |
+| `sys_uv_alarm` | The Pi's live under-voltage alarm (hwmon `rpi_volt`, `in0_lcrit_alarm`): 1 only while the supply is low, unlike the sticky `throttled` bit. Any 1 fails the run and the cell check. Empty when the Pi has no such device. |
 | `tag`, `step_m0`, `step_m1` / `step_spin` | Only in `--concurrent` cells: which workloads were inside a step at that instant (`m0+m1`), and each workload's own step. `step` (and `mode`, `iter`) always follow the main workload `m0`. |
 
 Cells measured before v2 have none of these columns.
@@ -623,8 +634,8 @@ These are in the experiment folder (e.g. `runs/matrix/`):
 - `layer_table.csv`: for FP16 and INT8 variant cells (`variant` is not plain `yolo11n`, ...) do
   **not** use `bytes_moved`, `macs` or `arith_intensity`. They assume 4-byte float weights, and a
   quantized module has no parameters to count, so they are wrong for those cells.
-- Cells with `--concurrent` have no per-layer begin/end events (`layer_events: false` in
-  `run_meta.json`), and their `layer_table.csv` timings are of course slowed by the other workload.
+- Cells with `--concurrent` or `--soak-minutes` have no per-layer begin/end events
+  (`layer_events: false` in `run_meta.json`; step events and the mode / iteration labels stay), and their `layer_table.csv` timings are of course slowed by the other workload.
 - A cell with `--quant` or `--soak-minutes` has no per-layer power benchmarks (`perop_power.csv` is
   empty): quantized layers cannot be benchmarked in isolation, and a soak must stay bounded.
 
@@ -712,6 +723,9 @@ bits `0x0` throughout. Dataset v1 was measured at 5.25 V.
 | Cell failed at `align` with "residual >= 1.0 ms" | The Monsoon lost samples right inside a sync pulse, so the clocks could not be matched. | Nothing. The cell is retried automatically. It happened 4 times in 228 attempts. |
 | `slip_warning` in results | The Monsoon lost a few ms of samples during the run (about once a minute). Labels after that point are shifted by a few ms. | Accepted. Repeats average it out. Filter on `alignment.json` → `slip_samples_total` if you need perfect labels. |
 | Run fails with "under-voltage occurred during run" | The Pi's input voltage dipped below about 4.63 V. The firmware then throttles the CPU, so the power numbers are not the workload's. | Check the power cable (short and thick, about 0.1 ohm) and the Monsoon voltage (5.35 V, [section 8](#8-power-safety-turning-the-pi-on-and-off-rewiring)). Heavy workloads above about 3 A are at risk. |
+| Run fails with "live under-voltage alarm during run (N samples)", or a cell fails at stage `undervoltage` | The live alarm (`sysfs.csv` `uv_alarm`) or the kernel log of the cell ("Undervoltage detected") caught a dip, even if the sticky `throttled` bit was already set from earlier. | As above. If `./lab check` shows `0x50000` since boot, reboot the Pi before a long matrix. |
+| Experiment stopped at stage `pi_busy` | A `run.py` was still running on the Pi when the next cell was due (for example after a timeout). | `ssh maccpi@192.168.0.243 pgrep -af src/run.py`; wait for it or stop it with `ssh maccpi@192.168.0.243 pkill -INT -f src/run.py`, then start `run` again. |
+| Cell failed at stage `timeout` | `run.py` ran longer than the cell's limit. The orchestrator sent it SIGINT and waited up to 60 s. | The error says whether it exited. Raise `timeout_s`, or check why the cell is slow. |
 | Run fails with "baseline drift" or clock errors | The Pi changed speed, or something else ran during the measurement. | Make sure nothing else runs on the Pi. Check `pi-power-pin status`. |
 | `Monsoon recorder unreachable` | The recorder is not running. | Start it ([section 4.7](#47-start-the-recorder)). |
 | `recorder is not sampling: n_total stayed at ...` or `within an hour of the 32-bit ceiling` | The recorder stalled silently (`/status` still says recording), or is about to. | Restart the recorder the safe way ([section 8](#8-power-safety-turning-the-pi-on-and-off-rewiring)). The orchestrator and `./lab` never do it for you. |
@@ -827,11 +841,13 @@ adds the v2 checks (section 6) and writes `derived.json`.
 - `plan` expands `host/matrix.py` into a manifest (or `host/matrix_v2.py` with `--v2`, section 5.4.2).
 - `run` works through it round by round; each attempt is appended to `results.jsonl`.
 - **Failure stages:**
-  - `recorder`, `disk` and `pi_down` stop the whole experiment, because nothing can work until a
-    human looks. (`recorder` now also covers a recorder that has stopped sampling silently.)
+  - `recorder`, `disk`, `pi_busy` and `pi_down` stop the whole experiment, because nothing can work
+    until a human looks. (`recorder` now also covers a recorder that has stopped sampling silently.)
   - `thermal_abort` (`run.py` stopped at 85 or 90 °C) ends that cell without a retry; the
     experiment goes on.
-  - `pi_crash`, `run`, `rsync`, `align` and `verify` are retried.
+  - `undervoltage` (the cell's `dmesg` shows "Undervoltage detected") and `timeout` (`run.py` got
+    SIGINT after the cell's time limit) are retried like `pi_crash`, `run`, `rsync`, `align` and
+    `verify`.
 - **Power-cycle guard:** it only switches the power off and on when all three are true:
   - the Pi has not answered for 3 minutes;
   - it does not answer `ping`;
@@ -1021,7 +1037,7 @@ make every hardware event run only part of the time).
 **`counters.raw.txt`**: `perf stat -I 100 -x,` output, untouched. `counters.csv` is made from it.
 
 **`sysfs.csv`** (Pi, once a second): `t_real_ns`, `cpu0_kHz` ... `cpu3_kHz`, `temp_C`,
-`fan_state`. An unreadable value is empty.
+`fan_state`, `uv_alarm` (0/1, live under-voltage alarm). An unreadable value is empty.
 
 **`thermal_abort.json`** (Pi, only when the run was stopped for heat): `t_real_ns`, `temp_C`,
 `level` (`abort` at 85 °C, `hard_stop` at 90 °C) and `phase` (what the run was doing).

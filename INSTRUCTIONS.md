@@ -80,7 +80,7 @@ What it checks:
 | recorder stall | `n_total` did not grow between two `/status` reads 2 s apart (the recorder has stopped sampling although `/status` says recording; seen 2026-10-17), or it is less than an hour from the 32-bit sample ceiling |
 | pi reachable | no SSH answer. It then also shows the ping result and the Pi's current draw (about 0.3 A means it is frozen or halted) |
 | pi temperature | (warning) 50 °C or warmer; runs then wait for it to cool |
-| pi throttling | an under-voltage or throttle **right now**. A flag from earlier since boot (`0x50000`) is only a warning |
+| pi throttling | an under-voltage or throttle **right now**. A flag from earlier since boot (`0x50000`) is a warning: reboot the Pi before a long matrix (the live alarm and the cell's kernel log are watched during runs) |
 | pinning helper | `pi-power-pin` missing or not allowed |
 | helper version | (warning) the installed `pi-power-pin` is the old one, without `unpin` and `fan off`: v2 DVFS and fan cells would fail |
 | pi wifi | (warning) `wlan0` is up; the radio adds power noise |
@@ -102,7 +102,7 @@ Pre-flight checks
   [ok]   recorder stall  sampling (n_total +9985 in 2 s)
   [ok]   pi reachable    maccpi@192.168.0.243
   [ok]   pi temperature  47.2 C (gate 50 C)
-  [WARN] pi throttling   throttled=0x50000: happened earlier since boot (old news)
+  [WARN] pi throttling   throttled=0x50000: under-voltage happened since boot; reboot the Pi before a long matrix (...)
   [ok]   pinning helper  governor=ondemand ... fan_state=1/4
   [ok]   helper version  pi-power-pin knows unpin and fan off
   [ok]   pi wifi         wlan0 down
@@ -224,6 +224,7 @@ Only the options you type override the preset.
 | `--no-thermal-gate` | off | Start immediately even if the Pi is warm. By default each run waits (up to 10 min) until the Pi is below 50 °C, as in the matrix. |
 | `--keep-pinned` | off | Leave the clock and fan pinned afterwards. |
 | `--allow-git-mismatch` | off | Run even if the Pi and the EliteBook are on different commits (both are recorded). |
+| `--include-cut` | off | Allow the cut presets (INT8 dynamic `*_int8d_*`, pruned `*_p30_*`, `*_p50_*`): without it `./lab run` refuses them and `./lab presets` does not list them. |
 | `--yes-supervised` | off | Needed for fan-off presets (`yolo11n_fanoff_640_t4`): confirms that you will watch the first one in person. Without it `./lab run` refuses. |
 | `--dry-run` | off | Only print the commands and folders. Contacts no machine. |
 
@@ -392,6 +393,9 @@ Notes:
 | `thermal` | The Pi didn't cool below 50 °C within 10 minutes. | Check the fan, or use `--no-thermal-gate`. |
 | `thermal_abort` | `run.py` stopped the run because the Pi reached 85 °C (exit code 3) or 90 °C (exit code 4). `thermal_abort.json` is shown: when, how hot, which phase. | Expected with fan off, fan auto or a soak in a warm room. Let the Pi cool (the next run waits for 50 °C anyway). |
 | `disk` | Less than 10 GB free on the EliteBook runs folder or 5 GB on the Pi project folder (2 GB more for a soak). | Free space; `df -h ~` here and `ssh maccpi@192.168.0.243 df -h Desktop/power-measurement-pi`. Further presets of the same command are skipped. |
+| `pi_busy` | `run.py` is still running on the Pi (an earlier run was abandoned). Further presets are skipped. | `ssh maccpi@192.168.0.243 pgrep -af src/run.py`; wait, or stop it with `ssh maccpi@192.168.0.243 pkill -INT -f src/run.py`. |
+| `timeout` | `run.py` ran longer than `--timeout`. It got SIGINT and up to 60 s to exit; the details say whether it did. | Use a larger `--timeout` or fewer `--frames`. |
+| `undervoltage` | The Pi's kernel logged "Undervoltage detected" during the run (the lines are shown). | Check the cable and the 5.35 V Vout; if `./lab check` showed `0x50000`, reboot the Pi first. |
 | `run` | The workload itself failed on the Pi. The last lines of its log are shown. | Usually under-voltage (cable), a bad option, or a model that can't load. |
 | `align` | The power recording couldn't be lined up, almost always because the Monsoon lost samples during a sync pulse. | Run it again. |
 | `verify` | The data failed a quality check (listed). | Read the listed errors; rerun if unsure. |
