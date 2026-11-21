@@ -1,83 +1,144 @@
 {
   "yolo11m@320": {
     "dataset": "coco-val2017-first500",
-    "map50": 0.6309,
-    "map50_95": 0.47239,
-    "measured": "2026-11-19",
+    "map50": 0.63081,
+    "map50_95": 0.47209,
+    "measured": "2026-11-20",
+    "measured_on": {
+      "hostname": "pimacc",
+      "machine": "aarch64",
+      "quantized_engine": "x86",
+      "torch": "2.14.0+cu130"
+    },
     "n_images": 500,
-    "tool_version": "f74dd2e"
+    "tool_version": "bfbc381"
   },
   "yolo11m@480": {
     "dataset": "coco-val2017-first500",
-    "map50": 0.67631,
-    "map50_95": 0.52076,
-    "measured": "2026-11-19",
+    "map50": 0.67634,
+    "map50_95": 0.52063,
+    "measured": "2026-11-20",
+    "measured_on": {
+      "hostname": "pimacc",
+      "machine": "aarch64",
+      "quantized_engine": "x86",
+      "torch": "2.14.0+cu130"
+    },
     "n_images": 500,
-    "tool_version": "f74dd2e"
+    "tool_version": "bfbc381"
   },
   "yolo11m@640": {
     "dataset": "coco-val2017-first500",
     "map50": 0.71295,
     "map50_95": 0.55281,
-    "measured": "2026-11-19",
+    "measured": "2026-11-20",
+    "measured_on": {
+      "hostname": "pimacc",
+      "machine": "aarch64",
+      "quantized_engine": "x86",
+      "torch": "2.14.0+cu130"
+    },
     "n_images": 500,
-    "tool_version": "f74dd2e"
+    "tool_version": "bfbc381"
   },
   "yolo11m@960": {
     "dataset": "coco-val2017-first500",
     "map50": 0.71874,
     "map50_95": 0.5382,
-    "measured": "2026-11-19",
+    "measured": "2026-11-20",
+    "measured_on": {
+      "hostname": "pimacc",
+      "machine": "aarch64",
+      "quantized_engine": "x86",
+      "torch": "2.14.0+cu130"
+    },
     "n_images": 500,
-    "tool_version": "f74dd2e"
+    "tool_version": "bfbc381"
   },
   "yolo11n@320": {
     "dataset": "coco-val2017-first500",
-    "map50": 0.44856,
-    "map50_95": 0.31889,
-    "measured": "2026-11-19",
+    "map50": 0.44738,
+    "map50_95": 0.31754,
+    "measured": "2026-11-20",
+    "measured_on": {
+      "hostname": "pimacc",
+      "machine": "aarch64",
+      "quantized_engine": "x86",
+      "torch": "2.14.0+cu130"
+    },
     "n_images": 500,
-    "tool_version": "f74dd2e"
+    "tool_version": "bfbc381"
   },
   "yolo11n@480": {
     "dataset": "coco-val2017-first500",
-    "map50": 0.53834,
-    "map50_95": 0.39537,
-    "measured": "2026-11-19",
+    "map50": 0.53763,
+    "map50_95": 0.39534,
+    "measured": "2026-11-20",
+    "measured_on": {
+      "hostname": "pimacc",
+      "machine": "aarch64",
+      "quantized_engine": "x86",
+      "torch": "2.14.0+cu130"
+    },
     "n_images": 500,
-    "tool_version": "f74dd2e"
+    "tool_version": "bfbc381"
   },
   "yolo11n@640": {
     "dataset": "coco-val2017-first500",
     "map50": 0.57983,
     "map50_95": 0.42481,
-    "measured": "2026-11-19",
+    "measured": "2026-11-20",
+    "measured_on": {
+      "hostname": "pimacc",
+      "machine": "aarch64",
+      "quantized_engine": "x86",
+      "torch": "2.14.0+cu130"
+    },
     "n_images": 500,
-    "tool_version": "f74dd2e"
+    "tool_version": "bfbc381"
   },
   "yolo11n@960": {
     "dataset": "coco-val2017-first500",
     "map50": 0.60447,
     "map50_95": 0.42037,
-    "measured": "2026-11-19",
+    "measured": "2026-11-20",
+    "measured_on": {
+      "hostname": "pimacc",
+      "machine": "aarch64",
+      "quantized_engine": "x86",
+      "torch": "2.14.0+cu130"
+    },
     "n_images": 500,
-    "tool_version": "f74dd2e"
+    "tool_version": "bfbc381"
   },
   "yolo11n_fp16@640": {
     "dataset": "coco-val2017-first500",
-    "map50": 0.57968,
-    "map50_95": 0.42466,
-    "measured": "2026-11-19",
+    "map50": 0.57917,
+    "map50_95": 0.42397,
+    "measured": "2026-11-20",
+    "measured_on": {
+      "hostname": "pimacc",
+      "machine": "aarch64",
+      "quantized_engine": "x86",
+      "torch": "2.14.0+cu130"
+    },
     "n_images": 500,
-    "tool_version": "f74dd2e"
+    "tool_version": "bfbc381"
   },
   "yolo11n_int8s@640": {
+    "artifact_sha256": "20bba9e34ba0ee01a26129fe28edc75f9c53df16e439ad9dfa8de1c9701dcae9",
     "dataset": "coco-val2017-first500",
-    "map50": 0.56195,
-    "map50_95": 0.40657,
+    "map50": 0.56191,
+    "map50_95": 0.40674,
     "measured": "2026-11-20",
+    "measured_on": {
+      "hostname": "pimacc",
+      "machine": "aarch64",
+      "quantized_engine": "qnnpack",
+      "torch": "2.14.0+cu130"
+    },
     "n_images": 500,
-    "tool_version": "5e0010b"
+    "tool_version": "bed030f"
   },
   "yolo11n_p30@640": {
     "dataset": "coco-val2017-first500",
@@ -97,66 +158,115 @@
   },
   "yolo11s@320": {
     "dataset": "coco-val2017-first500",
-    "map50": 0.56186,
-    "map50_95": 0.40821,
-    "measured": "2026-11-19",
+    "map50": 0.56112,
+    "map50_95": 0.40747,
+    "measured": "2026-11-20",
+    "measured_on": {
+      "hostname": "pimacc",
+      "machine": "aarch64",
+      "quantized_engine": "x86",
+      "torch": "2.14.0+cu130"
+    },
     "n_images": 500,
-    "tool_version": "f74dd2e"
+    "tool_version": "bfbc381"
   },
   "yolo11s@480": {
     "dataset": "coco-val2017-first500",
-    "map50": 0.63172,
-    "map50_95": 0.46968,
-    "measured": "2026-11-19",
+    "map50": 0.63226,
+    "map50_95": 0.46988,
+    "measured": "2026-11-20",
+    "measured_on": {
+      "hostname": "pimacc",
+      "machine": "aarch64",
+      "quantized_engine": "x86",
+      "torch": "2.14.0+cu130"
+    },
     "n_images": 500,
-    "tool_version": "f74dd2e"
+    "tool_version": "bfbc381"
   },
   "yolo11s@640": {
     "dataset": "coco-val2017-first500",
     "map50": 0.66566,
     "map50_95": 0.50127,
-    "measured": "2026-11-19",
+    "measured": "2026-11-20",
+    "measured_on": {
+      "hostname": "pimacc",
+      "machine": "aarch64",
+      "quantized_engine": "x86",
+      "torch": "2.14.0+cu130"
+    },
     "n_images": 500,
-    "tool_version": "f74dd2e"
+    "tool_version": "bfbc381"
   },
   "yolo11s@960": {
     "dataset": "coco-val2017-first500",
     "map50": 0.69758,
     "map50_95": 0.51334,
-    "measured": "2026-11-19",
+    "measured": "2026-11-20",
+    "measured_on": {
+      "hostname": "pimacc",
+      "machine": "aarch64",
+      "quantized_engine": "x86",
+      "torch": "2.14.0+cu130"
+    },
     "n_images": 500,
-    "tool_version": "f74dd2e"
+    "tool_version": "bfbc381"
   },
   "yolo11s_int8s@640": {
+    "artifact_sha256": "361d2d54d5675532d4f29e34bac6896342b54a19c9dc8af8c0de4fd0f251ff25",
     "dataset": "coco-val2017-first500",
-    "map50": 0.65802,
-    "map50_95": 0.49197,
+    "map50": 0.65852,
+    "map50_95": 0.49259,
     "measured": "2026-11-20",
+    "measured_on": {
+      "hostname": "pimacc",
+      "machine": "aarch64",
+      "quantized_engine": "qnnpack",
+      "torch": "2.14.0+cu130"
+    },
     "n_images": 500,
-    "tool_version": "5e0010b"
+    "tool_version": "bed030f"
   },
   "yolov8m@640": {
     "dataset": "coco-val2017-first500",
     "map50": 0.71981,
     "map50_95": 0.55286,
-    "measured": "2026-11-19",
+    "measured": "2026-11-20",
+    "measured_on": {
+      "hostname": "pimacc",
+      "machine": "aarch64",
+      "quantized_engine": "x86",
+      "torch": "2.14.0+cu130"
+    },
     "n_images": 500,
-    "tool_version": "f74dd2e"
+    "tool_version": "bfbc381"
   },
   "yolov8n@640": {
     "dataset": "coco-val2017-first500",
     "map50": 0.55665,
     "map50_95": 0.40125,
-    "measured": "2026-11-19",
+    "measured": "2026-11-20",
+    "measured_on": {
+      "hostname": "pimacc",
+      "machine": "aarch64",
+      "quantized_engine": "x86",
+      "torch": "2.14.0+cu130"
+    },
     "n_images": 500,
-    "tool_version": "f74dd2e"
+    "tool_version": "bfbc381"
   },
   "yolov8s@640": {
     "dataset": "coco-val2017-first500",
     "map50": 0.65171,
     "map50_95": 0.48909,
-    "measured": "2026-11-19",
+    "measured": "2026-11-20",
+    "measured_on": {
+      "hostname": "pimacc",
+      "machine": "aarch64",
+      "quantized_engine": "x86",
+      "torch": "2.14.0+cu130"
+    },
     "n_images": 500,
-    "tool_version": "f74dd2e"
+    "tool_version": "bfbc381"
   }
 }

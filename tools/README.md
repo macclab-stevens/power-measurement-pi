@@ -56,19 +56,29 @@ fully INT8 network, and a reader of the dataset should not call them one.
 | **Pruned yolo11n** (`prune_yolo.py`) | Structured pruning with no fine-tuning breaks the model. mAP50-95 is about 0 at 30 % and 50 % (0.021 at 10 % in a one-off check, not recorded in `data/map_reference.json`), even after the BatchNorm re-estimation, and the sanity check does not find the bus in `bus.jpg`. Fine-tuning would be a training project of its own. | `plan --v2 ... --include-prune`; the tool, the artifacts and the numbers in `data/map_reference.json` stay as the negative result |
 | **FP16** | It runs: the convolutions really execute in float16 on the Pi CPU (`executed_dtype`). But in an informal check whole yolo11n at 640 was slower than FP32 (about 553 ms per frame against about 330 ms). | `plan --v2 ... --include-fp16` (3 cells) |
 
-## mAP numbers: provisional until measured on the Pi
+## mAP numbers: measured on the Pi
 
 `data/map_reference.json` holds one entry per model / variant / image size, and `run.py` copies the
-matching entry into every cell's `run_meta.json` as `map_reference`. **The entries in the file today
-were measured on the NUC (x86).** INT8 (`qnnpack` on ARM) and FP16 run different kernels on the Pi, so
-the decision is to measure accuracy on the Pi itself (plan Task 16, still to run). Until then:
+matching entry into every cell's `run_meta.json` as `map_reference`. INT8 (`qnnpack` on ARM) and
+FP16 run different kernels on the Pi than on x86, so accuracy is measured on the Pi itself
+(2026-11-20, plan Task 16); the NUC only builds weights and prepares data. Each entry records
+`measured_on` (`hostname`, `machine`, `torch`, `quantized_engine`) and, for a `models/*.pt` artifact,
+`artifact_sha256` (a regenerated artifact is detected and re-measured by `--skip-existing`).
+`host/verify_cell.py` warns for every YOLO cell whose entry does not carry
+`measured_on.machine == "aarch64"`.
 
-- treat the numbers as provisional;
-- `host/verify_cell.py` warns for every YOLO cell whose entry does not carry
-  `measured_on.machine == "aarch64"`.
+Pi vs the earlier NUC numbers differ by at most 0.0014 mAP50-95 (FP32 identical to 4 decimals at
+640 / 960; INT8 static +0.0002 / +0.0006, FP16 -0.0007). The two pruned entries (`yolo11n_p30`,
+`yolo11n_p50`: cut from the matrix, mAP about 0) keep their NUC numbers and so keep the warning.
 
-To remove the warning, `eval_map.py` is re-run on the Pi with the Pi project environment and the
-`coco500` data copied there, and the NUC entries are replaced.
+Re-measure on the Pi from a copy of the branch (never edit the deployed checkout) with the weights,
+`models/` and `tools/data/coco500` in place, using the Pi project venv:
+
+    UV_PROJECT_ENVIRONMENT=~/Desktop/power-measurement-pi/.venv uv run --frozen --offline --no-sync \
+        python tools/eval_map.py --skip-existing --tool-version <hash> --budget-min 180 --model yolo11n.pt
+
+with the fan forced full (`pi-power-pin fan full` ... `fan auto`) and never while `src/run.py` is
+measuring. About 2.5 hours for the whole set (yolo11m at 960: 39 min).
 
 ## Where things live
 
