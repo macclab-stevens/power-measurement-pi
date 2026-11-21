@@ -20,6 +20,12 @@ hour of samples left before the 32-bit ceiling (the recorder once stalled silent
 3/4 (thermal abort / hard stop) end the cell at stage "thermal_abort" with the Pi's
 thermal_abort.json as the error; it is not retried and the matrix goes on with the next cell.
 
+Stale run.py: before a cell the Pi must not be running run.py (stage "pi_busy": ends the matrix,
+a leftover run.py would corrupt the next cell). When the cell's ssh times out (rc 124) the Pi's
+run.py gets SIGINT and up to 60 s to exit (its finally restores the fan and stops perf); the cell
+ends at stage "timeout" and says whether it exited. If `dmesg -W` of the cell shows "Undervoltage
+detected" the cell fails at stage "undervoltage" (retried like any failure, matrix goes on).
+
 Halted-Pi recovery (--auto-power-cycle N, at most N times per invocation): only when the Pi has
 not answered for PI_DOWN_S and the Monsoon shows halted-level current (mean < 0.4 A and max
 < 0.6 A over the last 5 s). Then: stop recorder, vout_off.py --confirm-pi-halted, start the
@@ -57,6 +63,14 @@ MIN_FREE_GB = 10            # EliteBook runs dir
 PI_MIN_FREE_GB = 5          # Pi project dir
 SOAK_EXTRA_GB = 2           # added to both minima for family "soak" cells
 THERMAL_EXIT_CODES = (3, 4)  # run.py: thermal abort (85 C), hard stop (90 C)
+# `pytho[n]`: the pattern must not match the ssh command line that carries it
+PI_RUN_PGREP = "pgrep -af 'pytho[n] src/run.py'"
+PI_RUN_PKILL_INT = "pkill -INT -f 'pytho[n] src/run.py'"
+RUN_EXIT_WAIT_S, RUN_EXIT_POLL_S = 60, 5
+DISK_RETRY_WAIT_S = 10
+ABORT_STAGES = ("pi_down", "recorder", "disk", "pi_busy")      # these stop the matrix
+UNDERVOLTAGE_MARK = "undervoltage detected"                    # kernel: "hwmon hwmon3: Undervoltage detected!"
+UNDERVOLTAGE_MAX_LINES = 5
 SAMPLE_CEILING = 2 ** 32 - 1            # the Monsoon library stops here
 STALL_MARGIN_SAMPLES = 5000 * 3600      # refuse to start with less than an hour left
 STALL_READ_GAP_S = 2
@@ -173,6 +187,12 @@ def parse_df_avail_gb(out: str) -> float | None:
         if len(f) >= 6 and f[1].isdigit() and f[3].isdigit():
             return int(f[3]) / 1024 ** 2
     return None
+
+
+def undervoltage_lines(dmesg_text: str, limit: int = UNDERVOLTAGE_MAX_LINES) -> list[str]:
+    """The kernel's "Undervoltage detected" lines of a `dmesg -W` capture (at most `limit`)."""
+    hits = [ln.strip() for ln in dmesg_text.splitlines() if UNDERVOLTAGE_MARK in ln.lower()]
+    return hits[:limit]
 
 
 def local_free_gb(path) -> float:
@@ -297,6 +317,30 @@ class Orchestrator:
         self.sleep(20)
         return None
 
+    def run_py_running(self) -> tuple[bool, str]:
+        """(running, detail) for run.py on the Pi. Fails closed: an unanswered check counts as
+        running (pgrep exits 1 for "no match"; anything else, incl. ssh's 255, is unknown)."""
+        rc, out = self.sh.ssh(PI_RUN_PGREP, 30)
+        if rc == 1:
+            return False, ""
+        if rc == 0:
+            return True, out.strip()[-300:]
+        return True, f"could not check for a running run.py (rc={rc}): {out.strip()[-200:]}"
+
+    def stop_run_py(self) -> bool:
+        """SIGINT the Pi's run.py (its finally restores the fan and stops perf) and wait up to
+        RUN_EXIT_WAIT_S for it to exit. True if it is gone."""
+        self.sh.ssh(PI_RUN_PKILL_INT, 30)
+        waited = 0
+        while True:
+            running, _ = self.run_py_running()
+            if not running:
+                return True
+            if waited >= RUN_EXIT_WAIT_S:
+                return False
+            self.sleep(RUN_EXIT_POLL_S)
+            waited += RUN_EXIT_POLL_S
+
     def thermal_gate(self) -> str | None:
         t_end = time.monotonic() + THERMAL_WAIT_S
         temp = None
@@ -316,8 +360,12 @@ class Orchestrator:
         here = (self.local_free_fn or local_free_gb)(self.runs)
         if here < need_here:
             return f"EliteBook {self.runs}: {here:.1f} GB free, need {need_here} GB"
-        rc, out = self.sh.ssh(f"df -Pk {PI_DIR}", 30)
-        pi = parse_df_avail_gb(out) if rc == 0 else None
+        for attempt in (1, 2):         # one retry: a transient ssh failure must not stop a matrix
+            rc, out = self.sh.ssh(f"df -Pk {PI_DIR}", 30)
+            pi = parse_df_avail_gb(out) if rc == 0 else None
+            if pi is not None or attempt == 2:
+                break
+            self.sleep(DISK_RETRY_WAIT_S)
         if pi is None:
             return f"could not read free space on the Pi {PI_DIR} (rc={rc}): {out[-200:]}"
         if pi < need_pi:
@@ -367,6 +415,9 @@ class Orchestrator:
         err = self.disk_check(cell)
         if err:
             return fail("disk", err)
+        busy, detail = self.run_py_running()
+        if busy:
+            return fail("pi_busy", f"run.py is already running on the Pi: {detail}")
         err = self.thermal_gate()
         if err:
             return fail("thermal", err)
@@ -379,6 +430,8 @@ class Orchestrator:
                 RUN_TIMEOUT_S if self.run_timeout_s is None else self.run_timeout_s)
             rc, out = self.sh.ssh(pi_command(cell, self.pi_subdir), timeout)
             res["run_s"] = round(time.monotonic() - t_run, 1)
+            if rc == 124:              # local timeout: the ssh died, run.py may still be going
+                res["run_exited"] = self.stop_run_py()
         finally:
             dm.terminate()
             dm_f.close()
@@ -395,6 +448,12 @@ class Orchestrator:
             except (OSError, ValueError):
                 what = f"run.py rc={rc} (thermal) but thermal_abort.json is missing or unreadable"
             return fail("thermal_abort", what)
+        if rc == 124:
+            gone = ("and exited" if res["run_exited"] else
+                    f"and is STILL RUNNING {RUN_EXIT_WAIT_S} s later (the next cell will stop "
+                    "the matrix at pi_busy)")
+            return fail("timeout", f"run.py exceeded {timeout:.0f} s; SIGINT sent {gone}: "
+                                   f"{out[-300:]}")
         if rc != 0:
             if not self.pi_up():
                 return fail("pi_crash", f"Pi went down during the run (rc={rc}): {out[-500:]}")
@@ -403,6 +462,13 @@ class Orchestrator:
             return fail("run", f"run.py rc={rc}: {msg}")
         if rrc != 0:
             return fail("rsync", rout)
+        try:
+            uv = undervoltage_lines((local.parent / f"{cid}.dmesg.log").read_text(errors="replace"))
+        except OSError:
+            uv = []
+        if uv:
+            return fail("undervoltage", "kernel reported under-voltage during the run:\n"
+                                        + "\n".join(uv))
 
         try:
             ali = self.align_fn(st["run_dir"], local, local)
@@ -444,7 +510,7 @@ class Orchestrator:
                              + (f" at {res['stage']}: {str(res['error'])[:300]}"
                                 if res["status"] != "ok" else f" in {res['duration_s']} s"))
                     if res["status"] != "ok":
-                        if res["stage"] in ("pi_down", "recorder", "disk"):
+                        if res["stage"] in ABORT_STAGES:
                             aborted = f"{res['stage']}: {res['error']}"
                             break
                         if attempt < max_attempts and res["stage"] != "thermal_abort":
