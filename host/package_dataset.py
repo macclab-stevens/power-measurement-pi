@@ -706,7 +706,8 @@ def _dir_bytes(p: Path) -> int:
     return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
 
 
-def readme_md(rows, extras, excluded, sources, name, *, dry_run, out: Path, probe_doc: str) -> tuple[str, list[str]]:
+def readme_md(rows, extras, excluded, sources, name, *, dry_run, out: Path, probe_doc: str,
+              branch_name: str | None = None) -> tuple[str, list[str]]:
     """The dataset README (v1 style). Returns (text, TODO lines for the controller)."""
     todos: list[str] = []
     n = len(rows)
@@ -751,8 +752,11 @@ def readme_md(rows, extras, excluded, sources, name, *, dry_run, out: Path, prob
                else "every manifest cell reached `ok`")
     if excluded:
         todos.append(f"decide for the {len(excluded)} excluded cells: rerun or accept (see excluded.csv)")
-    todos.append("branch name and final repository path for the download commands")
-    todos.append("overhead of the perf counters (Phase 0 probe 5 A/B repeat) if the paper needs it")
+    if branch_name:
+        branch = branch_name
+    else:
+        branch = "<BRANCH>"
+        todos.append("branch name for the download commands (rerun with --branch-name)")
     gloss = "\n".join(f"| `{c}` | {GLOSSARY[c]} |" for c in INDEX_COLUMNS)
     text = f"""# Monsoon power dataset v2: Raspberry Pi 5 YOLO workloads ({name})
 
@@ -933,6 +937,11 @@ Pi kernel (6.18.50 to {kernels}). They stay `dataset_version` 1. Use them only t
   (`--include-prune`).
 - **FP16** is optional (`--include-fp16`): it executes in float16 on the Pi CPU but whole yolo11n
   at 640 was slower than FP32 in an informal check (about 553 ms against about 330 ms per frame).
+- **Cost of the perf counters.** Sampling ten counters at 10 Hz costs little, but the overhead was
+  not measured by a strict A/B, so treat it as indicative: the perf-off `ref` cell yolo11n at 2400 MHz
+  (v1 arguments) drew 9.6 W at 291 ms per frame, the perf-on yolo11n cells at 640 px 9.3 W at
+  295.5 ms (different recipes). A controlled single-cell A/B on 2026-11-20 gave -0.15 W and +6 %
+  latency, taken under under-voltage, so also indicative.
 - Probe outcomes: `{probe_doc}` section 6.
 
 ## Downloading a subset
@@ -942,7 +951,7 @@ take a subset). Everything except `power_trace.parquet` and `events.csv.gz` is p
 arrives with a normal clone:
 
 ```bash
-GIT_LFS_SKIP_SMUDGE=1 git clone --branch <BRANCH> --single-branch https://github.com/macclab-stevens/power-measurement-pi.git
+GIT_LFS_SKIP_SMUDGE=1 git clone --branch {branch} --single-branch https://github.com/macclab-stevens/power-measurement-pi.git
 cd power-measurement-pi
 # the index, README, coverage and every small file are now present; the traces are LFS pointers
 git lfs pull --include="data/{name}/cells/yolo11s_640_t4_2400_r00/*"       # one cell
@@ -1004,7 +1013,7 @@ def write_csv(path: Path, columns: list[str], rows: list[dict]) -> None:
 
 
 def package(sources: list[Source], out: Path, name: str, *, dry_run=False, docs: Path | None = None,
-            log=lambda m: None) -> dict:
+            branch_name: str | None = None, log=lambda m: None) -> dict:
     kept, excluded, orphans = select(sources)
     for cid in orphans:
         log(f"warning: results.jsonl has rows for {cid}, which is not in a manifest (ignored)")
@@ -1034,7 +1043,8 @@ def package(sources: list[Source], out: Path, name: str, *, dry_run=False, docs:
     write_csv(out / "coverage.csv", ["dimension", "value", "n_cells"], coverage_rows(feats))
     _write_logs(sources, out)
     probe_doc = "docs/dataset-v2.md"
-    text, todos = readme_md(rows, extras, excluded, sources, name, dry_run=dry_run, out=out, probe_doc=probe_doc)
+    text, todos = readme_md(rows, extras, excluded, sources, name, dry_run=dry_run, out=out, probe_doc=probe_doc,
+                          branch_name=branch_name)
     (out / "README.md").write_text(text)
     n_manifest = sum(len(s.manifest) for s in sources)
     checks = readiness_checks(rows, extras, excluded, n_manifest, dry_run=dry_run, verified=verified,
@@ -1075,6 +1085,8 @@ def main(argv=None) -> int:  # pragma: no cover - CLI
                     help="a second runs folder with its own manifest.jsonl / results.jsonl (repeatable)")
     ap.add_argument("--out", required=True, help="dataset folder (becomes data/<name>/ in git)")
     ap.add_argument("--name", required=True, help="dataset name, e.g. monsoon_v2_2026-11")
+    ap.add_argument("--branch-name", default=None,
+                    help="git branch the dataset will be pushed to (goes into the README download commands)")
     ap.add_argument("--dry-run", action="store_true",
                     help="build index, coverage, excluded, readiness and README only; copy no trace")
     ap.add_argument("--docs", default=str(Path(__file__).resolve().parent.parent / "docs" / "dataset-v2.md"),
@@ -1083,7 +1095,7 @@ def main(argv=None) -> int:  # pragma: no cover - CLI
     try:
         srcs = build_sources(a.runs, a.manifest, a.results, a.extra_runs)
         r = package(srcs, Path(a.out), a.name, dry_run=a.dry_run, docs=Path(a.docs),
-                    log=lambda m: print(m, file=sys.stderr))
+                    branch_name=a.branch_name, log=lambda m: print(m, file=sys.stderr))
     except PackageError as e:
         print(f"PACKAGING FAILED: {e}", file=sys.stderr)
         return 1

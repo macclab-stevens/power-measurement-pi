@@ -546,14 +546,29 @@ def test_readme_contents(world, tmp_path):
         assert f"| `{c}` |" in text
 
 
+def test_readme_branch_name_and_perf_overhead(world, tmp_path):
+    runs, _, _ = world
+    out = tmp_path / "out"
+    r = package([src(runs)], out, "monsoon_v2_x", branch_name="dataset-2026-11-v2")
+    text = (out / "README.md").read_text()
+    assert "--branch dataset-2026-11-v2 --single-branch" in text and "<BRANCH>" not in text
+    assert not any("branch name" in t for t in r["todos"])
+    assert "Cost of the perf counters" in text and "-0.15 W" in text
+    out2 = tmp_path / "out2"
+    r2 = package([src(runs)], out2, "monsoon_v2_x")
+    assert "--branch <BRANCH>" in (out2 / "README.md").read_text()
+    assert any("branch name" in t for t in r2["todos"])
+
+
 def test_main_cli(world, tmp_path, capsys):
     runs, _, _ = world
     out = tmp_path / "out"
     rc = pkg.main(["--runs", str(runs), "--manifest", str(runs / "manifest.jsonl"), "--out", str(out),
-                   "--name", "n", "--dry-run", "--docs", str(tmp_path / "none.md")])
+                   "--name", "n", "--dry-run", "--branch-name", "b1", "--docs", str(tmp_path / "none.md")])
     assert rc == 0
     cap = capsys.readouterr().out
     assert "2 cells kept, 3 excluded" in cap and "(dry run)" in cap
+    assert "--branch b1 --single-branch" in (out / "README.md").read_text()
     rc = pkg.main(["--runs", str(runs), "--manifest", str(runs / "nope.jsonl"), "--out", str(out),
                    "--name", "n"])
     assert rc == 1
