@@ -51,6 +51,36 @@ def cmd_derive(args) -> int:
     return 0
 
 
+def cmd_qc(args) -> int:
+    import resource
+    import time
+    import data
+    import derive
+    import qc
+    import runlog
+    t0 = time.perf_counter()
+    cat = data.catalogue()
+    der = derive.derive_all(cat)
+    bounds = qc.bounds_from_cfg()
+    df = qc.run_qc(cat, der, bounds)
+    REPORTS.mkdir(exist_ok=True)
+    df.to_csv(REPORTS / "qc_cells.csv", index=False)
+    (REPORTS / "qc.md").write_text(qc.report_md(df, cat, bounds))
+    wall = time.perf_counter() - t0
+    rss_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0   # KiB on Linux
+    print(f"{len(df)} cells -> {REPORTS / 'qc_cells.csv'}, {REPORTS / 'qc.md'}")
+    print(f"wall time {wall:.1f} s, peak RSS {rss_mb:.0f} MB")
+    print(qc.rule_counts(df, cat).to_string())
+    print(qc.quantiles(df).to_string())
+    labels = df.attrs["phase_labels"]
+    print("phase labels (cells; distinct raw):", ", ".join(
+        f"{k!r}({v}; {df.attrs['phase_distinct'][k]})" for k, v in sorted(labels.items())))
+    print("unknown phase labels:", sorted(x for x in labels if not qc.is_known_phase(x)) or "none")
+    runlog.append({"command": "qc", "bounds": bounds, "n_cells": len(df), "n_include": int(df["include"].sum()),
+                   "n_primary": int(df["primary"].sum()), "wall_s": round(wall, 1), "peak_rss_mb": round(rss_mb)})
+    return 0
+
+
 def add_derive_args(p) -> None:
     p.add_argument("--force", action="store_true", help="ignore the cache and recompute")
 
@@ -60,6 +90,8 @@ COMMANDS = {
     "catalogue": ("write reports/catalogue.csv and print counts by source and family", cmd_catalogue, None),
     "derive": ("write the derive.parquet cache; print row counts and the worst raw vs derived.json "
                "difference", cmd_derive, add_derive_args),
+    "qc": ("apply data-quality rules Q1-Q6 to every cell; write reports/qc_cells.csv and reports/qc.md",
+           cmd_qc, None),
 }
 
 
