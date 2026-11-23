@@ -71,9 +71,19 @@ phase (idle, load_weights, warmup, forward, serve) and family (A, A-input, B, C,
 
 ## QC bounds
 
-Initial values in `analytics/config.toml` `[qc]`; final values recorded below after the QC run and
-before any model fit.
+Final values (2026-11-23, after the QC run over all 403 cells, before any model fit):
+`q1_ctx_frac_flag = 0.03`, `q2_max_residual_ms = 1.0`, `q3_slip_frac_flag = 0.01`,
+`q5_pv_rel_flag = 0.02`, `q6_sample_ratio_lo = 0.98`, `q6_sample_ratio_hi = 1.02`.
+Observed (min / p50 / p95 / max): max residual 0.085 / 0.172 / 0.259 / 0.756 ms; slip share of measured
+frames 0 / 0 / 0.034 / 0.105; sensor-read share of measured time 0 / 0.0103 / 0.0136 / 0.0213; sample
+ratio 0.99898 / 0.99999 / 1.00065 / 1.00491. All 403 cells are included and primary; no throttle or
+under-voltage bits were current in any cell (all non-zero words are the 0x50000 history bits).
 
 ## Amendment log
 
-(none yet)
+- 2026-11-23, QC bounds: `q1_ctx_frac_flag` 0.01 -> 0.03. Reason: every cell spends about 1 % of its
+  measured time in the Pi's 5 s sensor reads (p50 0.0103), so 0.01 flagged 57 % of cells and
+  discriminated nothing; 0.03 sits above the observed maximum and flags only anomalies. The sensor-read
+  samples stay in the energy (they are a real, uniform cost). Q1 is flag-only, so no cell changes
+  status. Q5 is uninformative on this data: `P_W` is computed as `V_V x I_A` in alignment, so the
+  discrepancy is exactly 0 in every cell; the rule is kept for future data.
