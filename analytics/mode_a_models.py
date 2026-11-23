@@ -214,12 +214,16 @@ class M1Ridge:
 
 
 class M2Trees:
-    """HistGradientBoostingRegressor on FEATURES + rig_nov, fitted to log(target)."""
+    """HistGradientBoostingRegressor on FEATURES + rig_nov, fitted to log(target). `seed` becomes the
+    estimator's random_state (default: the config.toml seed); a `random_state` in params wins."""
+
+    def __init__(self, seed: int | None = None):
+        self.seed = seed
 
     def fit(self, train, target, params=None):
         _check_target(target)
         y = _log_target(train, target)
-        p = {"random_state": settings.seed(), **(params or {})}
+        p = {"random_state": settings.seed() if self.seed is None else self.seed, **(params or {})}
         self.model_ = HistGradientBoostingRegressor(**p).fit(feature_matrix(train, ALL_FEATURES), y)
         self._fitted = True
         return self
@@ -234,6 +238,9 @@ class M3Factored:
     each part M1Ridge or M2Trees, fitted on latency_ms and mean_P_W of the same training rows."""
     PARTS = ("M1Ridge", "M2Trees")
 
+    def __init__(self, seed: int | None = None):
+        self.seed = seed   # handed to an M2Trees part
+
     def fit(self, train, target, params=None):
         if target != "energy_mJ":
             raise ValueError("M3Factored is only valid for target energy_mJ")
@@ -243,7 +250,8 @@ class M3Factored:
             spec = params.get(key)
             if not spec or spec.get("name") not in self.PARTS:
                 raise ValueError(f"M3Factored params[{key!r}] must name one of {self.PARTS}")
-            parts[key] = CANDIDATES[spec["name"]]().fit(train, tgt, spec.get("params") or {})
+            part = M2Trees(self.seed) if spec["name"] == "M2Trees" else CANDIDATES[spec["name"]]()
+            parts[key] = part.fit(train, tgt, spec.get("params") or {})
         self.latency_, self.power_ = parts["latency"], parts["power"]
         self._fitted = True
         return self

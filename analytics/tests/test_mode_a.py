@@ -169,6 +169,8 @@ def test_alien_model_is_flagged_and_normal_models_are_not():
     auto = res[res["candidate"] == "AUTO"]
     assert auto.loc[auto["base_model"] == "m5", "flagged"].all()
     assert (auto.loc[auto["base_model"] == "m5", "novelty"] > 10).all()
+    normal = auto[auto["base_model"] != "m5"]
+    assert len(normal) and not normal["flagged"].any()
     assert (auto["threshold"] >= 0).all()
 
 
@@ -203,6 +205,67 @@ def test_bad_folds_are_rejected():
         mode_a.run_split(t, [splits.Fold("X", "a", "c", keys[:5], keys[3:6])], "energy_mJ", 1, desc, grids=SMALL_GRIDS)
     with pytest.raises(ValueError):
         mode_a.run_split(t, [splits.Fold("X", "a", "c", keys[:5], ["nope"])], "energy_mJ", 1, desc, grids=SMALL_GRIDS)
+
+
+# ---- seed reaches the estimator -----------------------------------------------------------------
+@pytest.fixture
+def hgb_seeds(monkeypatch):
+    """Record the random_state of every HistGradientBoostingRegressor built by M2Trees."""
+    seen = []
+    real = mm.HistGradientBoostingRegressor
+
+    def spy(**kw):
+        seen.append(kw.get("random_state"))
+        return real(**kw)
+    monkeypatch.setattr(mm, "HistGradientBoostingRegressor", spy)
+    return seen
+
+
+def test_seed_reaches_m2_in_run_split_fit_final_and_learning_curve(hgb_seeds, tmp_path, monkeypatch):
+    monkeypatch.setenv("ANALYTICS_DATA", str(tmp_path))
+    assert settings.seed() != 7
+    t, desc = make_dataset(MODELS[:5])
+    mode_a.run_split(t, lomo(t)[:2], "energy_mJ", 7, desc, grids=SMALL_GRIDS)
+    assert hgb_seeds and set(hgb_seeds) == {7}                      # M2 and M3's M2 parts, inner and outer
+    hgb_seeds.clear()
+    model, _ = mode_a.fit_final(t, "M2Trees", "energy_mJ", 11, desc, grids=SMALL_GRIDS)
+    assert hgb_seeds and set(hgb_seeds) == {11} and model.model_.random_state == 11
+    hgb_seeds.clear()
+    mode_a.fit_final(t, "M3Factored", "energy_mJ", 13, desc, grids=SMALL_GRIDS)
+    assert hgb_seeds and set(hgb_seeds) == {13}
+    hgb_seeds.clear()
+    ty, dy = make_dataset(YOLO_MODELS, clocks=(1500, 2400), threads=(4,))
+    params = SMALL_GRIDS["M2Trees"][0]
+    mode_a.learning_curve(ty, "energy_mJ", 17, "M2Trees", params, dy, max_subsets=2)
+    assert hgb_seeds and set(hgb_seeds) == {17}
+
+
+def test_seed_default_for_a_bare_candidate_is_the_config_seed(hgb_seeds):
+    t, _ = make_dataset(MODELS[:4])
+    mm.M2Trees().fit(t, "energy_mJ", SMALL_GRIDS["M2Trees"][0])
+    assert hgb_seeds == [settings.seed()]
+
+
+def test_seed_leaves_results_unchanged_without_subsampling():
+    # HGB without early stopping or subsampling is deterministic: the seed changes nothing here
+    t, desc = make_dataset(MODELS[:5])
+    folds = lomo(t)[:2]
+    a = mode_a.run_split(t, folds, "energy_mJ", settings.seed(), desc, grids=SMALL_GRIDS)
+    b = mode_a.run_split(t, folds, "energy_mJ", 7, desc, grids=SMALL_GRIDS)
+    cols = [c for c in mode_a.OUT_COLS if c != "seed"]
+    pd.testing.assert_frame_equal(a[cols], b[cols], check_exact=True)
+
+
+# ---- n_resid ------------------------------------------------------------------------------------
+def test_n_resid_counts_the_finite_inner_residuals_behind_each_interval():
+    t, desc = make_dataset(MODELS[:5])
+    res = mode_a.run_split(t, lomo(t)[:2], "energy_mJ", 1, desc, grids=SMALL_GRIDS)
+    assert "n_resid" in res.columns and res["n_resid"].dtype.kind == "i"
+    for fold, g in res.groupby("fold"):
+        train = t[t["base_model"] != fold]
+        n_expect = len(train)   # leave-one-model-out inner folds cover every training row once
+        assert set(g["n_resid"]) == {n_expect}
+    assert (res["n_resid"] >= 2).all() and res["lo90"].notna().all()
 
 
 # ---- parallel determinism ---------------------------------------------------------------------
@@ -270,10 +333,9 @@ def test_real_data_one_slomo_fold_energy(real_data):
     t0 = time.perf_counter()
     res = mode_a.run_split(t, [fold], "energy_mJ", settings.seed(), desc, n_jobs=1)
     wall = time.perf_counter() - t0
-    print(f"real-data S-LOMO yolo11s energy: {wall:.1f} s")
+    print(f"real-data S-LOMO yolo11s energy: {wall:.1f} s")   # printed, not asserted: it depends on the machine
     assert len(res) == len(fold.test_keys) * 8
     assert res["y_pred"].notna().all() and (res["y_pred"] > 0).all()
-    assert wall < 120
 
 
 # ---- CLI --------------------------------------------------------------------------------------

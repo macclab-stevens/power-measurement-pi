@@ -35,16 +35,19 @@ CANDIDATES_BY_TARGET = {"energy_mJ": BASELINES + LEARNED + ["M3Factored"],
                         "latency_ms": BASELINES + LEARNED, "mean_P_W": BASELINES + LEARNED}
 AUTO_AMONG = {"energy_mJ": LEARNED + ["M3Factored"], "latency_ms": LEARNED, "mean_P_W": LEARNED}
 OUT_COLS = ["split", "fold", "similarity_class", "config_key", "base_model", "candidate", "target", "seed",
-            "y_true", "y_pred", "lo90", "hi90", "novelty", "flagged", "threshold", "params"]
+            "y_true", "y_pred", "lo90", "hi90", "novelty", "flagged", "threshold", "params", "n_resid"]
 
 
 def _json(p) -> str:
     return json.dumps(p, sort_keys=True)
 
 
-def _make(name: str, desc: pd.DataFrame):
+def _make(name: str, desc: pd.DataFrame, seed: int | None = None):
+    """A fresh candidate; `seed` reaches every HistGradientBoostingRegressor (M2, M3's M2 parts)."""
     cls = mm.CANDIDATES[name]
-    return cls(desc) if name == "B2NearestModel" else cls()
+    if name == "B2NearestModel":
+        return cls(desc)
+    return cls(seed) if name in ("M2Trees", "M3Factored") else cls()
 
 
 def _mdape(y, p) -> float:
@@ -68,9 +71,9 @@ def _check_table(t: pd.DataFrame) -> None:
 class _Search:
     """Inner-fold model selection over one training frame (the only data it can see)."""
 
-    def __init__(self, train_t: pd.DataFrame, desc: pd.DataFrame, grids: dict):
+    def __init__(self, train_t: pd.DataFrame, desc: pd.DataFrame, grids: dict, seed: int | None = None):
         _check_table(train_t)
-        self.desc, self.grids = desc, grids
+        self.desc, self.grids, self.seed = desc, grids, seed
         by = train_t.set_index("config_key", drop=False)
         self.folds = [(by.loc[tr].reset_index(drop=True), by.loc[va].reset_index(drop=True))
                       for tr, va in splits.inner_folds(train_t)]
@@ -83,7 +86,7 @@ class _Search:
         """Per inner fold predictions of one grid point (cached by candidate, point, target)."""
         key = (name, _json(params), target)
         if key not in self.cache:
-            self.cache[key] = [np.asarray(_make(name, self.desc).fit(tr, target, params).predict(va), float)
+            self.cache[key] = [np.asarray(_make(name, self.desc, self.seed).fit(tr, target, params).predict(va), float)
                                for tr, va in self.folds]
         return self.cache[key]
 
@@ -142,7 +145,7 @@ def _model_novelty(desc, model: str, train_models) -> float:
 def _run_fold(train_t, test_t, fold_info: tuple, target: str, seed: int, desc, grids: dict) -> pd.DataFrame:
     """One outer fold from its training and test frames (the search never sees `test_t`)."""
     split, fold, cls = fold_info
-    search = _Search(train_t, desc, grids)
+    search = _Search(train_t, desc, grids, seed)
     names = CANDIDATES_BY_TARGET[target]
     sel = {n: search.select(n, target) for n in names}
     auto = min(AUTO_AMONG[target], key=lambda n: sel[n]["mdape"])   # min keeps the first on ties
@@ -156,18 +159,20 @@ def _run_fold(train_t, test_t, fold_info: tuple, target: str, seed: int, desc, g
     nov = {m: _model_novelty(desc, m, train_models) for m in sorted(set(test_t["base_model"]))}
     novelty = test_t["base_model"].map(nov).to_numpy(float)
 
-    final = {n: np.asarray(_make(n, desc).fit(train_t, target, sel[n]["params"]).predict(test_t), float)
+    final = {n: np.asarray(_make(n, desc, seed).fit(train_t, target, sel[n]["params"]).predict(test_t), float)
              for n in names}   # one refit per candidate; AUTO reuses the chosen one
 
     def block(label, name, params):
         s, yhat = sel[name], final[name]
-        lo, hi = _interval(yhat, _residuals(truth, s["preds"]))
+        resid = _residuals(truth, s["preds"])
+        lo, hi = _interval(yhat, resid)
         shown = params if label == name else {"candidate": name, "params": params}
         return pd.DataFrame({
             "split": split, "fold": fold, "similarity_class": cls, "config_key": test_t["config_key"].to_numpy(),
             "base_model": test_t["base_model"].to_numpy(), "candidate": label, "target": target, "seed": seed,
             "y_true": test_t[target].to_numpy(float), "y_pred": yhat, "lo90": lo, "hi90": hi,
-            "novelty": novelty, "flagged": novelty > threshold, "threshold": threshold, "params": _json(shown)})
+            "novelty": novelty, "flagged": novelty > threshold, "threshold": threshold, "params": _json(shown),
+            "n_resid": int(resid.size)})
 
     parts = [block(n, n, sel[n]["params"]) for n in names]
     parts.append(block(AUTO, auto, sel[auto]["params"]))
@@ -199,13 +204,13 @@ def run_split(t: pd.DataFrame, folds: list, target: str, seed: int, desc: pd.Dat
 
 def fit_final(t: pd.DataFrame, candidate: str, target: str, seed: int, desc: pd.DataFrame, grids: dict | None = None):
     """Grid chosen by leave-one-model-out over all of `t`, refit on every row, pickled under
-    derived/models/. Returns (model, {"path", "sha256", "params"}). `seed` is recorded by the caller;
-    M2Trees derives its own from config.toml."""
+    derived/models/. Returns (model, {"path", "sha256", "params"}). `seed` is the random_state of every
+    HistGradientBoostingRegressor (selection and final fit)."""
     grids = grids if grids is not None else mm.GRIDS
     if candidate not in mm.CANDIDATES:
         raise ValueError(f"unknown candidate {candidate!r}")
-    params = _Search(t, desc, grids).select(candidate, target)["params"]
-    model = _make(candidate, desc).fit(t.reset_index(drop=True), target, params)
+    params = _Search(t, desc, grids, seed).select(candidate, target)["params"]
+    model = _make(candidate, desc, seed).fit(t.reset_index(drop=True), target, params)
     out = settings.derived_dir() / "models"
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"mode_a_{target}_{candidate}.pkl"
@@ -234,7 +239,7 @@ def learning_curve(t: pd.DataFrame, target: str, seed: int, candidate: str, para
                 combos = [combos[i] for i in sorted(rng.choice(len(combos), size=max_subsets, replace=False))]
             for sub in combos:
                 train = pd.concat([t[t["base_model"].isin(sub)], non_yolo], ignore_index=True)
-                yhat = _make(candidate, desc).fit(train, target, params or {}).predict(test)
+                yhat = _make(candidate, desc, seed).fit(train, target, params or {}).predict(test)
                 rows.append({"heldout": held, "k": k, "subset": ";".join(sub),
                              "mdape": evaluate.metrics(test[target].to_numpy(float), yhat)["mdape"]})
     return pd.DataFrame(rows, columns=["heldout", "k", "subset", "mdape"])
