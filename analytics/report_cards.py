@@ -114,8 +114,7 @@ def mode_a_card(a) -> str:
     L += _list("Limitations", [*limits_common(a), "Mode A trains on pinned-clock, fan-full cells; the deployment calculator adds governor, fan and soak "
                                "effects from single measured offsets (one soak per model, fan offsets from yolo11n).",
                                "Static features of INT8 and FP16 variants come from the FP32 base model; FP16 (one configuration) is unsupported."])
-    L += _hashes(a, f"Mode A models are trained on all {len(c)} configurations, grid chosen by leave-one-model-out",
-                 f"Table sha256 `{a.master.rec.get('table_sha256')}`. Split sha256: "
+    L += _hashes(a, f"Table sha256 `{a.master.rec.get('table_sha256')}`. Split sha256: "
                  + ", ".join(f"{s} `{r.rec.get('split_sha256')}`" for s, r in ((k[0], v) for k, v in a.ma.items() if k[1] == "energy_mJ")) + ".\n")
     return "\n".join(L).rstrip() + "\n"
 
@@ -127,10 +126,10 @@ def _frozen_l_limit(a) -> str:
     cells, wins = t["cells"].dropna().unique(), t["windows"].dropna().unique()
     return (f"{'The eight rungs are frozen' if not miss else f'{len(t)} rungs are frozen (not frozen: ' + ', '.join(miss) + ')'} "
             f"(`final-mode-l`): each was fitted once on {', '.join(str(int(x)) for x in cells)} cells ({', '.join(f'{int(x):,}' for x in wins)} windows) of "
-            "YOLO v8/11 models; non-YOLO models are an extrapolation the lockbox tests. A refit after the lockbox is measured is refused.")
+            "YOLO v8/11 models; non-YOLO models are an extrapolation the lockbox tests. A refit is refused from `lockbox-predict` onward (once `lockbox_predictions.csv` or `lockbox_frozen_models.json` exists), and always once lockbox cells exist.")
 
 
-def _hashes(a, what: str, tail: str) -> list:
+def _hashes(a, tail: str) -> list:
     """The `## Hashes and runs` section of both cards: every frozen model (Mode A primary and secondary, the eight Mode L
     rungs) from the run log, with sha256, parameters and run id."""
     ta, miss_a = rf.mode_a_frozen(a.recs, a.seed)
@@ -141,7 +140,8 @@ def _hashes(a, what: str, tail: str) -> list:
               "fit commands refuse to run once `lockbox_predictions.csv` or `lockbox_frozen_models.json` exists. The `file` column compares the pickle "
               "on the machine that built this card with the recorded hash.")
     return ["## Hashes and runs\n", frozen + "\n",
-            cap("frozen Mode A models", f"n = {len(ta)} frozen Mode A models", f"{what}. Roles: `primary` is the AUTO-final candidate of the target "
+            cap("frozen Mode A models", f"n = {len(ta)} frozen Mode A models", f"`mode-a-extras` and `final-mode-a-secondary`: trained on all {len(a.configs)} Mode A configurations, grid chosen by "
+                f"leave-one-model-out. Roles: `primary` is the AUTO-final candidate of the target "
                 "(`mode-a-extras`), `secondary` the pre-declared extras (`final-mode-a-secondary`). {}".format(rf.missing_text(miss_a)), ta["run_id"]),
             ew.md_table(ta) + "\n",
             cap("frozen Mode L rungs", f"n = {len(tl_)} frozen Mode L rungs", "`final-mode-l`: grid by leave-one-YOLO-model-out, refit on every QC-primary "
@@ -191,8 +191,7 @@ def mode_l_card(a) -> str:
           ew.md_table(ph) + "\n"]
     L += _list("Limitations", [*limits_common(a), *report_l.LIMITS,
                                _frozen_l_limit(a)])
-    L += _hashes(a, "Mode L rungs are fitted on every QC-primary counter cell of the YOLO base models",
-                 f"Evaluation: Mode L run `{ml['run_id']}` (parts lomo, pmic_v1, probe), seed {ml['rec'].get('seed')}, commit "
+    L += _hashes(a, f"Evaluation: Mode L run `{ml['run_id']}` (parts lomo, pmic_v1, probe), seed {ml['rec'].get('seed')}, commit "
                  f"`{str(ml['rec'].get('commit', ''))[:10]}`, data hash `{str(ml['rec'].get('data_hash', ''))[:16]}`. Probe mode used Mode A run(s) "
                  f"{', '.join('`' + str(x) + '`' for x in sorted({str(x) for x in ml['probe']['mode_a_run_id'].dropna()})) or 'none'}.\n")
     return "\n".join(L).rstrip() + "\n"

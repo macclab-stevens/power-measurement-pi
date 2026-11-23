@@ -23,6 +23,19 @@ ALLOW_FLAG = "--allow-code-change"
 
 # ------------------------------------------------------------------ code pin
 
+DEPENDENCY_FILES = ("uv.lock", "pyproject.toml")     # a library upgrade can change how a pickle loads or predicts
+
+
+def static_csv_path(static_dir, model: str, imgsz: int) -> Path:
+    """The static-features CSV of a configuration: <static_dir>/<model>_<imgsz>.csv (`tools/static_features.py` writes it)."""
+    return Path(static_dir) / f"{model}_{imgsz}.csv"
+
+
+def dependency_files() -> dict:
+    """{`analytics/uv.lock`, `analytics/pyproject.toml`: sha256}: the library versions the frozen pickles were made and are read with."""
+    return {f"analytics/{n}": runlog.file_hash(settings.HERE / n) for n in DEPENDENCY_FILES}
+
+
 def config_sha256() -> str:
     return runlog.file_hash(settings.HERE / "config.toml")
 
@@ -35,7 +48,8 @@ def code_pin() -> dict:
     except (OSError, subprocess.CalledProcessError):
         commit = "unknown"
     files = runlog.code_files()
-    return {"commit": commit, "files": files, "config_toml_sha256": config_sha256(), "code_sha256": runlog.code_sha256(files)}
+    return {"commit": commit, "files": files, "config_toml_sha256": config_sha256(),
+            "dependency_files": dependency_files(), "code_sha256": runlog.code_sha256(files)}
 
 
 def commit_relation(old: str) -> str:
@@ -56,16 +70,18 @@ def check_code(pin: dict | None, allow: bool) -> dict:
     """Compare the manifest's code pin with the code now. Returns {"changed_files": [...], "config_changed": bool, "commit": str,
     "relation": str}; a mismatch (a module changed, added or removed, config.toml changed, or the recorded commit is not an
     ancestor of HEAD) raises LockboxError unless `allow`, in which case the caller labels its outputs exploratory."""
-    if not pin or "files" not in pin:
-        raise LockboxError("the frozen-models manifest has no code pin (`code`), so the scoring code cannot be verified; it is written by "
+    if not pin or "files" not in pin or "dependency_files" not in pin:
+        raise LockboxError("the frozen-models manifest has no code pin (`code`), so the scoring code and the dependency pins (uv.lock, pyproject.toml) cannot be verified; it is written by "
                            f"`lockbox-predict`. {ALLOW_FLAG} scores anyway and labels the result exploratory")
     now = runlog.code_files()
     old = pin["files"]
     changed = sorted(k for k in set(now) | set(old) if now.get(k) != old.get(k))
     cfg = config_sha256() != pin.get("config_toml_sha256")
+    deps_now, deps_old = dependency_files(), pin["dependency_files"]
+    deps = sorted(k for k in set(deps_now) | set(deps_old) if deps_now.get(k) != deps_old.get(k))
     rel = commit_relation(pin.get("commit"))
-    out = {"changed_files": changed + (["analytics/config.toml"] if cfg else []), "config_changed": cfg, "commit": pin.get("commit"), "relation": rel}
-    bad = bool(changed) or cfg or rel == "not an ancestor of HEAD"
+    out = {"changed_files": changed + (["analytics/config.toml"] if cfg else []) + deps, "config_changed": cfg, "commit": pin.get("commit"), "relation": rel}
+    bad = bool(changed) or cfg or bool(deps) or rel == "not an ancestor of HEAD"
     if bad and not allow:
         why = []
         if out["changed_files"]:
@@ -102,7 +118,7 @@ def check_static(cat_l: pd.DataFrame, qc_l: pd.DataFrame, pred: pd.DataFrame, st
     """For every QC-primary lockbox cell whose (model, imgsz) was predicted: the static CSV in `static_dir` must be the file whose
     sha256 the predictions recorded, and the cell's own `layer_table.csv` (fp32, batch 1: `check_design`) must give the same
     `static.features_from_layer_table` as that CSV. Raises LockboxError naming the cell and the features that differ.
-    Returns {"checked": n cells, "configs": n configurations, "unpredicted": [cell ids of configurations nobody predicted]}."""
+    Raises LockboxError if no cell was checked at all (a naming mismatch would otherwise pass silently). Returns {"checked": n cells, "configs": n configurations, "unpredicted": [cell ids of configurations nobody predicted]}."""
     rec = pred.drop_duplicates(["model", "imgsz"]).set_index(["model", "imgsz"])["static_csv_sha256"]
     ok = set(qc_l.loc[qc_l["primary"].astype(bool), "cell_id"])
     cells = cat_l[cat_l["cell_id"].isin(ok)]
@@ -113,7 +129,7 @@ def check_static(cat_l: pd.DataFrame, qc_l: pd.DataFrame, pred: pd.DataFrame, st
             unpredicted.append(r["cell_id"])
             continue
         if key not in feats:
-            csv = Path(static_dir) / f"{key[0]}_{key[1]}.csv"
+            csv = static_csv_path(static_dir, *key)
             if not csv.is_file():
                 raise LockboxError(f"static features file {csv} is missing; the predictions recorded its sha256 {rec[key]}")
             got = runlog.file_hash(csv)
@@ -128,6 +144,11 @@ def check_static(cat_l: pd.DataFrame, qc_l: pd.DataFrame, pred: pd.DataFrame, st
         if diff:
             bad.append(f"lockbox cell {r['cell_id']} ({key[0]}:{key[1]}): " + ", ".join(f"{k} (predicted from {a:.10g}, measured {b:.10g})" for k, a, b in diff))
         checked += 1
+    if not checked:
+        raise LockboxError(f"no lockbox cell was checked against the static features ({len(cells)} QC-primary lockbox cells, "
+                           f"{len(unpredicted)} of a configuration with no prediction; predicted: "
+                           f"{', '.join(f'{m}:{s}' for m, s in rec.index)}): a naming or image-size mismatch between the measured "
+                           f"cells and `lockbox-predict --config`, or no QC-primary cell")
     if bad:
         raise LockboxError("the measured model is not the one that was predicted; " + "; ".join(bad))
     return {"checked": checked, "configs": len(feats), "unpredicted": unpredicted}

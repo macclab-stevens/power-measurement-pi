@@ -1,5 +1,6 @@
 """Scoring code pinned at lockbox-predict, the measured model checked against the predicted one, and the idle table's hash."""
 import json
+from pathlib import Path
 import shutil
 
 import numpy as np
@@ -266,3 +267,50 @@ def test_lockbox_score_cli_arguments():
     assert a.static_dir.endswith("analytics/lockbox_static") and a.allow_code_change is False
     b = cli.build_parser().parse_args(["lockbox-score", "--static-dir", "d", "--allow-code-change"])
     assert b.static_dir == "d" and b.allow_code_change is True
+
+
+# ------------------------------------------------------------------ follow-up: dependency pin, nothing checked, caption
+
+def test_manifest_pins_uv_lock_and_pyproject(env):
+    paths, _, _ = env
+    code = json.loads((paths.out_dir / lb.MANIFEST).read_text())["code"]
+    assert code["dependency_files"] == {"analytics/uv.lock": runlog.file_hash(settings.HERE / "uv.lock"),
+                                        "analytics/pyproject.toml": runlog.file_hash(settings.HERE / "pyproject.toml")}
+
+
+@pytest.mark.parametrize("name", ["analytics/uv.lock", "analytics/pyproject.toml"])
+def test_a_changed_dependency_file_refuses_scoring_unless_allowed(env, monkeypatch, name):
+    real = lc.dependency_files()
+    monkeypatch.setattr(lc, "dependency_files", lambda: {**real, name: "7" * 64})
+    with pytest.raises(lb.LockboxError, match=name):
+        score(env)
+    paths, kw, _ = env
+    out = ls.run_score(paths, MASTER, **kw, allow_code_change=True)
+    assert out["rec"]["exploratory"] is True and out["rec"]["changed_files"] == [name]
+    assert name in out["report"].read_text().split("## Provenance")[0]
+
+
+def test_a_manifest_pin_without_dependency_files_refuses(env):
+    paths = env[0]
+    man = paths.out_dir / lb.MANIFEST
+    m = json.loads(man.read_text())
+    m["code"].pop("dependency_files")
+    man.write_text(json.dumps(m))
+    with pytest.raises(lb.LockboxError, match="uv.lock"):
+        score(env)
+
+
+def test_static_check_refuses_when_no_cell_was_checked(env):
+    paths, kw, _ = env
+    cat = kw["cat"].copy()
+    cat.loc[cat["source"] == "lockbox", "imgsz"] = 999            # a naming mismatch: nothing matches a prediction
+    pred = pd.read_csv(paths.out_dir / lb.PREDICTIONS_CSV)
+    cat_l = cat[cat["source"] == "lockbox"]
+    with pytest.raises(lb.LockboxError, match="no lockbox cell was checked"):
+        lc.check_static(cat_l, kw["qc_l"], pred, kw["static_dir"])
+    with pytest.raises(lb.LockboxError, match="no lockbox cell was checked"):
+        lc.check_static(kw["cat"][kw["cat"]["source"] == "lockbox"], kw["qc_l"].assign(primary=False), pred, kw["static_dir"])
+
+
+def test_static_csv_path_is_the_one_lockbox_function():
+    assert lb.static_csv_path("d", "yolo12n", 640) == lc.static_csv_path("d", "yolo12n", 640) == Path("d") / "yolo12n_640.csv"

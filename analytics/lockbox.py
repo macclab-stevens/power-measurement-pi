@@ -53,8 +53,7 @@ def parse_config(spec: str) -> tuple:
     return model, int(size)
 
 
-def static_csv_path(static_dir, model: str, imgsz: int) -> Path:
-    return Path(static_dir) / f"{model}_{imgsz}.csv"
+static_csv_path = checks.static_csv_path
 
 
 def feature_rows(configs: list, static_dir) -> tuple:

@@ -151,6 +151,18 @@ def test_mode_a_card_lists_rig_nov_among_the_features_and_mode_l_card_says_the_r
     assert "eight rungs are frozen" in lim and "161 cells" in lim
 
 
+def test_each_cards_frozen_table_captions_say_what_their_own_models_are(built):
+    _, files = built
+    for name in ("model_card_mode_a.md", "model_card_mode_l.md"):
+        sec = files[name].split("## Hashes and runs")[1]
+        a_cap = next(ln for ln in sec.splitlines() if "frozen Mode A models" in ln and ln.startswith("*Split"))
+        l_cap = next(ln for ln in sec.splitlines() if "frozen Mode L rungs" in ln and ln.startswith("*Split"))
+        assert "Mode L rungs are fitted" not in a_cap and "Roles:" in a_cap and f"trained on all {len(make_configs())} Mode A configurations" in a_cap
+        assert "final-mode-l" in l_cap and "Roles:" not in l_cap
+    lim = files["model_card_mode_l.md"].split("## Limitations")[1].split("## Hashes")[0]
+    assert "refused from `lockbox-predict` onward" in lim and "after the lockbox is measured" not in lim
+
+
 def test_a_missing_frozen_model_is_named_in_the_card(tmp_path):
     paths = make_inputs(tmp_path)
     lines = [ln for ln in paths.runs_log.read_text().splitlines() if '"rung": "L4-trees"' not in ln]
