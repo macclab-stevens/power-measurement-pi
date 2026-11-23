@@ -225,10 +225,12 @@ def cmd_deploy_validate(args) -> int:
 
 
 def _energy_check(df, cat) -> str:
-    """Kept-window energy vs the trace energy over the same span, for the first QC-free v2 counter cell."""
+    """Kept-window energy vs an independent per-window recomputation from the trace (finite mean x
+    n_samples x dt, the same non-finite handling as windows._label), for one counter cell."""
     import json
     from pathlib import Path
     import numpy as np
+    import pandas as pd
     import data
     cid = "yolo11n_480_t4_2400_r00"
     cid = cid if cid in set(df["cell_id"]) else df["cell_id"].iloc[0]
@@ -236,11 +238,16 @@ def _energy_check(df, cat) -> str:
     w = df[df["cell_id"] == cid]
     tr = data.read_trace(cell, ["t_pi_ns", "P_W"])
     dt = 1.0 / json.loads((cell / "alignment.json").read_text())["slip_rate_hz"]
-    t = tr["t_pi_ns"].to_numpy()
-    m = (t > w["t_start_ns"].iloc[0]) & (t <= w["t_end_ns"].iloc[-1])
-    trace_e = float(np.nansum(tr["P_W"].to_numpy(dtype=float)[m]) * dt * 1000)
+    t, P = tr["t_pi_ns"].to_numpy(), tr["P_W"].to_numpy(dtype=float)
+    ends, starts = w["t_end_ns"].to_numpy(), w["t_start_ns"].to_numpy()
+    wid = np.searchsorted(ends, t, side="left")
+    ok = wid < len(ends)
+    ok[ok] = t[ok] > starts[wid[ok]]
+    g = pd.DataFrame({"w": wid[ok], "P": P[ok]}).groupby("w")["P"]
+    trace_e = float((g.mean() * g.size() * dt * 1000).sum())     # mean skips NaN; imputed for dropouts
     kept = float(w["E_mJ"].sum())
-    return f"{cid}: window E sum {kept:.1f} mJ, trace E {trace_e:.1f} mJ, rel diff {abs(kept - trace_e) / trace_e:.3e}"
+    return (f"{cid}: window E sum {kept:.1f} mJ, trace E {trace_e:.1f} mJ, rel diff "
+            f"{abs(kept - trace_e) / trace_e:.3e} ({int((~np.isfinite(P)).sum())} non-finite samples)")
 
 
 def cmd_windows(args) -> int:
@@ -266,6 +273,9 @@ def cmd_windows(args) -> int:
     by = w.groupby("phase")["counted"].agg(counted="sum", n="size")
     by["not_counted"] = by["n"] - by["counted"]
     print(by.sort_values("n", ascending=False).head(12)[["counted", "not_counted", "n"]].to_string())
+    print(f"PMIC read availability fallbacks (t_avail < t_read): windows cells {a.get('pmic_avail_fallback')}, "
+          f"pmic cells {p.attrs.get('pmic_avail_fallback')}")
+    print(f"min pmic_age_s {w['pmic_age_s'].min():.6f}, NaN pmic_age_s {int(w['pmic_age_s'].isna().sum())}")
     print(f"PMIC pairs per cell (pairs: n windows-cells): {a.get('pmic_pairs')}; pmic {p.attrs.get('pmic_pairs')}")
     print(f"wall time {wall:.1f} s, peak RSS {rss_mb:.0f} MB")
     print(_energy_check(w, cat))

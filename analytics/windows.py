@@ -6,7 +6,13 @@ counters.csv / sysfs.csv / context.csv with an explicit as-of rule:
     on the full interval sequence before any window is dropped, so a lag is always "the previous
     counter interval");
   * sysfs: latest row with t_real_ns <= t_end_ns;
-  * PMIC: latest context read with t0_real_ns + t_ms * 1e6 <= t_end_ns.
+  * PMIC: latest context read whose availability time t_avail <= t_end_ns. context.csv `t_ms` is taken
+    BEFORE the read starts (src/powersampler.py: _now(), then vcgencmd calls and the full dump, then a
+    5 s sleep), so a read is only known once it finished. Reads are dated by availability: for a read
+    with a successor, t_avail_i = t_{i+1} - 5000 ms (the loop sleeps 5 s after a read finishes); the
+    last read of a cell gets t_ms + 500 ms (observed read durations are 37..494 ms); if the computed
+    t_avail_i < t_i (clock oddity) it is t_i + 500 ms and the event is counted in
+    attrs["pmic_avail_fallback"]. t_i is t0_real_ns + t_ms * 1e6. pmic_age_s = (t_end - t_avail) / 1e9.
 counters.csv is already offset-corrected to the Pi clock (the perf start offset is applied by the
 harness), so nothing is shifted here. The label (P_W, E_mJ, phase) is the only thing read from the
 trace; the trace's own ctr_* / sys_* columns are never used.
@@ -32,6 +38,7 @@ import logging
 import os
 import re
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -59,10 +66,12 @@ WINDOW_COLS = (
      "stall_frac", "llc_mpki", "ctx_sw_rate", "pf_rate"]
     + [f"{c}_l{k}" for c in LAG_COLS for k in LAGS]
     + ["pct_min"] + SYSFS_COLS + ["pmic_W", "pmic_age_s", "cpu_key", "fan_mode", "governor"])
-PMIC_COLS = ["cell_id", "t_start_ns", "t_end_ns", "dur_s", "P_W", "E_mJ", "phase", "pmic_W",
+PMIC_COLS = ["cell_id", "t_read_ns", "t_start_ns", "t_end_ns", "dur_s", "P_W", "E_mJ", "phase", "pmic_W",
              "cpu_key", "fan_mode", "governor"]
 _RE_A = re.compile(r"^rail_(.+)_A current\(\d+\)$")
 _RE_V = re.compile(r"^rail_(.+)_V volt\(\d+\)$")
+CONTEXT_PERIOD_NS = 5_000_000_000   # src/powersampler.py CONTEXT_PERIOD_S: sleep after each read finishes
+READ_MARGIN_NS = 500_000_000        # availability margin after a read's t_ms (max observed duration 494 ms)
 NAN = float("nan")
 
 
@@ -183,11 +192,36 @@ def _sysfs_asof(cell, t_end):
     return out
 
 
-def pmic_reads(cell, meta: dict):
-    """(read times ns int64, pmic_W per read, n paired rails) from context.csv, or None if absent.
+def read_availability(t_read: np.ndarray) -> tuple[np.ndarray, int]:
+    """(t_avail ns, n_fallback) for sorted read start times (see the module docstring).
+
+    t_avail_i = t_{i+1} - 5000 ms, or t_i + 500 ms when that is earlier than t_i (counted) and for the
+    last read. Forced non-decreasing so it can be searched."""
+    t = np.asarray(t_read, dtype=np.int64)
+    avail = t + READ_MARGIN_NS
+    n_fallback = 0
+    if len(t) > 1:
+        cand = t[1:] - CONTEXT_PERIOD_NS
+        bad = cand < t[:-1]
+        avail[:-1] = np.where(bad, t[:-1] + READ_MARGIN_NS, cand)
+        n_fallback = int(bad.sum())
+    return np.maximum.accumulate(avail), n_fallback
+
+
+class PmicReads(NamedTuple):
+    t_read: np.ndarray    # t0_real_ns + t_ms * 1e6, ns (start of the read)
+    t_avail: np.ndarray   # when the read finished and is usable, ns
+    pmic_W: np.ndarray    # sum of current x voltage over the paired rails, per read
+    n_pairs: int
+    n_fallback: int
+
+
+def pmic_reads(cell, meta: dict) -> PmicReads | None:
+    """PMIC reads of context.csv sorted by time, or None if the cell has none.
 
     Rails are paired by name: `rail_<NAME>_A current(n)` with `rail_<NAME>_V volt(m)`; rails present
-    on only one side are ignored. Read time = t0_real_ns + t_ms * 1e6 (Pi clock)."""
+    on only one side are ignored. Read start = t0_real_ns + t_ms * 1e6 (Pi clock); availability time
+    from read_availability."""
     cx = data.read_csv_opt(cell, "context.csv")
     if cx is None or cx.empty or meta.get("t0_real_ns") is None:
         return None
@@ -199,7 +233,9 @@ def pmic_reads(cell, meta: dict):
         w = w + cx[amps[nm]].to_numpy(dtype=np.float64) * cx[volts[nm]].to_numpy(dtype=np.float64)
     t = int(meta["t0_real_ns"]) + np.round(cx["t_ms"].to_numpy(dtype=np.float64) * 1e6).astype(np.int64)
     o = np.argsort(t, kind="stable")
-    return t[o], w[o], len(names)
+    t, w = t[o], w[o]
+    avail, n_fb = read_availability(t)
+    return PmicReads(t, avail, w, len(names), n_fb)
 
 
 # ------------------------------------------------------------------ counter features
@@ -276,11 +312,11 @@ def cell_windows(cell, meta: dict) -> pd.DataFrame | None:
     df["pmic_W"], df["pmic_age_s"] = NAN, NAN
     n_pairs = 0
     if pm is not None:
-        rt, rw, n_pairs = pm
-        idx = asof_index(rt, ends)
+        n_pairs = pm.n_pairs
+        idx = asof_index(pm.t_avail, ends)          # latest read already finished at t_end
         ok, j = idx >= 0, np.maximum(idx, 0)
-        df["pmic_W"] = np.where(ok, rw[j], NAN)
-        df["pmic_age_s"] = np.where(ok, (ends - rt[j]) / 1e9, NAN)
+        df["pmic_W"] = np.where(ok, pm.pmic_W[j], NAN)
+        df["pmic_age_s"] = np.where(ok, (ends - pm.t_avail[j]) / 1e9, NAN)
     for k, v in settings_of(meta).items():
         df[k] = v
 
@@ -289,33 +325,35 @@ def cell_windows(cell, meta: dict) -> pd.DataFrame | None:
     df = df[keep][WINDOW_COLS].reset_index(drop=True)
     df.attrs.update(dropped=int((~keep).sum()), guards=int(gk.any(axis=1).sum()),
                     guards_by_feature={c: int(gk[c].sum()) for c in GUARDED}, pmic_pairs=n_pairs,
-                    dt_s=dt_s, n_intervals=len(ctr), not_counted=int((df["counted"] == 0).sum()))
+                    pmic_avail_fallback=0 if pm is None else pm.n_fallback, dt_s=dt_s, n_intervals=len(ctr), not_counted=int((df["counted"] == 0).sum()))
     return df
 
 
 def pmic_windows(cell, meta: dict) -> pd.DataFrame:
-    """One row per pair of consecutive context reads [t_i, t_{i+1}) with the trace mean power, the
-    energy, the majority phase and the PMIC power of read i (known at the window start). Empty frame
-    if the cell has no context reads. Works for v1 and v2 cells."""
+    """One row per pair of consecutive PMIC reads: window i is [t_avail_i, t_avail_{i+1}) with the
+    trace mean power, the energy, the majority phase and the PMIC power of read i (finished at the
+    window start, so a causal feature). t_start_ns / t_end_ns are the availability bounds and
+    t_read_ns is the raw t_ms-based start of read i. The last read has no successor and no window.
+    Empty frame if the cell has fewer than 2 reads. Works for v1 and v2 cells."""
     cell = Path(cell)
     pm = pmic_reads(cell, meta)
     out = pd.DataFrame(columns=PMIC_COLS)
-    if pm is None or len(pm[0]) < 2:
-        out.attrs["pmic_pairs"] = 0 if pm is None else pm[2]
+    if pm is None or len(pm.t_read) < 2:
+        out.attrs.update(pmic_pairs=0 if pm is None else pm.n_pairs, pmic_avail_fallback=0, empty=0)
         return out
-    rt, rw, n_pairs = pm
+    ta = pm.t_avail
     dt_s = sample_dt_s(cell, meta)
     t, P, codes, names = _read_trace(cell)
-    lo, hi = np.searchsorted(t, rt[:-1], side="left"), np.searchsorted(t, rt[1:], side="left")
+    lo, hi = np.searchsorted(t, ta[:-1], side="left"), np.searchsorted(t, ta[1:], side="left")
     n, mean, energy, phase, _ = _label(t, P, codes, names, lo, hi, dt_s)
     keep = n > 0
-    df = pd.DataFrame({"cell_id": cell.name, "t_start_ns": rt[:-1], "t_end_ns": rt[1:],
-                       "dur_s": (rt[1:] - rt[:-1]) / 1e9, "P_W": mean, "E_mJ": energy, "phase": phase,
-                       "pmic_W": rw[:-1]})
+    df = pd.DataFrame({"cell_id": cell.name, "t_read_ns": pm.t_read[:-1], "t_start_ns": ta[:-1],
+                       "t_end_ns": ta[1:], "dur_s": (ta[1:] - ta[:-1]) / 1e9, "P_W": mean,
+                       "E_mJ": energy, "phase": phase, "pmic_W": pm.pmic_W[:-1]})
     for k, v in settings_of(meta).items():
         df[k] = v
     df = df[keep][PMIC_COLS].reset_index(drop=True)
-    df.attrs.update(pmic_pairs=n_pairs, empty=int((~keep).sum()))
+    df.attrs.update(pmic_pairs=pm.n_pairs, pmic_avail_fallback=pm.n_fallback, empty=int((~keep).sum()))
     return df
 
 
@@ -370,7 +408,8 @@ def _build(cat: pd.DataFrame, fn, cache_name: str, force: bool, columns: list[st
         if hit is not None:
             return hit
     parts, attrs = [], {"dropped": 0, "guards": 0, "guards_by_feature": {c: 0 for c in GUARDED},
-                        "pmic_pairs": {}, "n_cells": 0, "n_intervals": 0, "empty": 0, "not_counted": 0}
+                        "pmic_pairs": {}, "n_cells": 0, "n_intervals": 0, "empty": 0, "not_counted": 0,
+                        "pmic_avail_fallback": 0}
     for _, row in cat.iterrows():           # one cell at a time: only that cell's trace is in memory
         cell = Path(row["path"])
         df = fn(cell, data.read_meta(cell))
@@ -385,6 +424,7 @@ def _build(cat: pd.DataFrame, fn, cache_name: str, force: bool, columns: list[st
         attrs["n_intervals"] += a.get("n_intervals", 0)
         attrs["empty"] += a.get("empty", 0)
         attrs["not_counted"] += a.get("not_counted", 0)
+        attrs["pmic_avail_fallback"] += a.get("pmic_avail_fallback", 0)
         for c, v in a.get("guards_by_feature", {}).items():
             attrs["guards_by_feature"][c] += v
         k = str(a.get("pmic_pairs", 0))
