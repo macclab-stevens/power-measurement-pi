@@ -193,6 +193,37 @@ def cmd_mode_a(args) -> int:
     return 0
 
 
+def cmd_deploy_validate(args) -> int:
+    import data
+    import derive
+    import pandas as pd
+    import deploy
+    import runlog
+    qc_path = REPORTS / "qc_cells.csv"
+    if not qc_path.is_file():
+        print(f"error: {qc_path} is missing; run `uv run python cli.py qc` first", file=sys.stderr)
+        return 1
+    try:
+        preds = deploy.load_mode_a_preds()
+    except FileNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    cat = data.catalogue()
+    v = deploy.validate(cat, derive.derive_all(cat), pd.read_csv(qc_path), preds)
+    REPORTS.mkdir(exist_ok=True)
+    out = REPORTS / "deploy_validation.csv"
+    v.to_csv(out, index=False)
+    print(f"{len(v)} rows from {len(preds)} held-out predictions -> {out}")
+    summ = v.groupby(["case", "phase"])["ape"].agg(n="size", median="median", max="max")
+    print(summ.to_string())
+    print("skipped (no prediction):", v.attrs["skipped"] or "none")
+    print("fan offsets:", v.attrs["fan_offsets"])
+    print("soak factors (leave-one-soak-out):", v.attrs["soak_factors"])
+    runlog.append({"command": "deploy-validate", "n_rows": len(v), "skipped": v.attrs["skipped"],
+                   "median_ape": {f"{c}/{p}": float(r["median"]) for (c, p), r in summ.iterrows()}})
+    return 0
+
+
 def add_derive_args(p) -> None:
     p.add_argument("--force", action="store_true", help="ignore the cache and recompute")
 
@@ -217,6 +248,8 @@ COMMANDS = {
                cmd_splits, None),
     "mode-a": ("nested Mode A evaluation per split and target -> derived/mode_a/<run_id>.parquet and runs.jsonl",
                cmd_mode_a, add_mode_a_args),
+    "deploy-validate": ("validate the deployment calculator on serve, ondemand, fan and soak cells using the "
+                        "latest S-LOMO Mode A runs -> reports/deploy_validation.csv", cmd_deploy_validate, None),
 }
 
 
