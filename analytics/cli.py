@@ -224,6 +224,40 @@ def cmd_deploy_validate(args) -> int:
     return 0
 
 
+def cmd_mode_l(args) -> int:
+    import data
+    import derive
+    import pandas as pd
+    import deploy
+    import mode_l
+    import mode_l_models
+    import windows
+    qc_path = REPORTS / "qc_cells.csv"
+    if not qc_path.is_file():
+        print(f"error: {qc_path} is missing; run `uv run python cli.py qc` first", file=sys.stderr)
+        return 1
+    seed = args.seed if args.seed is not None else settings.seed()
+    cat = data.catalogue()
+    try:
+        preds = deploy.load_mode_a_preds()
+    except FileNotFoundError as exc:
+        print(f"note: probe mode skipped, {exc}", file=sys.stderr)
+        preds = None
+    rungs = mode_l_models.default_rungs() if not args.smoke else mode_l_models.first_point(
+        mode_l_models.default_rungs())
+    out = mode_l.run_all(windows.build_windows(cat), windows.build_pmic_windows(cat), cat,
+                         derive.derive_all(cat), pd.read_csv(qc_path), seed=seed, n_jobs=args.n_jobs,
+                         mode_a_pred=preds, out_dir=settings.derived_dir() / "mode_l", rungs=rungs,
+                         folds=args.fold)
+    for r, m in out["metrics"].items():
+        print(f"{r}: whole-cell MdAPE {m['mdape']:.4f}, bias {m['bias_pct']:+.4f}, "
+              f"1 s {m['median_ape_1s']:.3f}, 10 s {m['median_ape_10s']:.3f}")
+    print(f"{out['wall_s']:.0f} s -> {settings.derived_dir() / 'mode_l' / (out['run_id'] + '.parquet')}")
+    print("probe skipped (no Mode A S-LOMO predictions)" if out["probe_skipped"]
+          else f"probe: {len(out['probe'])} rows")
+    return 0
+
+
 def _energy_check(df, cat) -> str:
     """Kept-window energy vs an independent per-window recomputation from the trace (finite mean x
     n_samples x dt, the same non-finite handling as windows._label), for one counter cell."""
@@ -320,6 +354,13 @@ def add_mode_a_args(p) -> None:
     p.add_argument("--n-jobs", type=int, default=2, help="outer folds in parallel (default 2)")
 
 
+def add_mode_l_args(p) -> None:
+    p.add_argument("--seed", type=int, help="default: the config.toml seed")
+    p.add_argument("--n-jobs", type=int, default=2, help="outer folds in parallel (default 2)")
+    p.add_argument("--fold", action="append", help="hold out only this base model (repeatable; default all)")
+    p.add_argument("--smoke", action="store_true", help="first grid point of every rung only")
+
+
 # name -> (help, handler, optional function adding arguments to the subparser)
 COMMANDS = {
     "catalogue": ("write reports/catalogue.csv and print counts by source and family", cmd_catalogue, None),
@@ -337,6 +378,8 @@ COMMANDS = {
                         "latest S-LOMO Mode A runs -> reports/deploy_validation.csv", cmd_deploy_validate, None),
     "windows": ("build derived/windows.parquet (100 ms counter windows) and derived/pmic_windows.parquet "
                 "(5 s PMIC windows); print drop, guard and memory figures", cmd_windows, add_derive_args),
+    "mode-l": ("Mode L ladder (leave one YOLO model out), PMIC-only check and probe mode -> "
+               "derived/mode_l/<run_id>*.parquet and runs.jsonl; needs qc_cells.csv", cmd_mode_l, add_mode_l_args),
     "eda": ("write reports/eda.md (sections 1-10: configuration level plus the trace-level sections 6-8 spliced in) and "
             "reports/fig/eda_*.png; needs qc_cells.csv and mode_a_configs.csv", cmd_eda, None),
 }
