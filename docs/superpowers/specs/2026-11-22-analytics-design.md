@@ -260,16 +260,20 @@ Concurrency cells are described only.
 
 ### 7.1 Windows and causal join
 
-Each window is one perf counter interval `[t_start_ns, t_end_ns)` from `counters.csv`, about 100 ms,
-on the Pi clock. The label is the trapezoid mean of `P_W` over trace samples with `t_pi_ns` in the
-window. All samples are kept: live accounting must count what the meter saw, including sensor reads.
+Each window is one perf counter interval from `counters.csv`, about 100 ms, on the Pi clock; a trace
+sample belongs to it when `t_start_ns < t_pi_ns <= t_end_ns` (the harness's own `merge_counters`
+rule). The label is the mean of `P_W` over those samples (uniform sampling, so equal to the trapezoid
+mean up to the slip handling). All samples are kept: live accounting must count what the meter saw, including sensor reads.
 A window is dropped if more than 20 % of its duration is slipped or uncovered (count reported).
 
 Features may only use data available at the window's end:
 - the window's own counter interval and up to 3 previous intervals;
 - the latest `sysfs.csv` row with timestamp at or before the window end (CPU clocks, temperature,
   fan state);
-- the latest `context.csv` PMIC read at or before the window end, plus the age of that read;
+- the latest `context.csv` PMIC read that had finished by the window end, plus its age. A read's
+  `t_ms` is taken before the read starts and a read takes 37-494 ms, so its availability time is the
+  next read's time minus the 5 s logging period (the last read: `t_ms` + 500 ms). Amended 2026-11-23
+  after review found the first version used reads up to 45 ms early;
 - static clock, fan and governor settings.
 
 A unit test proves no window uses a counter interval, sysfs row or PMIC read that ends after it
