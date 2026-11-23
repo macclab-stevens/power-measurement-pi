@@ -27,6 +27,7 @@ import windows
 DESIGN = {"precision": "fp32", "batch": 1, "threads": 4, "cpu_mhz": 2400, "governor": "pinned", "fan_mode": "full",
           "rig": "nov2026", "task": "image"}
 NEW_ONLY = "new models"
+NEW_SIZE = "new size of a training model"
 KEY = ["base_model", "imgsz"]
 TARGET_COL = {"energy_mJ": "energy_mJ", "latency_ms": "latency_ms", "mean_P_W": "mean_P_W"}
 
@@ -53,11 +54,18 @@ def check_design(cat_l: pd.DataFrame) -> None:
 
 # ------------------------------------------------------------------ Mode A
 
+def lockbox_cell_table(cat_l: pd.DataFrame, der: pd.DataFrame, qc_l: pd.DataFrame) -> pd.DataFrame:
+    """QC-primary lockbox cells joined with their `forward` derive row (`deploy.cell_table` drops lockbox cells)."""
+    d = der[der["mode"] == tables.MODE].drop(columns=["batch"], errors="ignore")
+    ok = qc_l.loc[qc_l["primary"].astype(bool), "cell_id"]
+    return cat_l[cat_l["cell_id"].isin(ok)].merge(d, on="cell_id", how="inner").reset_index(drop=True)
+
+
 def truth_table(cat_l: pd.DataFrame, der: pd.DataFrame, qc_l: pd.DataFrame) -> pd.DataFrame:
     """One row per (base_model, imgsz) over QC-primary lockbox cells with a finite forward energy: n_cells,
     cell_ids and the mean energy_mJ, latency_ms, mean_P_W per image. No `mode_a_eligible` filter: the
     lockbox models are outside data.VISION_MODELS."""
-    t = deploy.cell_table(cat_l, der, qc_l)
+    t = lockbox_cell_table(cat_l, der, qc_l)
     t = t[np.isfinite(t["energy_mJ_per_image"].astype(float))]
     rows = []
     for (m, s), g in t.sort_values("cell_id").groupby(KEY, sort=True):
@@ -67,9 +75,10 @@ def truth_table(cat_l: pd.DataFrame, der: pd.DataFrame, qc_l: pd.DataFrame) -> p
     return pd.DataFrame(rows, columns=["base_model", "imgsz", "config_key", "n_cells", "cell_ids", *TARGET_COL])
 
 
-def score_mode_a(pred: pd.DataFrame, truth: pd.DataFrame) -> pd.DataFrame:
+def score_mode_a(pred: pd.DataFrame, truth: pd.DataFrame, seen: set | None = None) -> pd.DataFrame:
     """Per configuration x candidate x target: truth, APE, inside the 90 % interval, flagged. A configuration with
-    no QC-primary cell has NaN truth and APE (counted, not dropped)."""
+    no QC-primary cell has NaN truth and APE (counted, not dropped). `seen` is the set of (model, imgsz) of the
+    training configurations: a training model at an unseen size is `new_size` (novelty 0, but not in-sample)."""
     p = pred.rename(columns={"model": "base_model"})
     tr = truth.set_index(KEY)
     rows = []
@@ -81,7 +90,8 @@ def score_mode_a(pred: pd.DataFrame, truth: pd.DataFrame) -> pd.DataFrame:
                      "ape": abs(r.pred - y) / y if y > 0 else float("nan"),
                      "inside": bool(r.lo90 <= y <= r.hi90) if np.isfinite(y) else False, "flagged": bool(r.flagged),
                      "novelty": r.novelty, "n_cells": int(tr.loc[k, "n_cells"]) if k in tr.index else 0,
-                     "new_model": r.novelty > 0})
+                     "new_model": r.novelty > 0,
+                     "new_size": bool(seen is not None and r.novelty == 0 and (r.base_model, int(r.imgsz)) not in seen)})
     return pd.DataFrame(rows)
 
 
@@ -89,7 +99,9 @@ def summarise_mode_a(s: pd.DataFrame) -> pd.DataFrame:
     """Pooled metrics per target, role and candidate over all configurations and over the new models only."""
     rows = []
     for (target, role, cand), g in s.groupby(["target", "role", "candidate"], sort=False):
-        for label, sub in (("all", g), (NEW_ONLY, g[g["new_model"]])):
+        for label, sub in (("all", g), (NEW_ONLY, g[g["new_model"]]), (NEW_SIZE, g[g["new_size"]])):
+            if label == NEW_SIZE and not sub["new_size"].any():
+                continue
             ok = sub[np.isfinite(sub["truth"])]
             m = evaluate.metrics(ok["truth"], ok["pred"]) if len(ok) else {"n": 0, "mdape": np.nan, "mape": np.nan,
                                                                           "bias_pct": np.nan}
@@ -110,7 +122,7 @@ def calculator(cat_l: pd.DataFrame, der: pd.DataFrame, qc_l: pd.DataFrame, pred:
     prim = pred[pred["role"] == "primary"]
     e = prim[prim["target"] == "energy_mJ"].set_index(["model", "imgsz"])
     t = prim[prim["target"] == "latency_ms"].set_index(["model", "imgsz"])
-    cells = deploy.cell_table(cat_l, der, qc_l)
+    cells = lockbox_cell_table(cat_l, der, qc_l)
     rows, skipped = [], {"no_serve": 0, "no_idle": 0, "no_prediction": 0}
     for _, r in cells.iterrows():
         k = (r["base_model"], int(r["imgsz"]))
@@ -229,7 +241,9 @@ def render(*, truth, mode_a, summary_a, calc, calc_summary, l_cells, l_summary, 
     out += [f"  - {k}: `{v[0]}` ({v[1]})" for k, v in prov["mode_l_models"].items()]
     out += ["", "## Measured configurations\n", md(truth[["base_model", "imgsz", "n_cells", "cell_ids", *TARGET_COL]])]
     out += ["## Mode A: pooled\n", "`new models` are those with novelty above 0 (outside the 9 training models); "
-            "resnet18 and mbv3 are training models, so their Mode A rows are in-sample. Novelty is per base model: a "
+            "training models (resnet18, mbv3, yolov8n) have novelty 0; `new size of a training model` is a training model "
+            "at an image size the training table has not seen (e.g. yolov8n at 480 px), and resnet18 and mbv3 at 224 px "
+            "are the closest to in-sample (same size, other rig). Novelty is per base model: a "
             "model's 320 px configuration uses its 640 px architecture descriptor (as in S-LOMO), so its novelty "
             "equals that of its 640 px configuration.\n", md(summary_a),
             "## Mode A: per configuration\n",
@@ -364,7 +378,8 @@ def run_score(paths: ri.Paths, seed: int, *, cat: pd.DataFrame, der: pd.DataFram
     run_id = uuid.uuid4().hex
     w = w[w["cell_id"].isin(qc_l.loc[qc_l["primary"].astype(bool), "cell_id"])] if len(w) else w
     truth = truth_table(cat_l, der, qc_l)
-    scores = score_mode_a(pred, truth)
+    seen = set(map(tuple, cat_t[cat_t["mode_a_eligible"].astype(bool)][["base_model", "imgsz"]].astype({"imgsz": int}).to_numpy()))
+    scores = score_mode_a(pred, truth, seen)
     sum_a = summarise_mode_a(scores)
     calc = calculator(cat_l, der, qc_l, pred, deploy.idle_table(cat_t, der, qc_train))
     calc_sum = (calc.groupby("new_model").agg(n=("ape", "size"), median_ape=("ape", "median"), inside_90=("inside", "mean"))

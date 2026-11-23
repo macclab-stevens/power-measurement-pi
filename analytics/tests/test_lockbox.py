@@ -129,7 +129,7 @@ def test_novelty_is_zero_for_a_training_model_and_positive_for_a_new_one(env):
     p = predict(env)["pred"]
     nov = p.drop_duplicates("model").set_index("model")["novelty"]
     assert nov["resnet18"] == 0 and nov["mbv3"] == 0
-    assert nov["yolo12n"] > 0 and nov["yolo11n-seg"] > 0
+    assert nov["yolo12n"] > 0 and nov["yolov8n"] == 0          # yolov8n is a training model (at a new size here)
     assert (p["flagged"] == (p["novelty"] > p["threshold"])).all()
     assert not p[p["model"].isin(["resnet18", "mbv3"])]["flagged"].any()
 

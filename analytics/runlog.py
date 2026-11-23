@@ -22,11 +22,11 @@ def file_hash(path) -> str:
     return h.hexdigest()
 
 
-def data_hash(root=None) -> str:
-    """sha256 over the bytes of every <root>/<source>/dataset_index.csv present, sorted by path."""
+def data_hash(root=None, sources=SOURCES) -> str:
+    """sha256 over the bytes of every <root>/<source>/dataset_index.csv present (of `sources`), sorted by path."""
     root = Path(root) if root else settings.data_root()
     h = hashlib.sha256()
-    for p in sorted(root / s / "dataset_index.csv" for s in SOURCES):
+    for p in sorted(root / s / "dataset_index.csv" for s in sources):
         if p.is_file():
             h.update(p.read_bytes())
     return h.hexdigest()

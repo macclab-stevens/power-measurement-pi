@@ -3,6 +3,8 @@ and the static model features), the training and evaluation data of the a priori
 import numpy as np
 import pandas as pd
 
+import data
+
 CONFIG_COLS = ["base_model", "variant", "precision", "imgsz", "batch", "threads", "cpu_mhz", "rig"]
 MEASURES = {"energy_mJ": "energy_mJ_per_image", "latency_ms": "latency_ms_per_image",
             "mean_P_W": "mean_P_W", "dyn_energy_mJ": "dyn_energy_mJ_per_image"}
@@ -34,7 +36,8 @@ def mode_a_table(cat: pd.DataFrame, der: pd.DataFrame, qc: pd.DataFrame, st: pd.
     slip-excluded values; cells with no finite energy are dropped). Raises ValueError naming a
     configuration whose (base_model, imgsz) has no static features in `st`."""
     ok = qc.loc[qc["primary"].astype(bool), "cell_id"]
-    c = cat[cat["mode_a_eligible"].astype(bool) & cat["cell_id"].isin(ok)]
+    c = data.training_cells(cat)
+    c = c[c["mode_a_eligible"].astype(bool) & c["cell_id"].isin(ok)]
     d = der[der["mode"] == MODE][["cell_id", *MEASURES.values()]]
     c = c.merge(d, on="cell_id", how="inner")
     c = c[np.isfinite(c["energy_mJ_per_image"].astype(float))].copy()

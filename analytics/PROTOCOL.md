@@ -113,3 +113,9 @@ under-voltage bits were current in any cell (all non-zero words are the 0x50000 
   lockbox cell is measured; intervals from the candidate's master-seed S-LOMO residual quantiles, applicability
   flag from the S-LOMO novelty threshold); `lockbox-score` loads the frozen pickles (sha256-checked) and that file,
   fits nothing, and writes `reports/lockbox.md`. The lockbox is scored once; any later change is exploratory.
+- 2026-11-23, lockbox isolation (before any lockbox cell exists): the lockbox configurations are `yolo12n:640`,
+  `yolo12n:320`, `yolov8n:480` (replaces yolo11n-seg per spec 9: the harness cannot run it unchanged), `resnet18:224`,
+  `mbv3:224`. yolov8n is a training model, so `data.catalogue()` sets `mode_a_eligible` and `mode_l_eligible` to
+  False for every `source == lockbox` cell, and every table, window, idle-table, Mode L, EDA and report path drops
+  those cells explicitly through `data.training_cells`. `lockbox-score` builds its own tables from the lockbox cells.
+  It reports yolov8n at 480 px separately as "new size of a training model" (novelty 0 but not in-sample).

@@ -24,8 +24,8 @@ from test_lockbox import idle
 from test_mode_l import make_windows
 
 NAN = float("nan")
-MODELS = ("yolo12n", "yolo11n-seg", "resnet18", "mbv3")
-IMGSZ = {"yolo12n": 640, "yolo11n-seg": 640, "resnet18": 224, "mbv3": 224}
+MODELS = ("yolo12n", "yolov8n", "resnet18", "mbv3")
+IMGSZ = {"yolo12n": 640, "yolov8n": 480, "resnet18": 224, "mbv3": 224}
 NON_PRIMARY = "yolo12n_r2"
 
 
@@ -35,10 +35,12 @@ def inputs():
     cat_l = cat_l.assign(source="lockbox", path="", task="image", has_counters=True, serve_fps=NAN, soak_minutes=NAN,
                          concurrent_mode=None, input_source="repeat", n_quantized_modules=0, quant="fp32",
                          mode_a_eligible=False, imgsz=cat_l["base_model"].map(IMGSZ))
-    cat_t = pd.DataFrame({"cell_id": ["train_r0", "train_r1"], "source": "v2", "base_model": "yolov8n", "variant": "yolov8n",
-                          "precision": "fp32", "imgsz": 640, "batch": 1, "threads": 4, "cpu_mhz": 2400, "rig": "nov2026",
-                          "governor": "pinned", "fan_mode": "full", "task": "image", "has_counters": False,
-                          "mode_a_eligible": True})
+    tr = [("train_r0", "yolov8n", 640), ("train_r1", "yolov8n", 640), ("train_resnet18_r0", "resnet18", 224),
+          ("train_mbv3_r1", "mbv3", 224)]
+    cat_t = pd.DataFrame({"cell_id": [c for c, _, _ in tr], "source": "v2", "base_model": [m for _, m, _ in tr],
+                          "variant": [m for _, m, _ in tr], "precision": "fp32", "imgsz": [z for _, _, z in tr], "batch": 1,
+                          "threads": 4, "cpu_mhz": 2400, "rig": "nov2026", "governor": "pinned", "fan_mode": "full",
+                          "task": "image", "has_counters": False, "mode_a_eligible": True})
     cat = pd.concat([cat_t, cat_l], ignore_index=True)
     rows = []
     for i, r in enumerate(cat.itertuples()):
@@ -49,7 +51,7 @@ def inputs():
                      "serve_E_mJ": 20000.0 + 100 * i if lock else NAN})
     der = pd.DataFrame(rows)
     qc_l = pd.DataFrame({"cell_id": cat_l["cell_id"], "primary": cat_l["cell_id"] != NON_PRIMARY})
-    qc_t = pd.DataFrame({"cell_id": ["train_r0", "train_r1"], "primary": True})
+    qc_t = pd.DataFrame({"cell_id": cat_t["cell_id"], "primary": True})
     return cat, der, qc_t, qc_l, w
 
 
@@ -126,7 +128,9 @@ def test_mode_a_ape_interval_and_pooled_mdape(env):
     ok = s[(s["candidate"] == "M1Ridge") & (s["target"] == "energy_mJ") & s["ape"].notna()]
     assert sm.loc["all", "n"] == len(ok) == 4 and sm.loc["all", "mdape"] == pytest.approx(ok["ape"].median())
     new = ok[ok["new_model"]]
-    assert sm.loc["new models", "n"] == len(new) == 2 and set(new["model"]) == {"yolo12n", "yolo11n-seg"}
+    assert sm.loc["new models", "n"] == len(new) == 1 and set(new["model"]) == {"yolo12n"}
+    size = ok[ok["new_size"]]
+    assert set(size["model"]) == {"yolov8n"} and sm.loc["new size of a training model", "n"] == 1   # 480 px, never trained
 
 
 def test_calculator_uses_frozen_predictions_measured_duration_and_training_idle(env):
@@ -259,7 +263,7 @@ def test_bad_config_specs_are_rejected():
     for bad in ("yolo12n", "yolo12n:", ":640", "yolo12n:big"):
         with pytest.raises(lb.LockboxError, match="bad --config"):
             lb.parse_config(bad)
-    assert lb.parse_config("yolo11n-seg:640") == ("yolo11n-seg", 640)
+    assert lb.parse_config("yolov8n:480") == ("yolov8n", 480)
 
 
 # ------------------------------------------------------------------ freeze verification

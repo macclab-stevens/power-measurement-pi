@@ -25,7 +25,7 @@ import runlog
 import static
 import tables
 
-DEFAULT_CONFIGS = ["yolo12n:640", "yolo12n:320", "yolo11n-seg:640", "resnet18:224", "mbv3:224"]
+DEFAULT_CONFIGS = ["yolo12n:640", "yolo12n:320", "yolov8n:480", "resnet18:224", "mbv3:224"]
 FIXED = {"precision": "fp32", "batch": 1, "threads": 4, "cpu_mhz": 2400, "rig": "nov2026"}   # every lockbox cell
 SECONDARY = mode_a_extras.SECONDARY
 PRED_COLS = ["config_key", "model", "imgsz", "candidate", "role", "target", "pred", "lo90", "hi90", "novelty",

@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
+import data
 import deploy
 import eda
 import eda_trace as et
@@ -113,7 +114,8 @@ def _fmt_corr(df, phases=("forward", "idle", "serve", "gap", "pooled")):
 
 def write_eda_trace(cat, der, qc, report_dir, w=None, pw=None) -> str:
     """Render sections 6-8 (figures under report_dir/fig); returns the markdown. `w` / `pw` can be passed in
-    (tests); otherwise the cached windows are loaded with column projection."""
+    (tests); otherwise the cached windows are loaded with column projection. Lockbox cells are dropped."""
+    cat = data.training_cells(cat)
     figdir = Path(report_dir) / "fig"
     figdir.mkdir(parents=True, exist_ok=True)
     info = trace_info(cat, qc)

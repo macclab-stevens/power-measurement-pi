@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+import data
 import runlog
 import settings
 import tables
@@ -43,6 +44,8 @@ def cpu_key(row) -> str:
 
 
 def _primary(cat: pd.DataFrame, qc: pd.DataFrame | None) -> pd.DataFrame:
+    """Training cells (never lockbox), QC-primary ones only if qc is given."""
+    cat = data.training_cells(cat)
     if qc is None:
         return cat
     return cat[cat["cell_id"].isin(qc.loc[qc["primary"].astype(bool), "cell_id"])]

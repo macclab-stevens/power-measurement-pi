@@ -62,8 +62,9 @@ def static_table(cat: pd.DataFrame) -> pd.DataFrame:
     """Static features per (base_model, imgsz) from FP32 batch-1 Mode A cells that have a
     layer_table.csv. The first cell by cell_id supplies the row; every candidate must agree on
     `macs` within 0.1 % (else ValueError). No QC input: selection is by configuration only."""
-    sel = cat[cat["mode_a_eligible"].astype(bool) & (cat["precision"] == "fp32")
-              & (cat["batch"] == 1)].sort_values("cell_id")
+    sel = data.training_cells(cat)
+    sel = sel[sel["mode_a_eligible"].astype(bool) & (sel["precision"] == "fp32")
+              & (sel["batch"] == 1)].sort_values("cell_id")
     feats: dict = {}
     for r in sel.itertuples():
         lt = data.read_csv_opt(Path(r.path), "layer_table.csv")

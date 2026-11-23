@@ -62,7 +62,8 @@ def cmd_qc(args) -> int:
     import runlog
     t0 = time.perf_counter()
     cat = data.catalogue()
-    der = derive.derive_all(cat, cache=True)
+    der = derive.derive_all(cat, cache=True)       # the full catalogue (the derive cache holds every source)
+    cat = data.training_cells(cat)                 # QC, qc.md and qc_cells.csv cover training cells only
     bounds = qc.bounds_from_cfg()
     df = qc.run_qc(cat, der, bounds)
     REPORTS.mkdir(exist_ok=True)
@@ -343,6 +344,7 @@ def cmd_eda(args) -> int:
     cat = data.catalogue()
     import eda_trace_write
     der, qc = derive.derive_all(cat, cache=True), pd.read_csv(paths[0])
+    cat = data.training_cells(cat)
     md = eda.write_eda_config(cat, der, qc, pd.read_csv(paths[1]), REPORTS)
     md = eda.splice_trace(md, eda_trace_write.write_eda_trace(cat, der, qc, REPORTS))
     (REPORTS / "eda.md").write_text(md)

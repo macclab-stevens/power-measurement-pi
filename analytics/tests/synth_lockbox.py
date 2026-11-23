@@ -19,8 +19,8 @@ from test_mode_l import make_windows
 
 MASTER = 20261122
 TRAIN = ["yolov8n", "yolov8s", "yolov8m", "yolo11n", "resnet18", "mbv3"]
-CONFIGS = ["yolo12n:640", "yolo12n:320", "yolo11n-seg:640", "resnet18:224", "mbv3:224"]
-SCALE = {"yolo12n_640": 1.0, "yolo12n_320": 0.25, "yolo11n-seg_640": 1.3, "resnet18_224": 0.6, "mbv3_224": 0.3}
+CONFIGS = ["yolo12n:640", "yolo12n:320", "yolov8n:480", "resnet18:224", "mbv3:224"]
+SCALE = {"yolo12n_640": 1.0, "yolo12n_320": 0.25, "yolov8n_480": 1.3, "resnet18_224": 0.6, "mbv3_224": 0.3}
 ROWS = [("Conv2d", 0.8e4, 8e7), ("BatchNorm2d", 1e3, 1e6), ("SiLU", 0, None), ("Linear", 2e3, 4e6), ("MaxPool2d", 0, None)]
 
 

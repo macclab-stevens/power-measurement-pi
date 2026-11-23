@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
 
+import data
 import deploy
 import evaluate
 import mode_l_models as mm
@@ -82,6 +83,7 @@ def _score_cell(c: pd.DataFrame, p: np.ndarray) -> dict:
 def _prep(w: pd.DataFrame, cat: pd.DataFrame, qc: pd.DataFrame | None, yolo=splits.YOLO) -> pd.DataFrame:
     """Windows of QC-primary catalogue cells of the `yolo` base models, with `base_model`, sorted by
     (cell_id, w_idx). attrs["excluded"] maps every other base model to its window and cell counts."""
+    cat = data.training_cells(cat) if "source" in cat.columns else cat
     c = cat if qc is None else cat[cat["cell_id"].isin(qc.loc[qc["primary"].astype(bool), "cell_id"])]
     w = w[w["cell_id"].isin(c["cell_id"])].copy()
     w["base_model"] = w["cell_id"].map(dict(zip(cat["cell_id"], cat["base_model"])))

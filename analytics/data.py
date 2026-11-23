@@ -92,6 +92,7 @@ def _row(cell: Path, src: str, ix: pd.Series, m: dict) -> dict:
     governor, fan = m.get("governor") or "pinned", m.get("fan_mode") or "full"
     has_counters = (cell / "counters.csv").is_file() and bool(pc.get("enabled"))
     task = m["task"]
+    lock = src == "lockbox"      # a lockbox cell is never training data, whatever model it measures
     return {
         "cell_id": cell.name, "source": src, "path": str(cell), "task": task,
         "model_key": base, "base_model": base, "variant": m.get("variant") or base,
@@ -108,10 +109,10 @@ def _row(cell: Path, src: str, ix: pd.Series, m: dict) -> dict:
         "dataset_version": int(m.get("dataset_version") or 1),
         "holdout": m.get("holdout"),
         "has_counters": has_counters,
-        "mode_a_eligible": bool(task == "image" and base in VISION_MODELS and math.isnan(serve)
+        "mode_a_eligible": bool(not lock and task == "image" and base in VISION_MODELS and math.isnan(serve)
                                 and math.isnan(soak) and conc is None and governor == "pinned"
                                 and fan == "full"),
-        "mode_l_eligible": has_counters,
+        "mode_l_eligible": has_counters and not lock,
     }
 
 
@@ -120,6 +121,14 @@ CATALOGUE_COLUMNS = [
     "n_quantized_modules", "imgsz", "batch", "threads", "cpu_mhz", "governor", "fan_mode",
     "serve_fps", "soak_minutes", "concurrent_mode", "input_source", "family", "repeat", "rig",
     "dataset_version", "holdout", "has_counters", "mode_a_eligible", "mode_l_eligible"]
+
+
+def training_cells(cat: pd.DataFrame) -> pd.DataFrame:
+    """The catalogue rows that may enter a fit, a table or a published result: every source except `lockbox`.
+    Every training and reporting path calls this, so none relies only on the eligibility flags."""
+    if "source" not in cat.columns:          # a hand-built table with no source column has no lockbox rows
+        return cat.reset_index(drop=True)
+    return cat[cat["source"] != "lockbox"].reset_index(drop=True)
 
 
 def catalogue(root=None) -> pd.DataFrame:

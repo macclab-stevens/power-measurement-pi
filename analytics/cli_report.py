@@ -54,7 +54,7 @@ def cmd_report(args) -> int:
         qc = pd.read_csv(paths.qc_csv) if paths.qc_csv.is_file() else None
         overhead = (eda_trace.perf_overhead(deploy.cell_table(cat, derive.derive_all(cat, cache=True), qc))
                     if qc is not None and len(cat) else None)
-        files = report.build(paths, seed=seed, n_boot=args.n_boot, family=cat.set_index("cell_id")["family"], overhead=overhead)
+        files = report.build(paths, seed=seed, n_boot=args.n_boot, family=data.training_cells(cat).set_index("cell_id")["family"], overhead=overhead)
     except ri.ReportInputError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

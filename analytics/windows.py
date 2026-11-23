@@ -366,7 +366,7 @@ def pmic_windows(cell, meta: dict) -> pd.DataFrame:
 def _cache_key(cat: pd.DataFrame) -> str:
     h = hashlib.sha256()
     h.update(runlog.file_hash(Path(__file__)).encode())
-    h.update(runlog.data_hash().encode())
+    h.update(runlog.data_hash(sources=("v1", "v2")).encode())      # lockbox cells never enter a window table
     h.update("\n".join(sorted(cat["cell_id"].astype(str))).encode())
     return h.hexdigest()
 
@@ -406,6 +406,7 @@ def _peak_rss_mb() -> float:
 
 def _build(cat: pd.DataFrame, fn, cache_name: str, force: bool, columns: list[str]) -> pd.DataFrame:
     path = settings.derived_dir() / cache_name
+    cat = data.training_cells(cat)
     key = _cache_key(cat)
     if not force:
         hit = _load_cache(path, key)

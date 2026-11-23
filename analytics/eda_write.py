@@ -212,7 +212,8 @@ def fig_energy_map(ea, figdir):
 
 def write_eda_config(cat, der, qc, cfgs, report_dir) -> str:
     """Render sections 1-5, 9, 10 to report_dir/eda.md (+ figures in report_dir/fig); returns the text. The
-    trace-part marker sits between sections 5 and 9."""
+    trace-part marker sits between sections 5 and 9. Lockbox cells are dropped from `cat`."""
+    cat = data.training_cells(cat)
     report_dir = Path(report_dir)
     figdir = report_dir / "fig"
     figdir.mkdir(parents=True, exist_ok=True)
