@@ -18,18 +18,18 @@ Every row names one split, one target, one metric, an interval and a run_id. Int
 
 Mode L is a ladder: no single rung is the pre-registered headline, so every rung is listed with the same metric and interval. Counter overhead: counters-off (`ref`) cells drew +0.320 W (+3.34 %) against the same 1 configuration with counters on (`reports/eda.md`, section 7.2; family, order and the counters switch are confounded, so this bounds the overhead only loosely). Perf was running in every v2 counter cell, so the overhead is inside every number here.
 
-*Split: leave one YOLO base model out. Target: whole-cell energy. n = 161 held-out cells in 5 folds (dataset v2, nov2026 rig). run_id: `acc4f1bf2b524febb2565e1d8fe3e79b`. Mode A's energy noise floor (median repeat CV, configurations with at least 2 cells) 0.6 %, reused here as the indistinguishability margin.* Median whole-cell energy APE per rung over held-out cells; `L1-cell` is exploratory (see section 9).
+*Split: leave one YOLO base model out. Target: whole-cell energy. n = 161 held-out cells in 38 configurations and 5 folds (dataset v2, nov2026 rig). run_id: `acc4f1bf2b524febb2565e1d8fe3e79b`. Mode A's energy noise floor (median repeat CV, configurations with at least 2 cells) 0.6 %, reused here as the indistinguishability margin.* Median whole-cell energy APE per rung over held-out cells; `L1-cell` is exploratory (see section 9).
 
-| rung | split | target | metric | estimate | 95 % CI | n | run_id | status |
-|---|---|---|---|---|---|---|---|---|
-| L0 | leave one YOLO model out | whole-cell energy | MdAPE % | 5.8 | [3.4, 7.4] | 161 | acc4f1bf2b524febb2565e1d8fe3e79b | pre-registered rung |
-| L1 | leave one YOLO model out | whole-cell energy | MdAPE % | 6.7 | [4.7, 13.2] | 161 | acc4f1bf2b524febb2565e1d8fe3e79b | pre-registered rung |
-| L1-cell (exploratory) | leave one YOLO model out | whole-cell energy | MdAPE % | 5.6 | [4.2, 6.8] | 161 | acc4f1bf2b524febb2565e1d8fe3e79b | exploratory (added after a scored fold) |
-| L2 | leave one YOLO model out | whole-cell energy | MdAPE % | 5.1 | [4.3, 8.7] | 161 | acc4f1bf2b524febb2565e1d8fe3e79b | pre-registered rung |
-| L3-ridge | leave one YOLO model out | whole-cell energy | MdAPE % | 2.9 | [2.0, 4.1] | 161 | acc4f1bf2b524febb2565e1d8fe3e79b | pre-registered rung |
-| L3-trees | leave one YOLO model out | whole-cell energy | MdAPE % | 1.2 | [0.8, 1.5] | 161 | acc4f1bf2b524febb2565e1d8fe3e79b | pre-registered rung |
-| L4-ridge | leave one YOLO model out | whole-cell energy | MdAPE % | 3.1 | [2.2, 4.3] | 161 | acc4f1bf2b524febb2565e1d8fe3e79b | pre-registered rung |
-| L4-trees | leave one YOLO model out | whole-cell energy | MdAPE % | 1.2 | [0.6, 1.5] | 161 | acc4f1bf2b524febb2565e1d8fe3e79b | pre-registered rung |
+| rung | split | target | metric | estimate | 95 % CI | n | n configurations | run_id | status |
+|---|---|---|---|---|---|---|---|---|---|
+| L0 | leave one YOLO model out | whole-cell energy | MdAPE % | 5.8 | [3.4, 7.4] | 161 | 38 | acc4f1bf2b524febb2565e1d8fe3e79b | pre-registered rung |
+| L1 | leave one YOLO model out | whole-cell energy | MdAPE % | 6.7 | [4.7, 13.2] | 161 | 38 | acc4f1bf2b524febb2565e1d8fe3e79b | pre-registered rung |
+| L1-cell (exploratory) | leave one YOLO model out | whole-cell energy | MdAPE % | 5.6 | [4.2, 6.8] | 161 | 38 | acc4f1bf2b524febb2565e1d8fe3e79b | exploratory (added after a scored fold) |
+| L2 | leave one YOLO model out | whole-cell energy | MdAPE % | 5.1 | [4.3, 8.7] | 161 | 38 | acc4f1bf2b524febb2565e1d8fe3e79b | pre-registered rung |
+| L3-ridge | leave one YOLO model out | whole-cell energy | MdAPE % | 2.9 | [2.0, 4.1] | 161 | 38 | acc4f1bf2b524febb2565e1d8fe3e79b | pre-registered rung |
+| L3-trees | leave one YOLO model out | whole-cell energy | MdAPE % | 1.2 | [0.8, 1.5] | 161 | 38 | acc4f1bf2b524febb2565e1d8fe3e79b | pre-registered rung |
+| L4-ridge | leave one YOLO model out | whole-cell energy | MdAPE % | 3.1 | [2.2, 4.3] | 161 | 38 | acc4f1bf2b524febb2565e1d8fe3e79b | pre-registered rung |
+| L4-trees | leave one YOLO model out | whole-cell energy | MdAPE % | 1.2 | [0.6, 1.5] | 161 | 38 | acc4f1bf2b524febb2565e1d8fe3e79b | pre-registered rung |
 
 
 ### Findings at a glance (positive and negative)
@@ -40,26 +40,26 @@ Mode L is a ladder: no single rung is the pre-registered headline, so every rung
 - Mode A, S-LOMO energy: AUTO against the best baseline (B3 log-linear): **not significant** (median paired APE difference +4.97 pp, Holm p = 0.951, n = 58; run_id `aa634083491146caa1898cb53dd5b2dc`).
 - Mode A, S-LOMO energy: AUTO 90 % interval coverage 0.91 against the nominal 0.90, n = 58; coarse with 9 models.
 - Mode A, S-LOMO energy: 31 of 58 AUTO predictions carry the `no-similar-model` flag.
-- Mode L, whole-cell energy: L1 against L0: **worse** (median paired APE difference +1.33 pp, Holm p = 0.0178, n = 161; run_id `acc4f1bf2b524febb2565e1d8fe3e79b`).
-- Mode L, whole-cell energy: L1-cell (exploratory) against L0: **indistinguishable (below noise floor)** (median paired APE difference -0.42 pp, Holm p = 0.355, n = 161; run_id `acc4f1bf2b524febb2565e1d8fe3e79b`).
-- Mode L, whole-cell energy: L2 against L0: **not significant** (median paired APE difference -0.80 pp, Holm p = 0.162, n = 161; run_id `acc4f1bf2b524febb2565e1d8fe3e79b`).
-- Mode L, whole-cell energy: L3-ridge against L0: **better** (median paired APE difference -2.74 pp, Holm p = 1.85e-15, n = 161; run_id `acc4f1bf2b524febb2565e1d8fe3e79b`).
-- Mode L, whole-cell energy: L3-trees against L0: **better** (median paired APE difference -4.26 pp, Holm p = 1.21e-25, n = 161; run_id `acc4f1bf2b524febb2565e1d8fe3e79b`).
-- Mode L, whole-cell energy: L4-ridge against L0: **better** (median paired APE difference -2.86 pp, Holm p = 1.52e-13, n = 161; run_id `acc4f1bf2b524febb2565e1d8fe3e79b`).
-- Mode L, whole-cell energy: L4-trees against L0: **better** (median paired APE difference -4.13 pp, Holm p = 1.21e-25, n = 161; run_id `acc4f1bf2b524febb2565e1d8fe3e79b`).
-- Probe mode, L0: probe MdAPE 6.0 % against Mode A 18.0 % on the same pairs: **better** (median paired APE difference -12.26 pp, Holm p = 0.000109, n = 350 pairs; run_id `acc4f1bf2b524febb2565e1d8fe3e79b`).
-- Probe mode, L1: probe MdAPE 17.4 % against Mode A 18.0 % on the same pairs: **not significant** (median paired APE difference -1.90 pp, Holm p = 0.106, n = 350 pairs; run_id `acc4f1bf2b524febb2565e1d8fe3e79b`).
-- Probe mode, L1-cell (exploratory): probe MdAPE 13.8 % against Mode A 18.0 % on the same pairs: **not significant** (median paired APE difference -3.03 pp, Holm p = 0.106, n = 350 pairs; run_id `acc4f1bf2b524febb2565e1d8fe3e79b`).
-- Probe mode, L2: probe MdAPE 6.4 % against Mode A 18.0 % on the same pairs: **better** (median paired APE difference -11.69 pp, Holm p = 2.19e-05, n = 350 pairs; run_id `acc4f1bf2b524febb2565e1d8fe3e79b`).
-- Probe mode, L3-ridge: probe MdAPE 5.5 % against Mode A 18.0 % on the same pairs: **better** (median paired APE difference -12.36 pp, Holm p = 2.34e-08, n = 350 pairs; run_id `acc4f1bf2b524febb2565e1d8fe3e79b`).
-- Probe mode, L3-trees: probe MdAPE 4.3 % against Mode A 18.0 % on the same pairs: **better** (median paired APE difference -13.45 pp, Holm p = 1.11e-09, n = 350 pairs; run_id `acc4f1bf2b524febb2565e1d8fe3e79b`).
-- Probe mode, L4-ridge: probe MdAPE 5.6 % against Mode A 18.0 % on the same pairs: **better** (median paired APE difference -12.27 pp, Holm p = 3.89e-08, n = 350 pairs; run_id `acc4f1bf2b524febb2565e1d8fe3e79b`).
-- Probe mode, L4-trees: probe MdAPE 4.1 % against Mode A 18.0 % on the same pairs: **better** (median paired APE difference -13.45 pp, Holm p = 1.11e-09, n = 350 pairs; run_id `acc4f1bf2b524febb2565e1d8fe3e79b`).
+- Mode L, whole-cell energy: L1 against L0: **not significant** (median paired APE difference of the per-configuration mean APE +1.09 pp, Holm p = 0.148, n = 38 configurations (161 cells); run_id `acc4f1bf2b524febb2565e1d8fe3e79b`).
+- Mode L, whole-cell energy: L1-cell (exploratory) against L0: **not significant** (median paired APE difference of the per-configuration mean APE -0.62 pp, Holm p = 1, n = 38 configurations (161 cells); run_id `acc4f1bf2b524febb2565e1d8fe3e79b`).
+- Mode L, whole-cell energy: L2 against L0: **indistinguishable (below noise floor)** (median paired APE difference of the per-configuration mean APE -0.40 pp, Holm p = 1, n = 38 configurations (161 cells); run_id `acc4f1bf2b524febb2565e1d8fe3e79b`).
+- Mode L, whole-cell energy: L3-ridge against L0: **better** (median paired APE difference of the per-configuration mean APE -2.86 pp, Holm p = 3.3e-05, n = 38 configurations (161 cells); run_id `acc4f1bf2b524febb2565e1d8fe3e79b`).
+- Mode L, whole-cell energy: L3-trees against L0: **better** (median paired APE difference of the per-configuration mean APE -3.76 pp, Holm p = 2.55e-10, n = 38 configurations (161 cells); run_id `acc4f1bf2b524febb2565e1d8fe3e79b`).
+- Mode L, whole-cell energy: L4-ridge against L0: **better** (median paired APE difference of the per-configuration mean APE -2.82 pp, Holm p = 0.000315, n = 38 configurations (161 cells); run_id `acc4f1bf2b524febb2565e1d8fe3e79b`).
+- Mode L, whole-cell energy: L4-trees against L0: **better** (median paired APE difference of the per-configuration mean APE -3.90 pp, Holm p = 2.55e-10, n = 38 configurations (161 cells); run_id `acc4f1bf2b524febb2565e1d8fe3e79b`).
+- Probe mode, L0: probe MdAPE 6.0 % against Mode A 18.0 % on the same pairs: **better** (median paired APE difference -12.26 pp, Holm p = 0.000109, n = 38 configurations, 350 pairs; run_id `acc4f1bf2b524febb2565e1d8fe3e79b`).
+- Probe mode, L1: probe MdAPE 17.4 % against Mode A 18.0 % on the same pairs: **not significant** (median paired APE difference -1.90 pp, Holm p = 0.106, n = 38 configurations, 350 pairs; run_id `acc4f1bf2b524febb2565e1d8fe3e79b`).
+- Probe mode, L1-cell (exploratory): probe MdAPE 13.8 % against Mode A 18.0 % on the same pairs: **not significant** (median paired APE difference -3.03 pp, Holm p = 0.106, n = 38 configurations, 350 pairs; run_id `acc4f1bf2b524febb2565e1d8fe3e79b`).
+- Probe mode, L2: probe MdAPE 6.4 % against Mode A 18.0 % on the same pairs: **better** (median paired APE difference -11.69 pp, Holm p = 2.19e-05, n = 38 configurations, 350 pairs; run_id `acc4f1bf2b524febb2565e1d8fe3e79b`).
+- Probe mode, L3-ridge: probe MdAPE 5.5 % against Mode A 18.0 % on the same pairs: **better** (median paired APE difference -12.36 pp, Holm p = 2.34e-08, n = 38 configurations, 350 pairs; run_id `acc4f1bf2b524febb2565e1d8fe3e79b`).
+- Probe mode, L3-trees: probe MdAPE 4.3 % against Mode A 18.0 % on the same pairs: **better** (median paired APE difference -13.45 pp, Holm p = 1.11e-09, n = 38 configurations, 350 pairs; run_id `acc4f1bf2b524febb2565e1d8fe3e79b`).
+- Probe mode, L4-ridge: probe MdAPE 5.6 % against Mode A 18.0 % on the same pairs: **better** (median paired APE difference -12.27 pp, Holm p = 3.89e-08, n = 38 configurations, 350 pairs; run_id `acc4f1bf2b524febb2565e1d8fe3e79b`).
+- Probe mode, L4-trees: probe MdAPE 4.1 % against Mode A 18.0 % on the same pairs: **better** (median paired APE difference -13.45 pp, Holm p = 1.11e-09, n = 38 configurations, 350 pairs; run_id `acc4f1bf2b524febb2565e1d8fe3e79b`).
 
 
 ## 2. Mode A results by split and target
 
-Candidates in protocol order: B0 median, B1 energy proportional to MACs per clock, B2 most similar seen model scaled by MACs, B3 log-linear OLS, M1 ridge, M2 gradient-boosted trees, M3 factored latency x power (energy only), AUTO (best of M1 to M3 by inner leave-one-model-out MdAPE). Baselines have no prediction interval, so their coverage is blank. Coverage rests on few clusters and is coarse. Paired tests use absolute log errors per test configuration; "indistinguishable" means the median paired APE difference is below the noise floor.
+Candidates in protocol order: B0 median, B1 energy proportional to MACs per clock, B2 most similar seen model scaled by MACs, B3 log-linear OLS, M1 ridge, M2 gradient-boosted trees, M3 factored latency x power (energy only), AUTO (best of M1 to M3 by inner leave-one-model-out MdAPE). Every candidate, baselines included, has a 90 % prediction interval from its own inner leave-one-model-out residual quantiles, so coverage is reported for all of them. Coverage rests on few clusters and is coarse. Paired tests use absolute log errors per test configuration; "indistinguishable" means the median paired APE difference is below the noise floor.
 
 ### S-LOMO
 
@@ -1091,14 +1091,14 @@ AUTO MdAPE ranges from 17.5 % to 17.5 % over the 3 seeds present.
 
 ## 6. Learning curve
 
-*Split: S-LOMO YOLO folds. Target: energy_mJ. n = 156 fits. run_id: `07760854b3ab477c993e7f4a5ecbf969`. Noise floor (median repeat CV, configurations with at least 2 cells) 0.6 %.* Candidate M1 ridge with the final-fit hyperparameters (no inner search); seed 20261122; at most 10 training subsets per k, all other configurations (non-YOLO) always in training.
+*Split: S-LOMO YOLO folds. Target: energy_mJ. n = 156 fits. run_id: `ad18073de0824e1e80b5d7038c461236`, `aa634083491146caa1898cb53dd5b2dc`. Noise floor (median repeat CV, configurations with at least 2 cells) 0.6 %.* Candidate M1 ridge, no inner search; each held-out model is fitted with the hyperparameters its own S-LOMO outer fold chose (second run id; these never saw the held-out model): yolo11m: alpha=10; yolo11n: alpha=0.01; yolo11s: alpha=1; yolov8m: alpha=10; yolov8n: alpha=10; yolov8s: alpha=10; seed 20261122; at most 10 training subsets per k, all other configurations (non-YOLO) always in training.
 
 | k training YOLO models | n | held-out models | median MdAPE % | IQR % | worst held-out model (median over subsets) % |
 |---|---|---|---|---|---|
-| 2 | 60 | 6 | 28.8 | 12.6 to 43.2 | yolov8m 38.9 |
-| 3 | 60 | 6 | 16.4 | 8.0 to 28.3 | yolo11m 28.3 |
-| 4 | 30 | 6 | 14.5 | 7.5 to 20.3 | yolo11m 25.3 |
-| 5 | 6 | 6 | 11.1 | 9.6 to 16.6 | yolo11m 22.8 |
+| 2 | 60 | 6 | 24.5 | 12.6 to 40.2 | yolov8m 38.9 |
+| 3 | 60 | 6 | 16.6 | 10.0 to 25.0 | yolo11m 28.3 |
+| 4 | 30 | 6 | 17.0 | 13.0 to 20.7 | yolo11m 25.3 |
+| 5 | 6 | 6 | 15.7 | 12.5 to 18.0 | yolo11m 22.8 |
 
 
 ![MdAPE against number of training YOLO models](fig/report_learning_curve.png)
@@ -1183,21 +1183,21 @@ The calculator is fed only held-out Mode A predictions. The fan rows fit their o
 
 Rungs in protocol order; each is fitted on the other YOLO base models and scored on the held-out model's cells (whole-cell energy from 100 ms window power predictions). Intervals are cluster bootstrap over the held-out base models (5 clusters, so wide). `L1-cell` is exploratory: it was added after a scored smoke fold (protocol amendment of 2026-11-23, `analytics/PROTOCOL.md`). `L1` is the pre-registered PMIC rung. Counter overhead: counters-off (`ref`) cells drew +0.320 W (+3.34 %) against the same 1 configuration with counters on (`reports/eda.md`, section 7.2; family, order and the counters switch are confounded, so this bounds the overhead only loosely). Perf was running in every v2 counter cell, so the overhead is inside every number here.
 
-*Split: leave one YOLO base model out. Target: whole-cell energy. n = 161 held-out cells in 5 folds (dataset v2, nov2026 rig). run_id: `acc4f1bf2b524febb2565e1d8fe3e79b`. Mode A's energy noise floor (median repeat CV, configurations with at least 2 cells) 0.6 %, reused here as the indistinguishability margin.* Whole cell, measured segment, 1 s and 10 s horizons.
+*Split: leave one YOLO base model out. Target: whole-cell energy. n = 161 held-out cells in 38 configurations and 5 folds (dataset v2, nov2026 rig). run_id: `acc4f1bf2b524febb2565e1d8fe3e79b`. Mode A's energy noise floor (median repeat CV, configurations with at least 2 cells) 0.6 %, reused here as the indistinguishability margin.* Whole cell, measured segment, 1 s and 10 s horizons; the MdAPE is over cells, the last statistic over configurations.
 
-| rung | n | whole-cell MdAPE % [95 % CI] | whole-cell bias % [95 % CI] | measured-segment MdAPE % [95 % CI] | n measured | 1 s block APE % | 10 s block APE % | window MAE W | L1 fallback share |
-|---|---|---|---|---|---|---|---|---|---|
-| L0 | 161 | 5.8 [3.4, 7.4] | 3.4 [-4.9, 6.6] | 5.8 [4.2, 8.2] | 161 | 7.0 | 6.1 | 0.719 |  |
-| L1 | 161 | 6.7 [4.7, 13.2] | 1.6 [-7.7, 4.5] | 13.6 [12.2, 20.0] | 161 | 17.8 | 8.6 | 1.883 | 0.000 |
-| L1-cell (exploratory) | 161 | 5.6 [4.2, 6.8] | 0.9 [-3.8, 3.0] | 12.2 [10.9, 12.6] | 161 | 17.0 | 8.5 | 1.953 | 0.000 |
-| L2 | 161 | 5.1 [4.3, 8.7] | 2.3 [-4.4, 4.4] | 7.0 [4.9, 9.2] | 161 | 5.4 | 5.5 | 0.562 |  |
-| L3-ridge | 161 | 2.9 [2.0, 4.1] | 0.3 [-2.9, 1.1] | 3.3 [2.3, 6.1] | 161 | 3.9 | 3.2 | 0.383 |  |
-| L3-trees | 161 | 1.2 [0.8, 1.5] | -0.0 [-1.5, 0.7] | 1.8 [1.0, 2.3] | 161 | 1.3 | 1.4 | 0.177 |  |
-| L4-ridge | 161 | 3.1 [2.2, 4.3] | 0.5 [-3.0, 1.1] | 3.8 [2.1, 6.3] | 161 | 3.9 | 3.4 | 0.390 |  |
-| L4-trees | 161 | 1.2 [0.6, 1.5] | 0.1 [-1.5, 0.9] | 1.9 [1.0, 2.3] | 161 | 1.6 | 1.4 | 0.199 |  |
+| rung | n | n configurations | whole-cell MdAPE % [95 % CI] | whole-cell bias % [95 % CI] | median per-configuration mean APE % | measured-segment MdAPE % [95 % CI] | n measured | 1 s block APE % | 10 s block APE % | window MAE W | L1 fallback share |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| L0 | 161 | 38 | 5.8 [3.4, 7.4] | 3.4 [-4.9, 6.6] | 6.1 | 5.8 [4.2, 8.2] | 161 | 7.0 | 6.1 | 0.719 |  |
+| L1 | 161 | 38 | 6.7 [4.7, 13.2] | 1.6 [-7.7, 4.5] | 7.6 | 13.6 [12.2, 20.0] | 161 | 17.8 | 8.6 | 1.883 | 0.000 |
+| L1-cell (exploratory) | 161 | 38 | 5.6 [4.2, 6.8] | 0.9 [-3.8, 3.0] | 6.0 | 12.2 [10.9, 12.6] | 161 | 17.0 | 8.5 | 1.953 | 0.000 |
+| L2 | 161 | 38 | 5.1 [4.3, 8.7] | 2.3 [-4.4, 4.4] | 5.3 | 7.0 [4.9, 9.2] | 161 | 5.4 | 5.5 | 0.562 |  |
+| L3-ridge | 161 | 38 | 2.9 [2.0, 4.1] | 0.3 [-2.9, 1.1] | 3.3 | 3.3 [2.3, 6.1] | 161 | 3.9 | 3.2 | 0.383 |  |
+| L3-trees | 161 | 38 | 1.2 [0.8, 1.5] | -0.0 [-1.5, 0.7] | 1.1 | 1.8 [1.0, 2.3] | 161 | 1.3 | 1.4 | 0.177 |  |
+| L4-ridge | 161 | 38 | 3.1 [2.2, 4.3] | 0.5 [-3.0, 1.1] | 3.2 | 3.8 [2.1, 6.3] | 161 | 3.9 | 3.4 | 0.390 |  |
+| L4-trees | 161 | 38 | 1.2 [0.6, 1.5] | 0.1 [-1.5, 0.9] | 1.1 | 1.9 [1.0, 2.3] | 161 | 1.6 | 1.4 | 0.199 |  |
 
 
-*Split: leave one YOLO base model out. Target: whole-cell energy. n = 161 held-out cells in 5 folds (dataset v2, nov2026 rig). run_id: `acc4f1bf2b524febb2565e1d8fe3e79b`. Mode A's energy noise floor (median repeat CV, configurations with at least 2 cells) 0.6 %, reused here as the indistinguishability margin.* Median phase energy APE per rung and phase (cells that have the phase).
+*Split: leave one YOLO base model out. Target: whole-cell energy. n = 161 held-out cells in 38 configurations and 5 folds (dataset v2, nov2026 rig). run_id: `acc4f1bf2b524febb2565e1d8fe3e79b`. Mode A's energy noise floor (median repeat CV, configurations with at least 2 cells) 0.6 %, reused here as the indistinguishability margin.* Median phase energy APE per rung and phase (cells that have the phase).
 
 | rung | n | idle | load_weights | warmup | forward | serve |
 |---|---|---|---|---|---|---|
@@ -1211,7 +1211,7 @@ Rungs in protocol order; each is fitted on the other YOLO base models and scored
 | L4-trees | 161 | 0.6 (n=161) |  | 0.7 (n=161) | 1.9 (n=161) | 1.9 (n=161) |
 
 
-*Split: leave one YOLO base model out. Target: whole-cell energy. n = 161 held-out cells in 5 folds (dataset v2, nov2026 rig). run_id: `acc4f1bf2b524febb2565e1d8fe3e79b`. Mode A's energy noise floor (median repeat CV, configurations with at least 2 cells) 0.6 %, reused here as the indistinguishability margin.* Median whole-cell APE per rung and dataset family.
+*Split: leave one YOLO base model out. Target: whole-cell energy. n = 161 held-out cells in 38 configurations and 5 folds (dataset v2, nov2026 rig). run_id: `acc4f1bf2b524febb2565e1d8fe3e79b`. Mode A's energy noise floor (median repeat CV, configurations with at least 2 cells) 0.6 %, reused here as the indistinguishability margin.* Median whole-cell APE per rung and dataset family.
 
 | rung | n | A | A-input | B | C | D | soak |
 |---|---|---|---|---|---|---|---|
@@ -1225,20 +1225,20 @@ Rungs in protocol order; each is fitted on the other YOLO base models and scored
 | L4-trees | 161 | 1.1 (n=44) | 1.4 (n=6) | 2.6 (n=15) | 0.7 (n=60) | 2.2 (n=34) | 4.9 (n=2) |
 
 
-*Split: leave one YOLO base model out. Target: whole-cell energy. n = 161 held-out cells in 5 folds (dataset v2, nov2026 rig). run_id: `acc4f1bf2b524febb2565e1d8fe3e79b`. Mode A's energy noise floor (median repeat CV, configurations with at least 2 cells) 0.6 %, reused here as the indistinguishability margin.* Each rung against L0, paired by held-out cell, Holm over the family.
+*Split: leave one YOLO base model out. Target: whole-cell energy. n = 161 held-out cells in 38 configurations and 5 folds (dataset v2, nov2026 rig). run_id: `acc4f1bf2b524febb2565e1d8fe3e79b`. Mode A's energy noise floor (median repeat CV, configurations with at least 2 cells) 0.6 %, reused here as the indistinguishability margin.* Each rung against L0, paired by held-out configuration (Wilcoxon on per-configuration mean absolute log errors, Holm over the family); n counts configurations, each the mean over its held-out cells.
 
-| rung | vs | n | median paired diff, APE (pp) | Wilcoxon p | Holm p | verdict |
-|---|---|---|---|---|---|---|
-| L1 | L0 | 161 | +1.33 | 0.00592 | 0.0178 | worse |
-| L1-cell (exploratory) | L0 | 161 | -0.42 | 0.355 | 0.355 | indistinguishable (below noise floor) |
-| L2 | L0 | 161 | -0.80 | 0.0808 | 0.162 | not significant |
-| L3-ridge | L0 | 161 | -2.74 | 3.7e-16 | 1.85e-15 | better |
-| L3-trees | L0 | 161 | -4.26 | 1.72e-26 | 1.21e-25 | better |
-| L4-ridge | L0 | 161 | -2.86 | 3.81e-14 | 1.52e-13 | better |
-| L4-trees | L0 | 161 | -4.13 | 1.89e-26 | 1.21e-25 | better |
+| rung | vs | n configurations | n cells | median paired diff, per-configuration mean APE (pp) | median paired diff, abs log error | Wilcoxon p | Holm p | verdict |
+|---|---|---|---|---|---|---|---|---|
+| L1 | L0 | 38 | 161 | +1.09 | +0.0105 | 0.0495 | 0.148 | not significant |
+| L1-cell (exploratory) | L0 | 38 | 161 | -0.62 | -0.0055 | 0.897 | 1 | not significant |
+| L2 | L0 | 38 | 161 | -0.40 | -0.0047 | 0.646 | 1 | indistinguishable (below noise floor) |
+| L3-ridge | L0 | 38 | 161 | -2.86 | -0.0296 | 6.6e-06 | 3.3e-05 | better |
+| L3-trees | L0 | 38 | 161 | -3.76 | -0.0378 | 3.64e-11 | 2.55e-10 | better |
+| L4-ridge | L0 | 38 | 161 | -2.82 | -0.0285 | 7.88e-05 | 0.000315 | better |
+| L4-trees | L0 | 38 | 161 | -3.90 | -0.0391 | 3.64e-11 | 2.55e-10 | better |
 
 
-*Split: leave one YOLO base model out. Target: whole-cell energy. n = 161 held-out cells in 5 folds (dataset v2, nov2026 rig). run_id: `acc4f1bf2b524febb2565e1d8fe3e79b`. Mode A's energy noise floor (median repeat CV, configurations with at least 2 cells) 0.6 %, reused here as the indistinguishability margin.* Whole-cell energy APE per rung.
+*Split: leave one YOLO base model out. Target: whole-cell energy. n = 161 held-out cells in 38 configurations and 5 folds (dataset v2, nov2026 rig). run_id: `acc4f1bf2b524febb2565e1d8fe3e79b`. Mode A's energy noise floor (median repeat CV, configurations with at least 2 cells) 0.6 %, reused here as the indistinguishability margin.* Whole-cell energy APE per rung.
 
 ![Mode L whole-cell APE per rung](fig/report_mode_l_ape.png)
 
@@ -1339,7 +1339,7 @@ Table sha256 `8a1c44ad7cc16fb9`; split hashes (sha256, 12 characters): S-LOMO `0
 | seed spread (S-LOMO energy) | aa634083491146caa1898cb53dd5b2dc | mode-a | S-LOMO | energy_mJ | 20261122 | 464 | ad0ab1cdc1 | yes | 2026-11-23T14:40:07+00:00 |
 | seed spread (S-LOMO energy) | ef84ce756b244fb0bbf09737556fcb5f | mode-a | S-LOMO | energy_mJ | 20261123 | 464 | ad0ab1cdc1 | yes | 2026-11-23T15:06:36+00:00 |
 | seed spread (S-LOMO energy) | 077aac8ff01a43dd83800dbda7caea08 | mode-a | S-LOMO | energy_mJ | 20261124 | 464 | ad0ab1cdc1 | yes | 2026-11-23T15:12:25+00:00 |
-| extras learning_curve | 07760854b3ab477c993e7f4a5ecbf969 | mode-a-extras |  | energy_mJ | 20261122 | 156 | ad0ab1cdc1 | yes | 2026-11-23T16:04:53+00:00 |
+| extras learning_curve | ad18073de0824e1e80b5d7038c461236 | learning-curve |  | energy_mJ | 20261122 | 156 | 990caa569c | no | 2026-11-23T19:09:23+00:00 |
 | extras pooled | 19d93b0883fe4319b5861cb24162da71 | mode-a-extras | S-LOMO | energy_mJ | 20261122 | 392 | ad0ab1cdc1 | yes | 2026-11-23T16:08:28+00:00 |
 | extras v2only | 7f152464fe184f778d7053983a7a8de0 | mode-a-extras | S-LOMO | energy_mJ | 20261122 | 344 | ad0ab1cdc1 | yes | 2026-11-23T16:10:30+00:00 |
 | Mode L lomo | acc4f1bf2b524febb2565e1d8fe3e79b | mode-l |  |  | 20261122 | 1288 | ad0ab1cdc1 | yes | 2026-11-23T15:29:52+00:00 |
