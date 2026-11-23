@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 
 import deploy
+import lockbox_checks as checks
 import mode_a
 import mode_a_extras
 import mode_a_models as mm
@@ -25,6 +26,7 @@ import runlog
 import static
 import tables
 
+LockboxError = checks.LockboxError      # defined with the checks so that both modules raise the same class
 DEFAULT_CONFIGS = ["yolo12n:640", "yolo12n:320", "yolov8n:480", "resnet18:224", "mbv3:224"]
 FIXED = {"precision": "fp32", "batch": 1, "threads": 4, "cpu_mhz": 2400, "rig": "nov2026"}   # every lockbox cell
 SECONDARY = mode_a_extras.SECONDARY
@@ -39,10 +41,6 @@ FINAL_CMD = "uv run python cli.py mode-a-extras"
 SECONDARY_CMD = "uv run python cli.py final-mode-a-secondary"
 LOMO_CMD = "uv run python cli.py mode-l"
 FINAL_L_CMD = "uv run python cli.py final-mode-l"
-
-
-class LockboxError(RuntimeError):
-    """A lockbox input is missing or inconsistent; the message says what to do."""
 
 
 # ------------------------------------------------------------------ configurations and static features
@@ -147,11 +145,13 @@ def mode_l_frozen(l_refs: dict) -> dict:
     return {r: {"sha256": rec["sha256"], "run_id": rec["run_id"]} for r, rec in l_refs.items()}
 
 
-def manifest(seed: int, pred_sha: str, refs: list, l_refs: dict) -> dict:
-    """Content of reports/lockbox_frozen_models.json: every frozen model with its sha256 and the predictions CSV's."""
+def manifest(seed: int, pred_sha: str, refs: list, l_refs: dict, code: dict, idle_sha: str) -> dict:
+    """Content of reports/lockbox_frozen_models.json: every frozen model with its sha256, the predictions CSV's sha256, the
+    code pin (`lockbox_checks.code_pin`: HEAD, sha256 of every tracked analytics/*.py and of config.toml) and the sha256 of
+    the idle table the serve predictions used."""
     return {"seed": seed, "predictions_csv": PREDICTIONS_CSV, "predictions_sha256": pred_sha,
             "mode_a": {f"{c}/{t}": {"role": role, "sha256": r["sha256"], "run_id": r["run_id"]} for t, c, role, r in refs},
-            "mode_l": mode_l_frozen(l_refs)}
+            "mode_l": mode_l_frozen(l_refs), "code": code, "idle_table_sha256": idle_sha}
 
 
 def refuse_if_lockbox_cells(what: str) -> None:
@@ -282,20 +282,28 @@ def lockbox_cells_exist() -> bool:
     return d.is_dir() and any(p.is_dir() for p in d.iterdir())
 
 
-def run_predict(paths: ri.Paths, configs: list, static_dir, seed: int, *, t: pd.DataFrame, desc_train: pd.DataFrame,
-                idle: pd.DataFrame, force: bool = False) -> dict:
-    """Write reports/lockbox_predictions.csv, reports/lockbox_frozen_models.json (every frozen Mode A and Mode L
-    model with its sha256, plus the predictions' sha256), the documentation-only serve prediction and one runlog
-    line (which also records `mode_l_frozen`). All eight Mode L rungs must be frozen (`final-mode-l`).
-    `t` is the training configuration table (its base models are the training models), `desc_train` the descriptor of those models, `idle` the idle table of the training cells. Refuses to run when any
-    lockbox cell already exists (the predictions must precede the data) or when the file exists (unless
-    `force`)."""
+def predict_guard(paths: ri.Paths, force: bool = False) -> Path:
+    """The predictions path, after the two refusals of `lockbox-predict`: lockbox cells exist (the predictions must precede
+    the data) or the predictions file exists (unless `force`). The CLI runs this before it derives anything."""
     out = Path(paths.out_dir) / PREDICTIONS_CSV
     if lockbox_cells_exist():
         raise LockboxError("lockbox cells already exist; the predictions must be written (and committed) before "
                            "any lockbox cell, and the committed lockbox_predictions.csv is the record")
     if out.exists() and not force:
         raise LockboxError(f"{out} already exists; it is the committed record of the predictions (--force to overwrite)")
+    return out
+
+
+def run_predict(paths: ri.Paths, configs: list, static_dir, seed: int, *, t: pd.DataFrame, desc_train: pd.DataFrame,
+                idle: pd.DataFrame, force: bool = False) -> dict:
+    """Write reports/lockbox_predictions.csv, reports/lockbox_frozen_models.json (every frozen Mode A and Mode L
+    model with its sha256, plus the predictions' sha256), the documentation-only serve prediction and one runlog
+    line (which also records `mode_l_frozen`). All eight Mode L rungs must be frozen (`final-mode-l`).
+    `t` is the training configuration table (its base models are the training models), `desc_train` the descriptor of
+    those models, `idle` the idle table of the training cells. The manifest also pins the scoring code (`code`) and the
+    idle table (`idle_table_sha256`). Refuses to run (`predict_guard`) when any lockbox cell already exists or when the
+    file exists (unless `force`)."""
+    out = predict_guard(paths, force)
     pairs = [parse_config(c) for c in configs]
     if len(set(pairs)) != len(pairs):
         raise LockboxError("duplicate --config")
@@ -314,10 +322,11 @@ def run_predict(paths: ri.Paths, configs: list, static_dir, seed: int, *, t: pd.
     serve.to_csv(serve_out, index=False)
     pred_sha = runlog.file_hash(out)
     man_out = out.with_name(MANIFEST)
-    man_out.write_text(json.dumps(manifest(seed, pred_sha, refs, l_refs), indent=2, sort_keys=True) + "\n")
+    idle_sha = checks.idle_sha256(idle)
+    man_out.write_text(json.dumps(manifest(seed, pred_sha, refs, l_refs, checks.code_pin(), idle_sha), indent=2, sort_keys=True) + "\n")
     rec = runlog.append({"command": "lockbox-predict", "seed": seed, "configs": configs, "n_rows": len(pred),
                          "predictions_csv": str(out), "predictions_sha256": pred_sha,
-                         "mode_l_frozen": mode_l_frozen(l_refs), "manifest_sha256": runlog.file_hash(man_out),
+                         "mode_l_frozen": mode_l_frozen(l_refs), "manifest_sha256": runlog.file_hash(man_out), "idle_table_sha256": idle_sha,
                          "serve_csv_sha256": runlog.file_hash(serve_out),
                          "frozen": {f"{c}/{tg}": r["sha256"] for tg, c, _, r in refs},
                          "frozen_run_ids": {f"{c}/{tg}": r["run_id"] for tg, c, _, r in refs},

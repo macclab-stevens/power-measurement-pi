@@ -191,7 +191,7 @@ def _analyse(row: pd.Series, drows: pd.DataFrame | None, bounds: dict) -> tuple[
     rules = []
     if r["ctx_read_frac_scored"] > bounds["q1_ctx_frac_flag"]:
         rules.append("Q1flag")
-    if r["max_residual_ms"] >= bounds["q2_max_residual_ms"]:
+    if not r["max_residual_ms"] < bounds["q2_max_residual_ms"]:     # a missing or NaN residual is a failure, not a pass
         rules.append("Q2")
     if r["slip_scored_frac"] > bounds["q3_slip_frac_flag"]:
         rules.append("Q3flag")

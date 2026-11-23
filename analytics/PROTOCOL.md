@@ -119,3 +119,13 @@ under-voltage bits were current in any cell (all non-zero words are the 0x50000 
   False for every `source == lockbox` cell, and every table, window, idle-table, Mode L, EDA and report path drops
   those cells explicitly through `data.training_cells`. `lockbox-score` builds its own tables from the lockbox cells.
   It reports yolov8n at 480 px separately as "new size of a training model" (novelty 0 but not in-sample).
+- 2026-11-23, final-review corrections (before `lockbox-predict`; no model refitted, no frozen pickle touched): (1) Mode L paired
+  comparisons now follow the Metrics rule above: Wilcoxon + Holm on per-configuration mean absolute log errors (configuration =
+  Mode A key, mean over its held-out cells), with n configurations and n cells stated; the per-cell MdAPE stays the ladder estimate.
+  (2) The learning curve fits each held-out YOLO model with the M1 parameters chosen in that model's own S-LOMO outer fold (the final-fit
+  parameters had seen it); it is a separate command, `learning-curve`. (3) `mode-a-extras`, `final-mode-a-secondary` and `final-mode-l`
+  refuse once `lockbox_predictions.csv` or `lockbox_frozen_models.json` exists (`--force` is logged and invalidates the lockbox).
+  (4) `lockbox-predict` pins the sha256 of every tracked `analytics/*.py`, of `config.toml`, the commit and the idle table in the manifest;
+  `lockbox-score` refuses a mismatch unless `--allow-code-change`, which labels the result exploratory, and checks the measured cells'
+  layer tables against the static CSVs the predictions used. (5) A missing or NaN alignment residual is a Q2 failure (no cell changes status).
+  The novelty threshold comes from S-LOMO (standardised over 8 models) while lockbox novelty is standardised over the 9 training models.

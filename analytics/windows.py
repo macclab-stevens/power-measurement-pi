@@ -404,6 +404,13 @@ def _peak_rss_mb() -> float:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0   # KiB on Linux
 
 
+def assign_settings(df: pd.DataFrame, row) -> pd.DataFrame:
+    """`df` with cpu_key, fan_mode and governor taken from the catalogue row `row` (the one place that decides them, for the
+    cached builders and for the lockbox windows): cpu_key is `ondemand` for ondemand cells, else the pinned clock in MHz."""
+    return df.assign(cpu_key="ondemand" if row["governor"] == "ondemand" else str(int(row["cpu_mhz"])),
+                     fan_mode=row["fan_mode"], governor=row["governor"])
+
+
 def _build(cat: pd.DataFrame, fn, cache_name: str, force: bool, columns: list[str]) -> pd.DataFrame:
     path = settings.derived_dir() / cache_name
     cat = data.training_cells(cat)
@@ -420,8 +427,7 @@ def _build(cat: pd.DataFrame, fn, cache_name: str, force: bool, columns: list[st
         df = fn(cell, data.read_meta(cell))
         if df is None or df.empty:
             continue
-        parts.append(df.assign(cpu_key="ondemand" if row["governor"] == "ondemand" else str(int(row["cpu_mhz"])),
-                               fan_mode=row["fan_mode"], governor=row["governor"]))
+        parts.append(assign_settings(df, row))
         a = df.attrs
         attrs["n_cells"] += 1
         attrs["dropped"] += a.get("dropped", 0)

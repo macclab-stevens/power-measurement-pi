@@ -37,8 +37,26 @@ def _git(*args) -> str:
                           check=True).stdout
 
 
+def code_files() -> dict:
+    """{`analytics/<name>.py`: sha256} of every git-tracked top-level analytics module, sorted by path, hashed from the
+    working tree (so a dirty tree is identified by what actually ran). Falls back to every top-level *.py when git is not available."""
+    try:
+        names = [n for n in _git("ls-files", "--full-name", "-z", "--", ":(glob)*.py").split("\0") if n]
+        root = settings.HERE
+        paths = {n: root / Path(n).name for n in names}
+    except (OSError, subprocess.CalledProcessError):
+        paths = {f"analytics/{p.name}": p for p in settings.HERE.glob("*.py")}
+    return {n: file_hash(p) for n, p in sorted(paths.items())}
+
+
+def code_sha256(files: dict | None = None) -> str:
+    """sha256 over the sorted `path  sha256` lines of `files` (default: `code_files()`): one hash for the code that ran."""
+    files = code_files() if files is None else files
+    return hashlib.sha256("\n".join(f"{k}  {v}" for k, v in sorted(files.items())).encode()).hexdigest()
+
+
 def append(record: dict, path=None) -> dict:
-    """Add run_id, ts, commit, dirty, data_hash, machine to record; append it as one JSON line."""
+    """Add run_id, ts, commit, dirty, data_hash, code_sha256, machine to record; append it as one JSON line."""
     try:
         commit = _git("rev-parse", "HEAD").strip()
         dirty = bool(_git("status", "--porcelain", "--untracked-files=no").strip())
@@ -50,6 +68,7 @@ def append(record: dict, path=None) -> dict:
         "commit": commit,
         "dirty": dirty,
         "data_hash": data_hash(),
+        "code_sha256": code_sha256(),
         "machine": socket.gethostname(),
         **record,
     }

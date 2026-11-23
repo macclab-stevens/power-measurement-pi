@@ -91,6 +91,7 @@ def cmd_final_mode_a_secondary(args) -> int:
 
 
 def cmd_lockbox_predict(args) -> int:
+    import data
     import derive
     import pandas as pd
     import deploy
@@ -98,15 +99,20 @@ def cmd_lockbox_predict(args) -> int:
     import report_inputs as ri
     import static
     paths = ri.Paths.default()
+    try:
+        lockbox.predict_guard(paths, args.force)               # first: nothing is derived or cached when this run is refused
+    except lockbox.LockboxError as exc:
+        return _fail(exc)
     for p in (paths.configs_csv, paths.qc_csv):
         if not p.is_file():
             return _fail(f"{p} is missing; run `uv run python cli.py tables` / `qc` first")
-    cat = _training_catalogue()
+    full = data.catalogue()                                    # derive_all caches only for the full catalogue
+    cat = full[full["source"] != "lockbox"].reset_index(drop=True)
     try:
         out = lockbox.run_predict(
             paths, args.config or lockbox.DEFAULT_CONFIGS, args.static_dir, _seed(args), t=pd.read_csv(paths.configs_csv),
             desc_train=static.model_descriptor(static.static_table(cat)),
-            idle=deploy.idle_table(cat, derive.derive_all(cat, cache=True), pd.read_csv(paths.qc_csv)), force=args.force)
+            idle=deploy.idle_table(cat, derive.derive_all(full, cache=True), pd.read_csv(paths.qc_csv)), force=args.force)
     except (lockbox.LockboxError, ri.ReportInputError) as exc:
         return _fail(exc)
     pred = out["pred"]
@@ -136,7 +142,8 @@ def cmd_lockbox_score(args) -> int:
         der = derive.derive_all(cat, cache=True)
         qc_l = qc.run_qc(cat_l, der)
         out = ls.run_score(paths, _seed(args), cat=cat, der=der, qc_train=pd.read_csv(paths.qc_csv), qc_l=qc_l,
-                           w=ls.lockbox_windows(cat_l, qc_l), starts=ls.cell_starts(cat_l))
+                           w=ls.lockbox_windows(cat_l, qc_l), starts=ls.cell_starts(cat_l), static_dir=args.static_dir,
+                           allow_code_change=args.allow_code_change)
     except (lockbox.LockboxError, ri.ReportInputError, ValueError) as exc:
         return _fail(exc)
     print(out["summary_a"].to_string(index=False))
@@ -173,6 +180,15 @@ def add_predict_args(p) -> None:
     p.add_argument("--force", action="store_true", help="overwrite an existing lockbox_predictions.csv")
 
 
+def add_score_args(p) -> None:
+    add_seed(p)
+    p.add_argument("--static-dir", default=str(settings.HERE / "lockbox_static"),
+                   help="folder with the <model>_<imgsz>.csv the predictions were made with (default: analytics/lockbox_static)")
+    p.add_argument("--allow-code-change", action="store_true",
+                   help="score although tracked analytics/*.py or config.toml differ from the pin in lockbox_frozen_models.json; "
+                        "lockbox.md and the runlog line are then labelled exploratory")
+
+
 COMMANDS = {
     "final-mode-l": ("freeze the eight Mode L rungs (grid by leave-one-YOLO-model-out, refit on all QC-primary counter "
                      "cells) -> derived/models/mode_l_<rung>.pkl and runs.jsonl", cmd_final_mode_l, add_final_l_args),
@@ -181,5 +197,5 @@ COMMANDS = {
     "lockbox-predict": ("write reports/lockbox_predictions.csv from the frozen Mode A models and tool static features, "
                         "before any lockbox cell exists", cmd_lockbox_predict, add_predict_args),
     "lockbox-score": ("score the frozen models on ~/pi-power-data/lockbox -> reports/lockbox.md and derived/lockbox/; "
-                      "fits nothing", cmd_lockbox_score, add_seed),
+                      "fits nothing", cmd_lockbox_score, add_score_args),
 }

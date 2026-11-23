@@ -101,6 +101,16 @@ def test_q2_excludes_at_threshold(tmp_path):
     assert r["rules"] == "Q2" and r["include"] is False and r["primary"] is False
 
 
+@pytest.mark.parametrize("how", ["null", "nan", "no file"])
+def test_q2_a_missing_or_nan_residual_is_a_failure(tmp_path, how):
+    if how == "no file":
+        mk(tmp_path, "m").joinpath("alignment.json").unlink()
+    else:
+        mk(tmp_path, "m", alignment={"max_residual_ms": None if how == "null" else float("nan")})
+    r = run(tmp_path, "m")
+    assert "Q2" in r["rules"].split(";") and r["include"] is False and r["primary"] is False
+
+
 def test_q3_slip_fraction_is_duration_weighted(tmp_path):
     slip = {"t_ns": T0 + 30_000_000_000, "step_ms": 12.0, "samples": 12}     # inside frame 2
     mk(tmp_path, alignment={"slips": [slip], "slip_samples_total": 12})

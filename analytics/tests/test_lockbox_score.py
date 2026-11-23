@@ -63,8 +63,15 @@ def env(lockbox_env, tmp_path, monkeypatch):
     paths = dataclasses.replace(lockbox_env.paths, runs_log=log, out_dir=tmp_path / "out")
     lb.run_predict(paths, CONFIGS, lockbox_env.static_dir, MASTER, t=lockbox_env.t, desc_train=lockbox_env.desc, idle=idle())
     cat, der, qc_t, qc_l, w = inputs()
+    cells = tmp_path / "cells"                                      # every lockbox cell has the layer table of its configuration
+    for i, r in cat[cat["source"] == "lockbox"].iterrows():
+        d = cells / r["cell_id"]
+        d.mkdir(parents=True)
+        shutil.copy(lockbox_env.static_dir / f"{r['base_model']}_{r['imgsz']}.csv", d / "layer_table.csv")
+        cat.loc[i, "path"] = str(d)
     later = datetime.now(timezone.utc) + timedelta(days=1)          # the lockbox is measured after the predictions
-    return paths, dict(cat=cat, der=der, qc_train=qc_t, qc_l=qc_l, w=w, starts={c: later for c in qc_l["cell_id"]}), lockbox_env
+    return paths, dict(cat=cat, der=der, qc_train=qc_t, qc_l=qc_l, w=w, starts={c: later for c in qc_l["cell_id"]},
+                       static_dir=lockbox_env.static_dir), lockbox_env
 
 
 def score(env):

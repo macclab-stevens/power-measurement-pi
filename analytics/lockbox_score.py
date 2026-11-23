@@ -16,6 +16,7 @@ import data
 import deploy
 import evaluate
 import lockbox as lb
+import lockbox_checks as checks
 import mode_l
 import mode_l_models as mlm
 import report_inputs as ri
@@ -225,7 +226,12 @@ def md(df: pd.DataFrame) -> str:
 
 def render(*, truth, mode_a, summary_a, calc, calc_summary, l_cells, l_summary, probe_summary, prov: dict) -> str:
     """lockbox.md: provenance, then Mode A, calculator, Mode L and probe tables."""
-    out = ["# Lockbox results\n",
+    out = ["# Lockbox results\n"]
+    if prov["exploratory"]:
+        out.append("**EXPLORATORY. The scoring code is not the code of `lockbox-predict` and was scored with "
+                   f"{checks.ALLOW_FLAG}; changed files: {', '.join(prov['changed_files']) or 'none (recorded commit not an ancestor of HEAD)'}.** "
+                   "This is not the pre-registered lockbox result.\n")
+    out += [
            "Scored once; any later change is exploratory. Nothing was fitted on lockbox data: Mode A predictions "
            "are the committed `lockbox_predictions.csv`, Mode L uses the frozen window models.\n",
            "## Provenance\n",
@@ -234,6 +240,7 @@ def render(*, truth, mode_a, summary_a, calc, calc_summary, l_cells, l_summary, 
            f"- frozen-models manifest `analytics/reports/{lb.MANIFEST}` (checked against the runlog line); predictions "
            f"written {prov['predict_ts']}, earliest lockbox cell started {prov['first_start']}",
            f"- scoring run `{prov['run_id']}`; earlier scoring runs: {prov['n_earlier']}",
+           prov["code_line"], prov["static_line"], prov["idle_line"],
            f"- lockbox cells {prov['n_cells']} ({prov['n_primary']} QC-primary): {', '.join(prov['cell_ids'])}",
            "- frozen Mode A models (candidate / target: sha256, runlog run):"]
     out += [f"  - {k}: `{v[0]}` ({v[1]})" for k, v in prov["mode_a_models"].items()]
@@ -245,7 +252,9 @@ def render(*, truth, mode_a, summary_a, calc, calc_summary, l_cells, l_summary, 
             "at an image size the training table has not seen (e.g. yolov8n at 480 px), and resnet18 and mbv3 at 224 px "
             "are the closest to in-sample (same size, other rig). Novelty is per base model: a "
             "model's 320 px configuration uses its 640 px architecture descriptor (as in S-LOMO), so its novelty "
-            "equals that of its 640 px configuration.\n", md(summary_a),
+            "equals that of its 640 px configuration. The applicability threshold comes from S-LOMO, where novelty is standardised over the "
+            "8 training models of each fold; the lockbox novelty is standardised over all 9 training models, so the two scales are "
+            "close but not identical.\n", md(summary_a),
             "## Mode A: per configuration\n",
             md(mode_a[["model", "imgsz", "target", "role", "candidate", "pred", "lo90", "hi90", "truth", "ape", "inside",
                        "flagged", "novelty"]])]
@@ -266,13 +275,14 @@ def render(*, truth, mode_a, summary_a, calc, calc_summary, l_cells, l_summary, 
 # ------------------------------------------------------------------ the command
 
 def lockbox_windows(cat_l: pd.DataFrame, qc_l: pd.DataFrame) -> pd.DataFrame:
-    """100 ms counter windows of the QC-primary lockbox cells that have counters (`windows.cell_windows`)."""
+    """100 ms counter windows of the QC-primary lockbox cells that have counters (`windows.cell_windows`, with cpu_key, fan_mode
+    and governor taken from the catalogue row by `windows.assign_settings`, the same code as the cached training builders)."""
     ok = set(qc_l.loc[qc_l["primary"].astype(bool), "cell_id"])
     parts = []
     for _, r in cat_l[cat_l["cell_id"].isin(ok) & cat_l["has_counters"].astype(bool)].iterrows():
         d = windows.cell_windows(Path(r["path"]), data.read_meta(r["path"]))
         if d is not None and len(d):
-            parts.append(d)
+            parts.append(windows.assign_settings(d, r))      # cpu_key, fan_mode, governor from the catalogue row, as `windows._build`
     return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
 
 
@@ -350,12 +360,16 @@ def frozen_mode_l(recs: list, predict_rec: dict, seed: int) -> tuple:
 
 
 def run_score(paths: ri.Paths, seed: int, *, cat: pd.DataFrame, der: pd.DataFrame, qc_train: pd.DataFrame,
-              qc_l: pd.DataFrame, w: pd.DataFrame, starts: dict) -> dict:
+              qc_l: pd.DataFrame, w: pd.DataFrame, starts: dict, static_dir, allow_code_change: bool = False) -> dict:
     """Score everything once and write lockbox.md, the parquets under derived/lockbox/ and one runlog line.
     Fits nothing: Mode A predictions come from the committed predictions CSV and Mode L from the frozen rung
     pickles. Refuses unless the predictions file is the one `lockbox-predict` recorded, was written before the
     earliest of `starts` ({cell_id: start}), every Mode A model still has the sha256 the CSV was written with
-    and every Mode L rung is still the frozen one (`check_freeze`, `frozen_mode_l`)."""
+    and every Mode L rung is still the frozen one (`check_freeze`, `frozen_mode_l`). It also refuses when the tracked
+    analytics modules or config.toml differ from the pin in the manifest (`lockbox_checks.check_code`; with
+    `allow_code_change` it scores and labels lockbox.md and the runlog line exploratory) and when a measured
+    cell's layer table gives other static features than the CSV in `static_dir` the predictions were made with
+    (`check_static`). The idle table is recomputed and compared with the recorded hash (reported, not a refusal)."""
     cat_l = require_lockbox(cat)
     cat_t = cat[cat["source"] != "lockbox"]
     check_design(cat_l)
@@ -366,6 +380,9 @@ def run_score(paths: ri.Paths, seed: int, *, cat: pd.DataFrame, der: pd.DataFram
                               f"(`uv run python cli.py lockbox-predict ...`)")
     pred, pred_sha = pd.read_csv(pred_path), runlog.file_hash(pred_path)
     predict_rec = check_freeze(recs, pred_sha, pred_path, starts, seed)
+    man = json.loads(pred_path.with_name(lb.MANIFEST).read_text())
+    code = checks.check_code(man.get("code"), allow_code_change)
+    stat = checks.check_static(cat_l, qc_l, pred, static_dir)
     ma_models, refs = {}, lb.mode_a_refs(recs, seed)
     for target, cand, _, rec in refs:
         lb.load_frozen(rec)                                           # sha256 check against runs.jsonl
@@ -381,7 +398,9 @@ def run_score(paths: ri.Paths, seed: int, *, cat: pd.DataFrame, der: pd.DataFram
     seen = set(map(tuple, cat_t[cat_t["mode_a_eligible"].astype(bool)][["base_model", "imgsz"]].astype({"imgsz": int}).to_numpy()))
     scores = score_mode_a(pred, truth, seen)
     sum_a = summarise_mode_a(scores)
-    calc = calculator(cat_l, der, qc_l, pred, deploy.idle_table(cat_t, der, qc_train))
+    idle = deploy.idle_table(cat_t, der, qc_train)
+    idle_ok = checks.idle_sha256(idle) == man.get("idle_table_sha256")
+    calc = calculator(cat_l, der, qc_l, pred, idle)
     calc_sum = (calc.groupby("new_model").agg(n=("ape", "size"), median_ape=("ape", "median"), inside_90=("inside", "mean"))
                 .reset_index() if len(calc) else pd.DataFrame())
     l_cells = mode_l_cells(w, cat_l, l_models) if len(w) else pd.DataFrame(columns=["cell_id", "rung", "model", "ape"])
@@ -399,7 +418,16 @@ def run_score(paths: ri.Paths, seed: int, *, cat: pd.DataFrame, der: pd.DataFram
             "predict_run_id": predict_rec["run_id"], "predict_ts": predict_rec["ts"],
             "first_start": min(starts.values()).isoformat(timespec="seconds"), "run_id": run_id, "n_earlier": earlier,
             "n_cells": len(cat_l), "n_primary": int(prim.sum()), "cell_ids": sorted(cat_l["cell_id"]),
-            "mode_a_models": ma_models, "mode_l_models": l_ids}
+            "mode_a_models": ma_models, "mode_l_models": l_ids, "exploratory": bool(code["changed_files"] or code["relation"] == "not an ancestor of HEAD"),
+            "changed_files": code["changed_files"],
+            "code_line": ("- scoring code identical to `lockbox-predict` (tracked analytics/*.py and config.toml match the manifest); "
+                          f"recorded commit `{code['commit']}`: {code['relation']}" if not code["changed_files"] else
+                          f"- scoring code DIFFERS from `lockbox-predict`: {', '.join(code['changed_files']) or 'recorded commit is not an ancestor of HEAD'}; "
+                          f"recorded commit `{code['commit']}`: {code['relation']}"),
+            "static_line": (f"- Static features: the layer tables of the measured cells equal the static features the predictions used "
+                           f"({stat['checked']} QC-primary cells in {stat['configs']} configurations; macs and params exactly, other features to a "
+                           f"relative {checks.REL_TOL:g})" + (f"; not predicted, not checked: {', '.join(stat['unpredicted'])}" if stat["unpredicted"] else "")),
+            "idle_line": f"- idle table matches the one used at `lockbox-predict`: {'yes' if idle_ok else 'NO (the serve rows of the predictions CSV used another idle table)'}"}
     text = render(truth=truth, mode_a=scores, summary_a=sum_a, calc=calc, calc_summary=calc_sum, l_cells=l_cells,
                   l_summary=l_sum, probe_summary=summarise_probe(probe), prov=prov)
     md_path = Path(paths.out_dir) / "lockbox.md"
@@ -408,6 +436,8 @@ def run_score(paths: ri.Paths, seed: int, *, cat: pd.DataFrame, der: pd.DataFram
                          "predict_run_id": predict_rec["run_id"], "predict_ts": predict_rec["ts"],
                          "n_cells": len(cat_l), "n_primary": int(prim.sum()),
                          "n_earlier_scorings": earlier, "mode_a_models": ma_models, "mode_l_models": l_ids,
+                         "exploratory": prov["exploratory"], "changed_files": code["changed_files"], "commit_relation": code["relation"],
+                         "allow_code_change": allow_code_change, "static_checked_cells": stat["checked"], "idle_table_matches": idle_ok,
                          "mode_a_mdape": {f"{r.candidate}/{r.target}/{r.group}": r.mdape for r in sum_a.itertuples()},
                          "mode_l_median_ape": ({f"{r.family}/{r.rung}": r.median_ape for r in l_sum.itertuples()}
                                                if len(l_sum) else {}),
