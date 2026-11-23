@@ -112,6 +112,22 @@ def test_int8_cell(tmp_path):
     assert r.mode_a_eligible and r.cpu_mhz == 1500
 
 
+def test_torchvision_variant_of_an_fp32_cell_is_normalised_to_the_model_key_and_real_variants_are_kept(tmp_path):
+    tv = "torchvision:mobilenet_v3_small"
+    make_cell(tmp_path, "lockbox", "tv_equal", meta={"model": tv, "variant": tv, "quant": "fp32"}, index={"model_key": "mbv3"})
+    make_cell(tmp_path, "lockbox", "tv_prefix", meta={"model": "mbv3.pt", "variant": "torchvision:other", "quant": "fp32"}, index={"model_key": "mbv3"})
+    make_cell(tmp_path, "v2", "same_as_model", meta={"model": "foo", "variant": "foo", "quant": "fp32"}, index={"model_key": "mbv3"})
+    make_cell(tmp_path, "v2", "yolo", meta={"model": "yolo11n.pt", "variant": "yolo11n", "quant": "fp32"}, index={"model_key": "yolo11n"})
+    make_cell(tmp_path, "v2", "int8", meta={"model": "yolo11n.pt", "variant": "yolo11n_int8s", "quant": "int8-static"}, index={"model_key": "yolo11n"})
+    make_cell(tmp_path, "v2", "fp16", meta={"model": "yolo11n.pt", "variant": "yolo11n_fp16", "quant": "fp16", "executed_dtype": "float16"},
+              index={"model_key": "yolo11n"})
+    make_cell(tmp_path, "v2", "tv_int8", meta={"model": tv, "variant": tv, "quant": "int8-static"}, index={"model_key": "mbv3"})
+    v = data.catalogue(tmp_path).set_index("cell_id")["variant"]
+    assert v["tv_equal"] == v["tv_prefix"] == v["same_as_model"] == "mbv3"
+    assert v["yolo"] == "yolo11n" and v["int8"] == "yolo11n_int8s" and v["fp16"] == "yolo11n_fp16"
+    assert v["tv_int8"] == tv                      # only fp32 cells are normalised
+
+
 def test_quantized_modules_list_and_precision_fp16(tmp_path):
     make_cell(tmp_path, "v2", "q", meta={"quant": "int8-dynamic", "quantized_modules": ["a", "b"]})
     make_cell(tmp_path, "v2", "h", meta={"quant": "fp16", "executed_dtype": "float16"})

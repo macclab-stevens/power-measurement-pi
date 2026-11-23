@@ -81,6 +81,18 @@ def _load_indexes(root: Path) -> dict:
     return idx
 
 
+def variant_of(m: dict, base: str, quant: str) -> str:
+    """The cell's variant: run_meta's, defaulting to the base model (v1 classifier cells have none). An fp32 cell whose variant is
+    only the model string it ran (`torchvision:resnet18`, or the run's own `model` value) is the base model itself; genuine
+    variant names (`yolo11n_int8s`, `yolo11n_fp16`) and non-fp32 cells keep theirs."""
+    v = m.get("variant")
+    if not v:
+        return base
+    if quant == "fp32" and (v == m.get("model") or str(v).startswith("torchvision:")):
+        return base
+    return v
+
+
 def _row(cell: Path, src: str, ix: pd.Series, m: dict) -> dict:
     quant = m.get("quant") or "fp32"
     base = ix["model_key"]
@@ -95,7 +107,7 @@ def _row(cell: Path, src: str, ix: pd.Series, m: dict) -> dict:
     lock = src == "lockbox"      # a lockbox cell is never training data, whatever model it measures
     return {
         "cell_id": cell.name, "source": src, "path": str(cell), "task": task,
-        "model_key": base, "base_model": base, "variant": m.get("variant") or base,
+        "model_key": base, "base_model": base, "variant": variant_of(m, base, quant),
         "precision": precision_of(quant, m.get("executed_dtype")), "quant": quant,
         "n_quantized_modules": _n_modules(m.get("quantized_modules")),
         "imgsz": m.get("imgsz"), "batch": m.get("batch") or 1, "threads": m.get("threads") or 4,
