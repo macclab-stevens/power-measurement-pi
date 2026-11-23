@@ -28,6 +28,12 @@ def cell_weights(w: pd.DataFrame) -> np.ndarray:
 
 
 def _col(w, name):
+    """Feature column as float. A missing column raises KeyError: only L0 (busy) and the L1 family
+    (pmic_W) use `_opt`, because pmic_windows lacks the counter columns."""
+    return w[name].to_numpy(dtype=float)
+
+
+def _opt(w, name):
     return w[name].to_numpy(dtype=float) if name in w.columns else np.full(len(w), np.nan)
 
 
@@ -40,7 +46,7 @@ class L0Lookup:
     weighted mean. Without a `busy` column every window counts as not busy."""
 
     def _keys(self, w):
-        busy = _col(w, "busy") > BUSY_HI
+        busy = _opt(w, "busy") > BUSY_HI
         return pd.DataFrame({"c": w["cpu_key"].astype(str).to_numpy(), "f": w["fan_mode"].astype(str).to_numpy(),
                              "b": busy})
 
@@ -64,14 +70,20 @@ class L0Lookup:
 
 
 class L1Pmic:
-    """Weighted OLS P = a + b * pmic_W over training windows with a PMIC read. Windows without one are
-    predicted by an L0 lookup fitted on the same training rows (`fallback_frac` reports their share)."""
+    """Weighted OLS P = a + b * pmic_W over training windows with a PMIC read (the pre-registered
+    estimator). Windows without one are predicted by an L0 lookup fitted on the same training rows
+    (`fallback_frac` reports their share). The 5 s zero-order-hold snapshot is noisy against the 100 ms
+    window power, so the per-window slope is attenuated (regression dilution); see L1CellPmic."""
+
+    def _calibrate(self, train_w, x, y, sw):
+        """(x, y, sw) of the rows to regress on: here the finite-pmic windows themselves."""
+        return x, y, sw
 
     def fit(self, train_w, params, sample_weight):
         self.l0 = L0Lookup().fit(train_w, {}, sample_weight)
-        x, y = _col(train_w, "pmic_W"), train_w["P_W"].to_numpy(float)
+        x, y = _opt(train_w, "pmic_W"), train_w["P_W"].to_numpy(float)
         ok = np.isfinite(x)
-        x, y, sw = x[ok], y[ok], sample_weight[ok]
+        x, y, sw = self._calibrate(train_w[ok], x[ok], y[ok], sample_weight[ok])
         if len(x) == 0 or np.ptp(x) == 0:
             self.a, self.b = (_wmean(y, sw) if len(x) else self.l0.glob), 0.0
             return self
@@ -81,7 +93,7 @@ class L1Pmic:
         return self
 
     def predict(self, w):
-        x = _col(w, "pmic_W")
+        x = _opt(w, "pmic_W")
         ok = np.isfinite(x)
         out = np.empty(len(w))
         out[ok] = self.a + self.b * x[ok]
@@ -91,7 +103,17 @@ class L1Pmic:
 
     @staticmethod
     def fallback_frac(w) -> float:
-        return float(np.mean(~np.isfinite(_col(w, "pmic_W")))) if len(w) else float("nan")
+        return float(np.mean(~np.isfinite(_opt(w, "pmic_W")))) if len(w) else float("nan")
+
+
+class L1CellPmic(L1Pmic):
+    """EXPLORATORY. P = a + b * pmic_W by OLS on per-cell means of P_W and pmic_W (one row per training
+    cell, equal weight), applied per window. Averaging over a cell removes the snapshot noise that
+    dilutes the per-window slope of L1."""
+
+    def _calibrate(self, train_w, x, y, sw):
+        m = pd.DataFrame({"c": train_w["cell_id"].to_numpy(), "x": x, "y": y}).groupby("c")[["x", "y"]].mean()
+        return m["x"].to_numpy(), m["y"].to_numpy(), np.ones(len(m))
 
 
 class _RidgeMixin:
@@ -182,6 +204,7 @@ class Rung(NamedTuple):
     name: str
     make: Callable      # make(seed) -> a fresh window model
     grid: list          # list of params dicts; one point means nothing to select
+    exploratory: bool = False
 
 
 ALPHAS = np.logspace(-2, 4, 7)
@@ -194,6 +217,7 @@ def default_rungs() -> dict:
     return {
         "L0": Rung("L0", lambda seed: L0Lookup(), [{}]),
         "L1": Rung("L1", lambda seed: L1Pmic(), [{}]),
+        "L1-cell": Rung("L1-cell", lambda seed: L1CellPmic(), [{}], exploratory=True),
         "L2": Rung("L2", lambda seed: L2Busy(), ridge),
         "L3-ridge": Rung("L3-ridge", lambda seed: L3Counters("ridge", seed), ridge),
         "L3-trees": Rung("L3-trees", lambda seed: L3Counters("trees", seed), TREE_GRID),
@@ -204,4 +228,4 @@ def default_rungs() -> dict:
 
 def first_point(rungs: dict) -> dict:
     """The same rungs with only their first grid point (smoke runs)."""
-    return {k: Rung(v.name, v.make, v.grid[:1]) for k, v in rungs.items()}
+    return {k: v._replace(grid=v.grid[:1]) for k, v in rungs.items()}

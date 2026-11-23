@@ -18,12 +18,12 @@ import deploy
 import evaluate
 import mode_l_models as mm
 import runlog
+import splits
 import tables
 
 PHASES = ("idle", "load_weights", "warmup", "forward", "serve")
 IDLE_PHASES = ("idle", "baseline_A", "baseline_B")        # baseline windows are the idle phase
 HORIZONS = {"ape_1s": 10, "ape_10s": 100}                 # windows per block (100 ms windows)
-METRIC_KEYS = ("mdape", "mape", "mae", "rmse", "bias_pct")
 
 
 # ------------------------------------------------------------------ scoring helpers
@@ -49,7 +49,7 @@ def _cell_apes(w: pd.DataFrame, p: np.ndarray) -> np.ndarray:
     n = codes.max() + 1
     pred = np.bincount(codes, weights=p * w["dur_s"].to_numpy(float), minlength=n)
     true = np.bincount(codes, weights=w["E_mJ"].to_numpy(float), minlength=n) / 1000.0
-    return np.abs(pred - true) / true
+    return np.where(true > 0, np.abs(pred - true) / np.where(true > 0, true, 1.0), np.nan)
 
 
 def _score_cell(c: pd.DataFrame, p: np.ndarray) -> dict:
@@ -76,11 +76,17 @@ def _score_cell(c: pd.DataFrame, p: np.ndarray) -> dict:
 
 # ------------------------------------------------------------------ outer / inner folds
 
-def _prep(w: pd.DataFrame, cat: pd.DataFrame, qc: pd.DataFrame | None) -> pd.DataFrame:
-    """Windows of QC-primary catalogue cells with `base_model`, sorted by (cell_id, w_idx)."""
+def _prep(w: pd.DataFrame, cat: pd.DataFrame, qc: pd.DataFrame | None, yolo=splits.YOLO) -> pd.DataFrame:
+    """Windows of QC-primary catalogue cells of the `yolo` base models, with `base_model`, sorted by
+    (cell_id, w_idx). attrs["excluded"] maps every other base model to its window and cell counts."""
     c = cat if qc is None else cat[cat["cell_id"].isin(qc.loc[qc["primary"].astype(bool), "cell_id"])]
     w = w[w["cell_id"].isin(c["cell_id"])].copy()
     w["base_model"] = w["cell_id"].map(dict(zip(cat["cell_id"], cat["base_model"])))
+    keep = w["base_model"].isin(yolo)
+    excluded = w.loc[~keep].groupby("base_model")["cell_id"].agg(["size", "nunique"])
+    w = w[keep]
+    w.attrs["excluded"] = {m: {"windows": int(r["size"]), "cells": int(r["nunique"])}
+                           for m, r in excluded.iterrows()}
     return w.sort_values(["cell_id", "w_idx"], kind="stable").reset_index(drop=True)
 
 
@@ -114,7 +120,7 @@ def _run_fold(held: str, w: pd.DataFrame, rungs: dict, seed: int) -> list:
             c = test.iloc[idx]
             rows.append({"fold": held, "cell_id": cid, "rung": name,
                          "params": json.dumps(params, sort_keys=True),
-                         **_score_cell(c, p[idx]),
+                         "exploratory": rung.exploratory, **_score_cell(c, p[idx]),
                          "l1_fallback_frac": fb(c) if fb else float("nan")})
     return rows
 
@@ -124,19 +130,24 @@ def run_lomo(w: pd.DataFrame, cat: pd.DataFrame, seed: int, *, qc: pd.DataFrame 
     """Leave one YOLO base model out over the QC-primary counter cells of `w`; one row per
     (fold, test cell, rung). `seed` is the tree random_state. `rungs` defaults to
     `mode_l_models.default_rungs()`; `folds` restricts the held-out base models; results are identical
-    for any `n_jobs`."""
+    for any `n_jobs`. Only `splits.YOLO` base models are outer folds; windows of any other base model
+    are excluded and counted in the result's `attrs["excluded"]`."""
     rungs = rungs or mm.default_rungs()
     w = _prep(w, cat, qc)
+    excluded = w.attrs["excluded"]
     held = sorted(w["base_model"].unique()) if folds is None else list(folds)
     res = Parallel(n_jobs=n_jobs)(delayed(_run_fold)(h, w, rungs, seed) for h in held)
-    return pd.DataFrame([r for fold in res for r in fold])
+    out = pd.DataFrame([r for fold in res for r in fold])
+    out.attrs["excluded"] = excluded
+    return out
 
 
 # ------------------------------------------------------------------ PMIC-only, leave one workload out
 
 def run_pmic_v1(pw: pd.DataFrame, cat: pd.DataFrame, qc: pd.DataFrame | None = None) -> pd.DataFrame:
-    """L1 (P = a + b * pmic_W) scored leave-one-workload-out (by `model_key`) over the QC-primary cells
-    of `pw` (v1 and v2), whole-cell energy APE per cell with weights 1 / windows per cell."""
+    """L1 (P = a + b * pmic_W) and the exploratory L1-cell (calibrated on per-cell means) scored
+    leave-one-workload-out (by `model_key`) over the QC-primary cells of `pw` (v1 and v2), whole-cell
+    energy APE per cell with weights 1 / windows per cell. One row per (rung, cell)."""
     c = cat if qc is None else cat[cat["cell_id"].isin(qc.loc[qc["primary"].astype(bool), "cell_id"])]
     info = c.set_index("cell_id")[["model_key", "family"]]
     pw = pw[pw["cell_id"].isin(info.index)].copy()
@@ -144,18 +155,20 @@ def run_pmic_v1(pw: pd.DataFrame, cat: pd.DataFrame, qc: pd.DataFrame | None = N
     pw = pw.sort_values(["cell_id", "t_start_ns"] if "t_start_ns" in pw else ["cell_id"],
                         kind="stable").reset_index(drop=True)
     rows = []
-    for key in sorted(pw["model_key"].unique()):
-        tr, te = pw[pw["model_key"] != key], pw[pw["model_key"] == key]
-        model = mm.L1Pmic().fit(tr, {}, mm.cell_weights(tr))
-        p = model.predict(te)
-        for cid, idx in te.groupby("cell_id", sort=True).indices.items():
-            cc = te.iloc[idx]
-            s = _score_cell(cc, p[idx])
-            rows.append({"cell_id": cid, "model_key": key, "family": info.loc[cid, "family"],
-                         "E_true_J": s["E_true_J"], "E_pred_J": s["E_pred_J"], "ape": s["ape"],
-                         "bias_pct": s["bias_pct"], "mae_window_W": s["mae_window_W"],
-                         "n_windows": s["n_windows"], "slope": model.b, "intercept": model.a,
-                         "l1_fallback_frac": model.fallback_frac(cc)})
+    for rung, cls in (("L1", mm.L1Pmic), ("L1-cell", mm.L1CellPmic)):
+        for key in sorted(pw["model_key"].unique()):
+            tr, te = pw[pw["model_key"] != key], pw[pw["model_key"] == key]
+            model = cls().fit(tr, {}, mm.cell_weights(tr))
+            p = model.predict(te)
+            for cid, idx in te.groupby("cell_id", sort=True).indices.items():
+                cc = te.iloc[idx]
+                s = _score_cell(cc, p[idx])
+                rows.append({"rung": rung, "exploratory": rung == "L1-cell", "cell_id": cid,
+                             "model_key": key, "family": info.loc[cid, "family"],
+                             "E_true_J": s["E_true_J"], "E_pred_J": s["E_pred_J"], "ape": s["ape"],
+                             "bias_pct": s["bias_pct"], "mae_window_W": s["mae_window_W"],
+                             "n_windows": s["n_windows"], "slope": model.b, "intercept": model.a,
+                             "l1_fallback_frac": model.fallback_frac(cc)})
     return pd.DataFrame(rows)
 
 
@@ -169,7 +182,9 @@ def probe(w: pd.DataFrame, der: pd.DataFrame, cat: pd.DataFrame, mode_a_pred: pd
     windows (W; the outer-fold model that never saw j's base model) x latency_ms_per_image of j;
     true_mJ = energy_mJ_per_image of k. `mode_a_pred` holds the held-out Mode A predictions
     (`config_key`, `e_img_mJ`, e.g. from deploy.preds_from_mode_a); `lomo` is a run_lomo result (computed
-    here when None). Columns: config_key, j, k, rung, probe_mJ, true_mJ, ape, mode_a_mJ, mode_a_ape."""
+    here when None). Columns: config_key, j, k, rung, exploratory, probe_mJ, true_mJ, ape, mode_a_mJ,
+    mode_a_ape, mode_a_run_id (the Mode A S-LOMO energy run the predictions came from, read from
+    `mode_a_pred.attrs["run_ids"]`, else None) and mode_a_seed_matched."""
     if lomo is None:
         lomo = run_lomo(w, cat, seed, qc=qc, rungs=rungs, n_jobs=n_jobs)
     d = der[der["mode"] == tables.MODE].set_index("cell_id")
@@ -178,6 +193,10 @@ def probe(w: pd.DataFrame, der: pd.DataFrame, cat: pd.DataFrame, mode_a_pred: pd
     c["config_key"] = [deploy.mode_a_key_for_cell(r) for _, r in c.iterrows()]
     mode_a = ({} if mode_a_pred is None or len(mode_a_pred) == 0
               else mode_a_pred.drop_duplicates("config_key").set_index("config_key")["e_img_mJ"].to_dict())
+    ra = (getattr(mode_a_pred, "attrs", None) or {})
+    run_id = (ra.get("run_ids") or {}).get("energy_mJ")
+    matched = (ra.get("seed_matched") or {}).get("energy_mJ")
+    expl = lomo.drop_duplicates("rung").set_index("rung")["exploratory"].to_dict()
     pbar = lomo.set_index(["cell_id", "rung"])["mean_P_pred_meas_W"]
     rows = []
     for key, g in sorted(c.groupby("config_key"), key=lambda kv: kv[0]):
@@ -193,18 +212,16 @@ def probe(w: pd.DataFrame, der: pd.DataFrame, cat: pd.DataFrame, mode_a_pred: pd
                 lat = float(d.loc[j, "latency_ms_per_image"]) if j in d.index else float("nan")
                 for rung in lomo["rung"].unique():
                     pr = float(pbar.get((j, rung), float("nan"))) * lat
-                    rows.append({"config_key": key, "j": j, "k": k, "rung": rung, "probe_mJ": pr,
+                    rows.append({"config_key": key, "j": j, "k": k, "rung": rung, "exploratory": bool(expl[rung]), "probe_mJ": pr,
                                  "true_mJ": true, "ape": _ape(pr, true), "mode_a_mJ": a,
-                                 "mode_a_ape": _ape(a, true)})
-    return pd.DataFrame(rows, columns=["config_key", "j", "k", "rung", "probe_mJ", "true_mJ", "ape",
-                                       "mode_a_mJ", "mode_a_ape"])
+                                 "mode_a_ape": _ape(a, true), "mode_a_run_id": run_id,
+                                 "mode_a_seed_matched": matched})
+    return pd.DataFrame(rows, columns=["config_key", "j", "k", "rung", "exploratory", "probe_mJ", "true_mJ",
+                                       "ape", "mode_a_mJ", "mode_a_ape", "mode_a_run_id",
+                                       "mode_a_seed_matched"])
 
 
 # ------------------------------------------------------------------ the run
-
-def _pooled(df: pd.DataFrame, true: str, pred: str) -> dict:
-    return {k: v for k, v in evaluate.metrics(df[true], df[pred]).items()}
-
 
 def run_all(w, pw, cat, der, qc, *, seed, n_jobs, mode_a_pred, out_dir, rungs=None, folds=None,
             runlog_path=None) -> dict:
@@ -218,20 +235,21 @@ def run_all(w, pw, cat, der, qc, *, seed, n_jobs, mode_a_pred, out_dir, rungs=No
     lomo = run_lomo(w, cat, seed, qc=qc, rungs=rungs, folds=folds, n_jobs=n_jobs)
     wall = time.perf_counter() - t0
     lomo.to_parquet(out / f"{run_id}.parquet", index=False)
-    per = {r: {**_pooled(g, "E_true_J", "E_pred_J"),
+    per = {r: {"exploratory": bool(g["exploratory"].iloc[0]), **evaluate.metrics(g["E_true_J"], g["E_pred_J"]),
                "median_ape_1s": float(g["ape_1s"].median()), "median_ape_10s": float(g["ape_10s"].median()),
-               "mdape_meas": _pooled(g, "E_true_meas_J", "E_pred_meas_J")["mdape"]}
+               "mdape_meas": evaluate.metrics(g["E_true_meas_J"], g["E_pred_meas_J"])["mdape"]}
            for r, g in lomo.groupby("rung", sort=False)}
     runlog.append({"run_id": run_id, "command": "mode-l", "part": "lomo", "seed": seed, "n_jobs": n_jobs,
                    "folds": sorted(lomo["fold"].unique()), "n_cells": int(lomo["cell_id"].nunique()),
-                   "metrics": per, "wall_s": round(wall, 1)}, runlog_path)
+                   "excluded_non_yolo": lomo.attrs["excluded"], "metrics": per, "wall_s": round(wall, 1)}, runlog_path)
     t0 = time.perf_counter()
     pm = run_pmic_v1(pw, cat, qc)
     wall_p = time.perf_counter() - t0
     pm.to_parquet(out / f"{run_id}_pmic_v1.parquet", index=False)
-    runlog.append({"run_id": run_id, "command": "mode-l", "part": "pmic_v1", "seed": seed, "n_cells": len(pm),
-                   "median_ape": float(pm["ape"].median()),
-                   "median_ape_by_family": {f: float(g["ape"].median()) for f, g in pm.groupby("family")},
+    runlog.append({"run_id": run_id, "command": "mode-l", "part": "pmic_v1", "seed": seed, "n_cells": int(pm["cell_id"].nunique()),
+                   "median_ape": {r: float(g["ape"].median()) for r, g in pm.groupby("rung", sort=False)},
+                   "median_ape_by_family": {r: {f: float(h["ape"].median()) for f, h in g.groupby("family")}
+                                            for r, g in pm.groupby("rung", sort=False)},
                    "wall_s": round(wall_p, 1)}, runlog_path)
     skipped = mode_a_pred is None
     pr = None
@@ -240,6 +258,8 @@ def run_all(w, pw, cat, der, qc, *, seed, n_jobs, mode_a_pred, out_dir, rungs=No
         pr = probe(w, der, cat, mode_a_pred, seed, lomo=lomo)
         pr.to_parquet(out / f"{run_id}_probe.parquet", index=False)
         runlog.append({"run_id": run_id, "command": "mode-l", "part": "probe", "seed": seed, "n_pairs": len(pr),
+                       "mode_a_run_ids": mode_a_pred.attrs.get("run_ids"),
+                       "mode_a_seed_matched": mode_a_pred.attrs.get("seed_matched"),
                        "median_ape": {r: float(g["ape"].median()) for r, g in pr.groupby("rung", sort=False)},
                        "median_mode_a_ape": float(pr["mode_a_ape"].median()) if len(pr) else float("nan"),
                        "wall_s": round(time.perf_counter() - t0, 1)}, runlog_path)

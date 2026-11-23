@@ -13,7 +13,7 @@ NAN = float("nan")
 N_WIN = 220
 
 
-def make_windows(models=("mA", "mB", "mC"), cells_per_model=2, seed=0, pmic=True, slope=5.0, icpt=4.0):
+def make_windows(models=("yolov8n", "yolov8s", "yolov8m"), cells_per_model=2, seed=0, pmic=True, slope=5.0, icpt=4.0):
     """Synthetic 100 ms windows: P = icpt + slope * busy. Cell ids <model>_r<k>."""
     rng = np.random.default_rng(seed)
     rows, cat = [], []
@@ -52,9 +52,9 @@ def test_l2_recovers_linear_busy_power():
 
 def test_l0_lookup_and_fallbacks():
     w, _ = make_windows(cells_per_model=1)
-    w["cpu_key"] = np.where(w["cell_id"] == "mA_r0", "1500", "2400")
-    w["busy"] = np.where(w["cell_id"] == "mA_r0", 0.9, 0.1)
-    w["P_W"] = np.where(w["cell_id"] == "mA_r0", 10.0, 6.0)
+    w["cpu_key"] = np.where(w["cell_id"] == "yolov8n_r0", "1500", "2400")
+    w["busy"] = np.where(w["cell_id"] == "yolov8n_r0", 0.9, 0.1)
+    w["P_W"] = np.where(w["cell_id"] == "yolov8n_r0", 10.0, 6.0)
     m = mm.L0Lookup().fit(w, {}, np.ones(len(w)))
     q = w.iloc[:3].copy()
     q["cpu_key"], q["fan_mode"], q["busy"] = ["1500", "2400", "2400"], ["full", "full", "off"], 0.9
@@ -111,7 +111,7 @@ def test_l3_features_have_no_pmic_and_l4_adds_it():
 
 def test_grids_match_the_protocol():
     g = mm.default_rungs()
-    assert list(g) == ["L0", "L1", "L2", "L3-ridge", "L3-trees", "L4-ridge", "L4-trees"]
+    assert list(g) == ["L0", "L1", "L1-cell", "L2", "L3-ridge", "L3-trees", "L4-ridge", "L4-trees"]
     assert [p["alpha"] for p in g["L2"].grid] == pytest.approx(list(np.logspace(-2, 4, 7)))
     assert len(g["L3-ridge"].grid) == 7 and len(g["L0"].grid) == 1 and len(g["L1"].grid) == 1
     tg = g["L4-trees"].grid
@@ -144,7 +144,7 @@ class Spy:
 
 
 def test_spy_no_test_cell_ever_in_a_fit_and_weights_sum_to_cells():
-    w, cat = make_windows(models=("mA", "mB", "mC", "mD"))
+    w, cat = make_windows(models=("yolov8n", "yolov8s", "yolov8m", "yolo11n"))
     Spy.log = []
     rungs = {"spy": mm.Rung("spy", lambda seed: Spy(), [{"k": 1}, {"k": 2}])}
     res = mode_l.run_lomo(w, cat, seed=1, rungs=rungs)
@@ -160,7 +160,7 @@ def test_spy_no_test_cell_ever_in_a_fit_and_weights_sum_to_cells():
         # whole models: a model is never split between train and the cells it is scored on
         assert {cells_of[c] for c in test_cells}.isdisjoint({cells_of[c] for c in fit_cells})
     # run each outer fold alone: its held-out model's cells appear in no fit at all
-    for held in ("mA", "mB", "mC", "mD"):
+    for held in ("yolov8n", "yolov8s", "yolov8m", "yolo11n"):
         held_cells = {c for c, m in cells_of.items() if m == held}
         Spy.log = []
         mode_l.run_lomo(w, cat, seed=1, rungs=rungs, folds=[held])
@@ -175,7 +175,7 @@ def test_spy_no_test_cell_ever_in_a_fit_and_weights_sum_to_cells():
 
 
 def test_spy_inner_selection_uses_only_training_models():
-    w, cat = make_windows(models=("mA", "mB", "mC"))
+    w, cat = make_windows(models=("yolov8n", "yolov8s", "yolov8m"))
     Spy.log = []
     rungs = {"spy": mm.Rung("spy", lambda seed: Spy(), [{"k": 1}])}
     mode_l.run_lomo(w, cat, seed=1, rungs=rungs)
@@ -207,8 +207,8 @@ def test_run_lomo_columns_and_recovery():
     l2 = res[res["rung"] == "L2"]
     assert (l2["ape"] < 0.01).all() and (l2["ape_1s"] < 0.02).all()
     # E_true is the sum of E_mJ over all windows of the cell, in J
-    c = w[w["cell_id"] == "mA_r0"]
-    row = res[(res["cell_id"] == "mA_r0") & (res["rung"] == "L2")].iloc[0]
+    c = w[w["cell_id"] == "yolov8n_r0"]
+    row = res[(res["cell_id"] == "yolov8n_r0") & (res["rung"] == "L2")].iloc[0]
     assert row["E_true_J"] == pytest.approx(c["E_mJ"].sum() / 1000)
     assert row["E_true_meas_J"] == pytest.approx(c.loc[c["phase"] == "forward", "E_mJ"].sum() / 1000)
     assert row["mean_P_pred_meas_W"] == pytest.approx(c.loc[c["phase"] == "forward", "P_W"].mean(), rel=1e-2)
@@ -234,7 +234,7 @@ def test_run_lomo_trees_rungs_run_end_to_end():
     tree = {"max_depth": 3, "learning_rate": 0.1, "max_iter": 10, "min_samples_leaf": 20}
     r = mm.default_rungs()
     rungs = {k: mm.Rung(k, r[k].make, [tree]) for k in ("L3-trees", "L4-trees")}
-    res = mode_l.run_lomo(w, cat, seed=7, rungs=rungs, folds=["mA"])
+    res = mode_l.run_lomo(w, cat, seed=7, rungs=rungs, folds=["yolov8n"])
     assert set(res["rung"]) == {"L3-trees", "L4-trees"} and len(res) == 4
     assert (res["ape"] < 0.05).all()
     assert {json.loads(p)["max_iter"] for p in res["params"]} == {10}
@@ -242,9 +242,9 @@ def test_run_lomo_trees_rungs_run_end_to_end():
 
 def test_l1_fallback_share_reported():
     w, cat = make_windows()
-    w.loc[w["cell_id"] == "mA_r0", "pmic_W"] = np.where(np.arange(N_WIN) < 22, NAN, w.loc[w["cell_id"] == "mA_r0", "pmic_W"])
+    w.loc[w["cell_id"] == "yolov8n_r0", "pmic_W"] = np.where(np.arange(N_WIN) < 22, NAN, w.loc[w["cell_id"] == "yolov8n_r0", "pmic_W"])
     res = mode_l.run_lomo(w, cat, seed=3, rungs={"L1": mm.default_rungs()["L1"]})
-    r = res[res["cell_id"] == "mA_r0"].iloc[0]
+    r = res[res["cell_id"] == "yolov8n_r0"].iloc[0]
     assert r["l1_fallback_frac"] == pytest.approx(22 / N_WIN)
 
 
@@ -257,13 +257,13 @@ def test_run_lomo_identical_for_any_n_jobs():
 
 def test_run_lomo_qc_filter_and_fold_selection():
     w, cat = make_windows()
-    qc = pd.DataFrame({"cell_id": cat["cell_id"], "primary": [c != "mB_r1" for c in cat["cell_id"]]})
-    res = mode_l.run_lomo(w, cat, seed=3, qc=qc, rungs={"L0": mm.default_rungs()["L0"]}, folds=["mB"])
-    assert set(res["cell_id"]) == {"mB_r0"} and set(res["fold"]) == {"mB"}
+    qc = pd.DataFrame({"cell_id": cat["cell_id"], "primary": [c != "yolov8s_r1" for c in cat["cell_id"]]})
+    res = mode_l.run_lomo(w, cat, seed=3, qc=qc, rungs={"L0": mm.default_rungs()["L0"]}, folds=["yolov8s"])
+    assert set(res["cell_id"]) == {"yolov8s_r0"} and set(res["fold"]) == {"yolov8s"}
 
 
 def test_grid_point_chosen_by_inner_median_ape():
-    w, cat = make_windows(models=("mA", "mB", "mC", "mD"))
+    w, cat = make_windows(models=("yolov8n", "yolov8s", "yolov8m", "yolo11n"))
 
     class Const:
         def fit(self, train_w, params, sample_weight):
@@ -281,12 +281,12 @@ def test_grid_point_chosen_by_inner_median_ape():
 # ------------------------------------------------------------------ pmic leave-one-workload-out
 
 def test_run_pmic_v1_per_cell_and_family():
-    w, cat = make_windows(models=("mA", "mB", "mC"))
+    w, cat = make_windows(models=("yolov8n", "yolov8s", "yolov8m"))
     pw = w.rename(columns={})[["cell_id", "dur_s", "P_W", "E_mJ", "pmic_W", "cpu_key", "fan_mode", "phase"]]
     pw = pw[pw.groupby("cell_id").cumcount() % 10 == 0].reset_index(drop=True)
-    cat.loc[cat["cell_id"].str.startswith("mC"), "family"] = "B"
+    cat.loc[cat["cell_id"].str.startswith("yolov8m"), "family"] = "B"
     res = mode_l.run_pmic_v1(pw, cat)
-    assert set(res["cell_id"]) == set(cat["cell_id"]) and len(res) == 6
+    assert set(res["cell_id"]) == set(cat["cell_id"]) and len(res) == 12 and set(res["rung"]) == {"L1", "L1-cell"}
     assert (res["ape"] < 1e-6).all()                 # P is exactly linear in pmic_W
     assert set(res["family"]) == {"A", "B"}
     assert {"E_true_J", "E_pred_J", "n_windows", "model_key"} <= set(res.columns)
@@ -301,7 +301,7 @@ def test_run_pmic_v1_leaves_whole_workload_out_and_filters_qc():
                         "family": ["A", "A", "B", "B"]})
     qc = pd.DataFrame({"cell_id": cat["cell_id"], "primary": [True, True, True, False]})
     res = mode_l.run_pmic_v1(pw, cat, qc=qc)
-    assert set(res["cell_id"]) == {"a1", "a2", "b1"}
+    assert set(res["cell_id"]) == {"a1", "a2", "b1"} and set(res["rung"]) == {"L1", "L1-cell"}
 
 
 # ------------------------------------------------------------------ probe
@@ -316,7 +316,7 @@ def _der(cat, lat=100.0):
 
 def test_probe_pairs_values_and_mode_a_columns():
     import deploy
-    w, cat = make_windows(models=("mA", "mB", "mC"))
+    w, cat = make_windows(models=("yolov8n", "yolov8s", "yolov8m"))
     der = _der(cat)
     lomo = mode_l.run_lomo(w, cat, seed=2, rungs={"L2": mm.default_rungs()["L2"]})
     keys = {r["cell_id"]: deploy.mode_a_key_for_cell(r) for _, r in cat.iterrows()}
@@ -325,22 +325,22 @@ def test_probe_pairs_values_and_mode_a_columns():
     assert len(pr) == 3 * 2                          # 3 configs, 2 ordered pairs each
     assert (pr["j"] != pr["k"]).all()
     assert set(pr["rung"]) == {"L2"}
-    r = pr[(pr["j"] == "mA_r0") & (pr["k"] == "mA_r1")].iloc[0]
-    lat_j = der.loc[der["cell_id"] == "mA_r0", "latency_ms_per_image"].iloc[0]
-    p_mean = w[(w["cell_id"] == "mA_r0") & (w["phase"] == "forward")]["P_W"].mean()
+    r = pr[(pr["j"] == "yolov8n_r0") & (pr["k"] == "yolov8n_r1")].iloc[0]
+    lat_j = der.loc[der["cell_id"] == "yolov8n_r0", "latency_ms_per_image"].iloc[0]
+    p_mean = w[(w["cell_id"] == "yolov8n_r0") & (w["phase"] == "forward")]["P_W"].mean()
     assert r["probe_mJ"] == pytest.approx(p_mean * lat_j, rel=1e-2)
-    true_k = der.loc[der["cell_id"] == "mA_r1", "energy_mJ_per_image"].iloc[0]
+    true_k = der.loc[der["cell_id"] == "yolov8n_r1", "energy_mJ_per_image"].iloc[0]
     assert r["true_mJ"] == true_k and r["ape"] == pytest.approx(abs(r["probe_mJ"] - true_k) / true_k)
     assert r["mode_a_mJ"] == 650.0 and r["mode_a_ape"] == pytest.approx(abs(650 - true_k) / true_k)
-    assert r["config_key"] == keys["mA_r0"]
+    assert r["config_key"] == keys["yolov8n_r0"]
 
 
 def test_probe_skips_single_cell_configs_ineligible_cells_and_missing_mode_a():
-    w, cat = make_windows(models=("mA", "mB", "mC"))
-    cat.loc[cat["cell_id"] == "mB_r1", "mode_a_eligible"] = False      # leaves mB with one cell
+    w, cat = make_windows(models=("yolov8n", "yolov8s", "yolov8m"))
+    cat.loc[cat["cell_id"] == "yolov8s_r1", "mode_a_eligible"] = False      # leaves yolov8s with one cell
     lomo = mode_l.run_lomo(w, cat, seed=2, rungs={"L0": mm.default_rungs()["L0"]})
     pr = mode_l.probe(w, _der(cat), cat, pd.DataFrame({"config_key": [], "e_img_mJ": []}), seed=2, lomo=lomo)
-    assert {c[:2] for c in pr["j"]} == {"mA", "mC"}
+    assert {c.split("_")[0] for c in pr["j"]} == {"yolov8n", "yolov8m"}
     assert pr["mode_a_mJ"].isna().all() and pr["mode_a_ape"].isna().all()
 
 
@@ -382,3 +382,140 @@ def test_cli_mode_l_is_registered_and_fails_without_qc(monkeypatch, tmp_path, ca
     monkeypatch.setattr(cli, "REPORTS", tmp_path / "none")
     assert cli.main(["mode-l"]) == 1
     assert "qc_cells.csv" in capsys.readouterr().err
+
+
+# ------------------------------------------------------------------ L1-cell (exploratory)
+
+def snapshot_windows(n_cells=8, n_win=1600, hold=50, seed=0, c=0.5, noise=0.15):
+    """Windows whose pmic_W is a noisy 5 s (50 windows) zero-order-hold snapshot of c * P: the true
+    relation is P = pmic / c on cell means, while per-window P fluctuates around the cell mean."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for i in range(n_cells):
+        mu = rng.uniform(4, 9)
+        P = mu + rng.normal(0, 1.5, n_win)
+        snap = np.repeat(c * (mu + rng.normal(0, 1.5, n_win // hold)) + rng.normal(0, noise, n_win // hold), hold)
+        rows.append(pd.DataFrame({"cell_id": f"c{i}", "w_idx": np.arange(n_win), "dur_s": 0.1, "P_W": P,
+                                  "E_mJ": P * 100.0, "pmic_W": snap, "cpu_key": "2400", "fan_mode": "full",
+                                  "busy": 0.6, "phase": "forward"}))
+    return pd.concat(rows, ignore_index=True)
+
+
+def test_l1_cell_recovers_the_slope_and_l1_is_attenuated():
+    w = snapshot_windows()
+    sw = mm.cell_weights(w)
+    b_cell = mm.L1CellPmic().fit(w, {}, sw).b
+    b_win = mm.L1Pmic().fit(w, {}, sw).b
+    assert b_cell == pytest.approx(2.0, rel=0.10)
+    assert b_win < 0.85 * 2.0 and b_win < b_cell
+
+
+def test_l1_cell_is_calibrated_on_equally_weighted_cell_means_with_l0_fallback():
+    w, _ = make_windows()
+    w["pmic_W"] = (w["P_W"] - 1.0) / 2.0
+    big = w[w["cell_id"] == "yolov8n_r0"]
+    w = pd.concat([w, big, big], ignore_index=True)        # a cell with more windows does not count more
+    m = mm.L1CellPmic().fit(w, {}, mm.cell_weights(w))
+    assert (m.a, m.b) == pytest.approx((1.0, 2.0))
+    t = w.iloc[:6].copy()
+    t.loc[t.index[:2], "pmic_W"] = NAN
+    assert np.isfinite(m.predict(t)).all() and m.fallback_frac(t) == pytest.approx(2 / 6)
+
+
+def test_l1_cell_rung_is_exploratory_in_lomo_and_pmic_outputs():
+    w, cat = make_windows()
+    res = mode_l.run_lomo(w, cat, seed=1, rungs={k: v for k, v in mm.default_rungs().items() if k.startswith("L1")})
+    assert set(res.loc[res["exploratory"], "rung"]) == {"L1-cell"}
+    assert not res.loc[res["rung"] == "L1", "exploratory"].any()
+    pw = w[["cell_id", "dur_s", "P_W", "E_mJ", "pmic_W", "cpu_key", "fan_mode", "phase"]].iloc[::10]
+    pm = mode_l.run_pmic_v1(pw, make_windows()[1])
+    assert set(pm.loc[pm["exploratory"], "rung"]) == {"L1-cell"}
+    assert pm.groupby("rung")["cell_id"].nunique().eq(6).all()
+
+
+# ------------------------------------------------------------------ hardening
+
+@pytest.mark.parametrize("cls,args", [(mm.L2Busy, ()), (mm.L3Counters, ("ridge",)), (mm.L3Counters, ("trees",)),
+                                      (mm.L4CountersPmic, ("ridge",)), (mm.L4CountersPmic, ("trees",))])
+def test_feature_models_raise_keyerror_on_a_missing_column(cls, args):
+    w, _ = make_windows()
+    grid = {"alpha": 1.0, "max_depth": 3, "learning_rate": 0.1, "max_iter": 5, "min_samples_leaf": 20}
+    for col in ("busy", "cycles_rate", "freq_mhz", "ipc_l2"):
+        if cls is mm.L2Busy and col == "ipc_l2":
+            continue
+        with pytest.raises(KeyError):
+            cls(*args).fit(w.drop(columns=[col]), grid, mm.cell_weights(w))
+    if cls is mm.L4CountersPmic:
+        with pytest.raises(KeyError):
+            cls(*args).fit(w.drop(columns=["pmic_age_s"]), grid, mm.cell_weights(w))
+    m = cls(*args).fit(w, grid, mm.cell_weights(w))
+    with pytest.raises(KeyError):
+        m.predict(w.drop(columns=["cycles_rate"]))
+
+
+def test_l0_and_l1_tolerate_pmic_windows_without_counter_columns():
+    w, _ = make_windows()
+    pw = w[["cell_id", "dur_s", "P_W", "E_mJ", "pmic_W", "cpu_key", "fan_mode", "phase"]]
+    sw = mm.cell_weights(pw)
+    assert np.isfinite(mm.L0Lookup().fit(pw, {}, sw).predict(pw)).all()
+    assert np.isfinite(mm.L1Pmic().fit(pw, {}, sw).predict(pw)).all()
+    assert np.isfinite(mm.L1CellPmic().fit(pw, {}, sw).predict(pw)).all()
+
+
+def test_run_lomo_only_uses_yolo_base_models_and_reports_the_rest():
+    w, cat = make_windows(models=("yolov8n", "yolov8s", "yolov8m", "effb0"))
+    res = mode_l.run_lomo(w, cat, seed=1, rungs={"L0": mm.default_rungs()["L0"]})
+    assert set(res["fold"]) == {"yolov8n", "yolov8s", "yolov8m"}
+    assert not any(c.startswith("effb0") for c in res["cell_id"])
+    assert res.attrs["excluded"] == {"effb0": {"windows": 2 * N_WIN, "cells": 2}}
+
+
+def test_cell_apes_zero_truth_is_nan_not_inf():
+    w = pd.DataFrame({"cell_id": ["a", "a", "b"], "dur_s": 0.1, "E_mJ": [0.0, 0.0, 100.0]})
+    a = mode_l._cell_apes(w, np.array([5.0, 5.0, 1.0]))
+    assert np.isnan(a[0]) and a[1] == pytest.approx(0.0)
+
+
+def _write_mode_a_runs(tmp_path, specs):
+    """specs: (run_id, target, seed) in log order; each gets a parquet with one AUTO row."""
+    d = tmp_path / "mode_a"
+    d.mkdir(exist_ok=True)
+    lines = []
+    for rid, target, seed in specs:
+        pd.DataFrame({"split": ["S-LOMO"], "candidate": ["AUTO"], "config_key": ["k"], "y_pred": [float(len(rid))],
+                      "lo90": [0.0], "hi90": [1.0], "flagged": [False]}).to_parquet(d / f"{rid}.parquet")
+        lines.append(json.dumps({"run_id": rid, "command": "mode-a", "split": "S-LOMO", "target": target,
+                                 "seed": seed}))
+    (tmp_path / "runs.jsonl").write_text("\n".join(lines) + "\n")
+    return tmp_path / "runs.jsonl", d
+
+
+def test_load_mode_a_preds_prefers_the_run_with_the_same_seed(tmp_path):
+    import deploy
+    log, d = _write_mode_a_runs(tmp_path, [("e1", "energy_mJ", 7), ("t1", "latency_ms", 7),
+                                           ("e22", "energy_mJ", 8), ("t22", "latency_ms", 8)])
+    p = deploy.load_mode_a_preds(log, d, seed=7)
+    assert p.attrs["run_ids"] == {"energy_mJ": "e1", "latency_ms": "t1"}
+    assert p.attrs["seed_matched"] == {"energy_mJ": True, "latency_ms": True}
+    q = deploy.load_mode_a_preds(log, d, seed=99)                  # no run with that seed: the latest
+    assert q.attrs["run_ids"]["energy_mJ"] == "e22" and q.attrs["seed_matched"]["energy_mJ"] is False
+    assert deploy.load_mode_a_preds(log, d).attrs["run_ids"]["energy_mJ"] == "e22"
+
+
+def test_probe_and_runlog_record_the_mode_a_run(tmp_path):
+    import deploy
+    w, cat = make_windows()
+    pw = w[["cell_id", "dur_s", "P_W", "E_mJ", "pmic_W", "cpu_key", "fan_mode", "phase"]].iloc[::10]
+    qc = pd.DataFrame({"cell_id": cat["cell_id"], "primary": True})
+    pred = pd.DataFrame({"config_key": sorted({deploy.mode_a_key_for_cell(r) for _, r in cat.iterrows()}),
+                         "e_img_mJ": 700.0})
+    pred.attrs["run_ids"] = {"energy_mJ": "abc123", "latency_ms": "def456"}
+    pred.attrs["seed_matched"] = {"energy_mJ": True, "latency_ms": False}
+    log = tmp_path / "r.jsonl"
+    out = mode_l.run_all(w, pw, cat, _der(cat), qc, seed=5, n_jobs=1, mode_a_pred=pred,
+                         out_dir=tmp_path / "ml", rungs={"L0": mm.default_rungs()["L0"]}, runlog_path=log)
+    assert set(out["probe"]["mode_a_run_id"]) == {"abc123"} and out["probe"]["mode_a_seed_matched"].all()
+    rec = [json.loads(x) for x in log.read_text().splitlines()]
+    probe_rec = next(r for r in rec if r["part"] == "probe")
+    assert probe_rec["mode_a_run_ids"]["energy_mJ"] == "abc123" and probe_rec["mode_a_seed_matched"]["energy_mJ"]
+    assert next(r for r in rec if r["part"] == "lomo")["excluded_non_yolo"] == {}

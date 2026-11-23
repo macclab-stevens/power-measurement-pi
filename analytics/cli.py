@@ -239,7 +239,7 @@ def cmd_mode_l(args) -> int:
     seed = args.seed if args.seed is not None else settings.seed()
     cat = data.catalogue()
     try:
-        preds = deploy.load_mode_a_preds()
+        preds = deploy.load_mode_a_preds(seed=seed)
     except FileNotFoundError as exc:
         print(f"note: probe mode skipped, {exc}", file=sys.stderr)
         preds = None
@@ -253,8 +253,13 @@ def cmd_mode_l(args) -> int:
         print(f"{r}: whole-cell MdAPE {m['mdape']:.4f}, bias {m['bias_pct']:+.4f}, "
               f"1 s {m['median_ape_1s']:.3f}, 10 s {m['median_ape_10s']:.3f}")
     print(f"{out['wall_s']:.0f} s -> {settings.derived_dir() / 'mode_l' / (out['run_id'] + '.parquet')}")
-    print("probe skipped (no Mode A S-LOMO predictions)" if out["probe_skipped"]
-          else f"probe: {len(out['probe'])} rows")
+    ex = out["lomo"].attrs["excluded"]
+    print(f"excluded non-YOLO windows: {ex or 'none'}")
+    if out["probe_skipped"]:
+        print("probe skipped (no Mode A S-LOMO predictions)")
+    else:
+        print(f"probe: {len(out['probe'])} rows; Mode A runs {preds.attrs['run_ids']}, "
+              f"seed matched {preds.attrs['seed_matched']}")
     return 0
 
 

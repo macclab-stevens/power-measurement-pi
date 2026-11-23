@@ -204,31 +204,48 @@ def preds_from_mode_a(energy_df: pd.DataFrame, latency_df: pd.DataFrame) -> pd.D
     return out.reset_index()[["config_key", "e_img_mJ", "t_img_ms", "lo90_mJ", "hi90_mJ", "flagged"]]
 
 
-def _latest_parquet(split: str, target: str, log_path=None, mode_a_dir=None) -> Path | None:
+def _latest_parquet(split: str, target: str, log_path=None, mode_a_dir=None, seed=None) -> Path | None:
+    """Parquet of the latest Mode A run of (split, target) in runs.jsonl; with `seed`, the latest run
+    with that seed is preferred and the latest of any seed is the fallback."""
     log = Path(log_path) if log_path else runlog.DEFAULT_LOG
     if not log.is_file():
         return None
     out = settings.derived_dir() / "mode_a" if mode_a_dir is None else Path(mode_a_dir)
-    best = None
+    best = best_seed = None
     for line in log.read_text().splitlines():
         rec = json.loads(line) if line.strip() else {}
         if rec.get("command") == "mode-a" and rec.get("split") == split and rec.get("target") == target:
             if (out / f"{rec['run_id']}.parquet").is_file():
                 best = out / f"{rec['run_id']}.parquet"
-    return best
+                if seed is not None and rec.get("seed") == seed:
+                    best_seed = best
+    return best_seed or best
 
 
-def load_mode_a_preds(log_path=None, mode_a_dir=None) -> pd.DataFrame:
-    """preds_from_mode_a over the latest S-LOMO runs of targets energy_mJ and latency_ms in runs.jsonl.
-    Raises FileNotFoundError naming the missing run."""
-    got = {}
+def load_mode_a_preds(log_path=None, mode_a_dir=None, seed=None) -> pd.DataFrame:
+    """preds_from_mode_a over the S-LOMO runs of targets energy_mJ and latency_ms in runs.jsonl: the
+    latest run with `seed` if there is one, else the latest run. The result's attrs record
+    `run_ids` ({target: run_id}) and `seed_matched` ({target: bool}, False when `seed` is None or no
+    run had that seed). Raises FileNotFoundError naming the missing run."""
+    got, ids, matched = {}, {}, {}
     for target in ("energy_mJ", "latency_ms"):
-        p = _latest_parquet("S-LOMO", target, log_path, mode_a_dir)
+        p = _latest_parquet("S-LOMO", target, log_path, mode_a_dir, seed)
         if p is None:
             raise FileNotFoundError(f"no S-LOMO Mode A run for target {target} in runs.jsonl with a parquet "
                                     f"under derived/mode_a; run `uv run python cli.py mode-a --split S-LOMO`")
         got[target] = pd.read_parquet(p)
-    return preds_from_mode_a(got["energy_mJ"], got["latency_ms"])
+        ids[target] = p.stem
+        matched[target] = seed is not None and p.stem in _run_ids_with_seed(target, seed, log_path)
+    out = preds_from_mode_a(got["energy_mJ"], got["latency_ms"])
+    out.attrs["run_ids"], out.attrs["seed_matched"] = ids, matched
+    return out
+
+
+def _run_ids_with_seed(target: str, seed: int, log_path=None) -> set:
+    log = Path(log_path) if log_path else runlog.DEFAULT_LOG
+    recs = [json.loads(x) for x in log.read_text().splitlines() if x.strip()]
+    return {r["run_id"] for r in recs if r.get("command") == "mode-a" and r.get("split") == "S-LOMO"
+            and r.get("target") == target and r.get("seed") == seed}
 
 
 # ------------------------------------------------------------------ validation
