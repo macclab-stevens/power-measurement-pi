@@ -6,6 +6,7 @@ Later tasks add a subcommand by writing one `cmd_<name>(args)` function (plus an
 import argparse
 import sys
 
+import cli_report
 import settings
 
 REPORTS = settings.HERE / "reports"
@@ -388,6 +389,9 @@ COMMANDS = {
     "eda": ("write reports/eda.md (sections 1-10: configuration level plus the trace-level sections 6-8 spliced in) and "
             "reports/fig/eda_*.png; needs qc_cells.csv and mode_a_configs.csv", cmd_eda, None),
 }
+
+
+COMMANDS.update(cli_report.COMMANDS)
 
 
 def build_parser() -> argparse.ArgumentParser:
