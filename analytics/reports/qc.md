@@ -13,7 +13,7 @@
 
 ## Rule counts (cells triggering each rule)
 
-Q1flag, Q3flag, Q5flag only annotate. Q2 and Q6 exclude (`include` False). Q4 keeps the cell but it is not `primary`.
+Q1flag, Q3flag, Q4unparsed, Q5flag only annotate. Q2 and Q6 exclude (`include` False). Q4 keeps the cell but it is not `primary`.
 
 |  | v1 | v2 | all |
 |---|---|---|---|
@@ -21,6 +21,7 @@ Q1flag, Q3flag, Q5flag only annotate. Q2 and Q6 exclude (`include` False). Q4 ke
 | Q2 | 0 | 0 | 0 |
 | Q3flag | 5 | 24 | 29 |
 | Q4 | 0 | 0 | 0 |
+| Q4unparsed | 0 | 0 | 0 |
 | Q5flag | 0 | 0 | 0 |
 | Q6 | 0 | 0 | 0 |
 | include | 224 | 179 | 403 |
