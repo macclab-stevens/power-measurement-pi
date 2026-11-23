@@ -1,0 +1,11 @@
+# Master seed: every stochastic step derives from it.
+seed = 20261122
+
+# Data-quality rules (qc.py). Flags only annotate; Q2 and Q6 exclude a cell; Q4 keeps it but not primary.
+[qc]
+q1_ctx_frac_flag = 0.03      # Q1flag: ctx_read_frac_scored above this
+q2_max_residual_ms = 1.0     # Q2: alignment max_residual_ms at or above this excludes the cell
+q3_slip_frac_flag = 0.01     # Q3flag: slip_scored_frac above this
+q5_pv_rel_flag = 0.02        # Q5flag: median |P - V*I| / P above this
+q6_sample_ratio_lo = 0.98    # Q6: n_samples / (span * achieved_sample_hz) outside [lo, hi] quarantines
+q6_sample_ratio_hi = 1.02

@@ -1,0 +1,24 @@
+[project]
+name = "pi-power-analytics"
+version = "0.1.0"
+description = "QC, exploration and energy-prediction analytics for the Pi 5 power-measurement datasets"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "numpy",
+    "pandas",
+    "pyarrow",
+    "scipy",
+    "scikit-learn",
+    "matplotlib",
+]
+
+[dependency-groups]
+dev = ["pytest"]
+
+# Plain modules (analytics/*.py), not an installable package.
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
