@@ -94,3 +94,13 @@ under-voltage bits were current in any cell (all non-zero words are the 0x50000 
   (leaves of 3-5 samples, 24 points) is unsuited to ~160k autocorrelated 100 ms windows and would cost
   hours per run on the NUC. Replaced by the 4-point tree grid above with leaves of 50 / 200 windows.
   The L1 fallback for windows with no PMIC read yet is fixed in advance.
+- 2026-11-23, Mode L rung added AFTER a real-data fit (exploratory): during Task 14 development, a smoke
+  run fitted all rungs on one real outer fold (yolo11m held out). Review then showed that the
+  pre-registered L1 (per-window weighted least squares of P_W on a 5 s zero-order-hold PMIC snapshot)
+  is attenuated by regression dilution: slope 0.47 against about 1.0 on cell means, whole-cell
+  energy MdAPE 0.132 against 0.066 on that fold. L1 stays the primary, pre-registered PMIC rung. A
+  second rung, `L1-cell` (OLS on per-cell means of P_W and pmic_W over the fold's training cells,
+  predicted per window), is added and labelled exploratory everywhere it appears, because its design
+  was informed by a scored fold. Also: Mode L folds are the 5 YOLO models with counter cells
+  (yolov8n has none: its v2 cells are the counters-off `ref` family).
+
