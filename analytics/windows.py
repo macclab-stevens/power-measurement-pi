@@ -13,7 +13,18 @@ trace; the trace's own ctr_* / sys_* columns are never used.
 
 Sample-to-interval assignment follows host/align.py merge_counters: a sample belongs to the interval
 with t_start_ns < t_pi_ns <= t_end_ns (contiguous intervals therefore partition the samples). PMIC
-windows use [t_i, t_{i+1}).
+windows use [t_i, t_{i+1}). A window's features are available at its t_end_ns, and the causality tests
+state that rule.
+
+Not-counted intervals: perf prints <not counted> for every event when the attached process was never
+scheduled in the interval, so its true counts are zero. Such an interval has counted == 0; its count-
+derived rates (busy, cycles_rate, instr_rate, ctx_sw_rate, pf_rate) are 0.0, and the ratio features
+(ipc, cache_miss_rate, branch_mpki, stall_frac, llc_mpki) stay NaN because they are undefined. Lags are
+taken from the filled values.
+
+PMIC rails: `rail_<NAME>_A current(n)` is paired with `rail_<NAME>_V volt(m)` by name. The Pi 5 PMIC
+exposes 12 such pairs; EXT5V and BATT have a voltage but no current and are ignored. The pair count is
+stored in attrs["pmic_pairs"].
 """
 import hashlib
 import json
@@ -44,7 +55,7 @@ SYSFS_COLS = ["freq_mhz", "temp_C", "fan_state", "uv_alarm", "sysfs_age_s"]
 GUARDED = ["ipc", "cache_miss_rate", "branch_mpki", "stall_frac", "llc_mpki"]
 WINDOW_COLS = (
     ["cell_id", "w_idx", "t_start_ns", "t_end_ns", "dur_s", "n_samples", "cover_frac", "P_W", "E_mJ",
-     "phase", "phase_frac", "busy", "cycles_rate", "instr_rate", "ipc", "cache_miss_rate", "branch_mpki",
+     "phase", "phase_frac", "counted", "busy", "cycles_rate", "instr_rate", "ipc", "cache_miss_rate", "branch_mpki",
      "stall_frac", "llc_mpki", "ctx_sw_rate", "pf_rate"]
     + [f"{c}_l{k}" for c in LAG_COLS for k in LAGS]
     + ["pct_min"] + SYSFS_COLS + ["pmic_W", "pmic_age_s", "cpu_key", "fan_mode", "governor"])
@@ -216,6 +227,10 @@ def counter_features(ctr: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     f["llc_mpki"], guards["llc_mpki"] = _ratio(g("LLC_load_misses"), g("instructions"), 1000.0)
     f["ctx_sw_rate"], _ = _ratio(g("context_switches"), dur)
     f["pf_rate"], _ = _ratio(g("page_faults"), dur)
+    counted = np.isfinite(ctr[[c for c in ctr.columns if c.startswith("ctr_")]].to_numpy(dtype=np.float64)).any(axis=1)
+    for c in ("busy", "cycles_rate", "instr_rate", "ctx_sw_rate", "pf_rate"):
+        f[c] = np.where(counted, f[c], 0.0)       # not counted: the process never ran, true count is zero
+    f["counted"] = counted.astype(np.int64)
     pct = [c for c in ctr.columns if c.startswith("pct_")]
     f["pct_min"] = ctr[pct].min(axis=1).to_numpy(dtype=np.float64) if pct else np.full(len(ctr), NAN)
     return pd.DataFrame(f), pd.DataFrame(guards)
@@ -227,9 +242,8 @@ def cell_windows(cell, meta: dict) -> pd.DataFrame | None:
     """One row per counters.csv interval (see module docstring); None if the cell has no counters.
 
     attrs: dropped (cover_frac < 0.8), guards (kept windows with any zero-denominator ratio),
-    guards_by_feature, pmic_pairs, dt_s, n_intervals, ctr_nan (kept windows whose counters are NaN:
-    perf prints <not counted> for every event while the measured process is not running, mostly
-    gaps and baselines; they are kept, with NaN counter features, and are not counted as guards)."""
+    guards_by_feature, pmic_pairs, dt_s, n_intervals, not_counted (kept
+    windows with counted == 0, see the module docstring; not counted as guards)."""
     cell = Path(cell)
     if not (meta.get("perf_counters") or {}).get("enabled"):
         return None
@@ -275,7 +289,7 @@ def cell_windows(cell, meta: dict) -> pd.DataFrame | None:
     df = df[keep][WINDOW_COLS].reset_index(drop=True)
     df.attrs.update(dropped=int((~keep).sum()), guards=int(gk.any(axis=1).sum()),
                     guards_by_feature={c: int(gk[c].sum()) for c in GUARDED}, pmic_pairs=n_pairs,
-                    dt_s=dt_s, n_intervals=len(ctr), ctr_nan=int(df["busy"].isna().sum()))
+                    dt_s=dt_s, n_intervals=len(ctr), not_counted=int((df["counted"] == 0).sum()))
     return df
 
 
@@ -356,7 +370,7 @@ def _build(cat: pd.DataFrame, fn, cache_name: str, force: bool, columns: list[st
         if hit is not None:
             return hit
     parts, attrs = [], {"dropped": 0, "guards": 0, "guards_by_feature": {c: 0 for c in GUARDED},
-                        "pmic_pairs": {}, "n_cells": 0, "n_intervals": 0, "empty": 0, "ctr_nan": 0}
+                        "pmic_pairs": {}, "n_cells": 0, "n_intervals": 0, "empty": 0, "not_counted": 0}
     for _, row in cat.iterrows():           # one cell at a time: only that cell's trace is in memory
         cell = Path(row["path"])
         df = fn(cell, data.read_meta(cell))
@@ -370,7 +384,7 @@ def _build(cat: pd.DataFrame, fn, cache_name: str, force: bool, columns: list[st
         attrs["guards"] += a.get("guards", 0)
         attrs["n_intervals"] += a.get("n_intervals", 0)
         attrs["empty"] += a.get("empty", 0)
-        attrs["ctr_nan"] += a.get("ctr_nan", 0)
+        attrs["not_counted"] += a.get("not_counted", 0)
         for c, v in a.get("guards_by_feature", {}).items():
             attrs["guards_by_feature"][c] += v
         k = str(a.get("pmic_pairs", 0))

@@ -261,11 +261,14 @@ def cmd_windows(args) -> int:
           f"{settings.derived_dir() / windows.PMIC_CACHE}")
     print(f"dropped (cover_frac < {windows.MIN_COVER}): {a.get('dropped')} of {a.get('n_intervals')} intervals")
     print(f"guarded windows (zero denominator): {a.get('guards')}; by feature {a.get('guards_by_feature')}")
-    print(f"windows with NaN counters (process not running): {a.get('ctr_nan')}")
+    print(f"not-counted windows (counted == 0, rates set to 0): {a.get('not_counted')}")
+    print("counted / not counted by phase (top 12 phases by windows):")
+    by = w.groupby("phase")["counted"].agg(counted="sum", n="size")
+    by["not_counted"] = by["n"] - by["counted"]
+    print(by.sort_values("n", ascending=False).head(12)[["counted", "not_counted", "n"]].to_string())
     print(f"PMIC pairs per cell (pairs: n windows-cells): {a.get('pmic_pairs')}; pmic {p.attrs.get('pmic_pairs')}")
     print(f"wall time {wall:.1f} s, peak RSS {rss_mb:.0f} MB")
     print(_energy_check(w, cat))
-    print(w.groupby("phase").size().sort_values(ascending=False).head(10).to_string())
     runlog.append({"command": "windows", "n_windows": len(w), "n_pmic_windows": len(p),
                    "dropped": a.get("dropped"), "guards": a.get("guards"), "wall_s": round(wall, 1),
                    "peak_rss_mb": round(rss_mb)})

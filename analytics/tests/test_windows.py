@@ -15,7 +15,7 @@ from conftest import make_cell
 B = 10_000_000_000          # Pi-clock ns at trace start (= run_meta t0_real_ns)
 MS = 1_000_000
 DT_HZ = 1000.0              # 1 ms samples
-FEATURES = ["busy", "cycles_rate", "instr_rate", "ipc", "cache_miss_rate", "branch_mpki", "stall_frac",
+FEATURES = ["counted", "busy", "cycles_rate", "instr_rate", "ipc", "cache_miss_rate", "branch_mpki", "stall_frac",
             "llc_mpki", "ctx_sw_rate", "pf_rate", "busy_l1", "busy_l2", "busy_l3", "cycles_rate_l1",
             "cycles_rate_l2", "cycles_rate_l3", "ipc_l1", "ipc_l2", "ipc_l3", "pct_min", "freq_mhz", "temp_C",
             "fan_state", "uv_alarm", "sysfs_age_s", "pmic_W", "pmic_age_s", "cpu_key", "fan_mode", "governor"]
@@ -197,6 +197,26 @@ def test_zero_denominators_guarded(tmp_path):
     assert df.attrs["guards"] == 1
 
 
+def test_not_counted_interval_is_zero_activity(tmp_path):
+    """perf <not counted> (all ctr_* NaN): the process never ran, so rates are 0.0, ratios stay NaN,
+    and the next window's lag sees 0, not NaN."""
+    starts = B + np.arange(4) * 100 * MS
+    ctr = counters_frame(starts, starts + 100 * MS)
+    ctr.loc[1, [c for c in ctr.columns if c.startswith("ctr_")]] = np.nan     # pct_* stay 100
+    k = np.arange(1, 401)
+    cell = write_cell(tmp_path, "c0", B + k * MS, np.full(400, 3.0), ctr)
+    df = run(cell).sort_values("w_idx").reset_index(drop=True)
+    assert df["counted"].tolist() == [1, 0, 1, 1]
+    r = df.iloc[1]
+    for c in ("busy", "cycles_rate", "instr_rate", "ctx_sw_rate", "pf_rate"):
+        assert r[c] == 0.0, c
+    for c in ("ipc", "cache_miss_rate", "branch_mpki", "stall_frac", "llc_mpki"):
+        assert np.isnan(r[c]), c
+    assert df.loc[2, "busy_l1"] == 0.0 and df.loc[2, "cycles_rate_l1"] == 0.0 and np.isnan(df.loc[2, "ipc_l1"])
+    assert df.loc[3, "busy_l2"] == 0.0 and df.loc[3, "cycles_rate_l2"] == 0.0
+    assert df.loc[0, "busy"] > 0 and df.attrs["not_counted"] == 1 and df.attrs["guards"] == 0
+
+
 def test_settings_columns(tmp_path):
     cell, _ = simple_cell(tmp_path, meta={"governor": "ondemand", "fan_mode": "auto", "cpu_mhz_pinned": None})
     df = run(cell)
@@ -237,6 +257,7 @@ def random_cell(tmp_path, name, seed, n_win=40):
 
 
 def test_sysfs_and_pmic_are_latest_at_or_before_window_end(tmp_path):
+    """Features of window i are available at t_end_ns[i]: latest sysfs row / PMIC read with time <= t_end."""
     cell, ctr, sysfs, ctx = random_cell(tmp_path, "c0", 1)
     df = run(cell)
     assert len(df) > 30
@@ -258,7 +279,8 @@ def test_sysfs_and_pmic_are_latest_at_or_before_window_end(tmp_path):
 
 @pytest.mark.parametrize("cut", [4, 17, 29])
 def test_features_do_not_change_when_the_future_is_altered(tmp_path, cut):
-    """Replace everything that ends after window `cut` (later counters, sysfs rows, PMIC reads) with
+    """Interval rule: a sample is in (t_start, t_end] and a window's features are available at its t_end.
+    Replace everything that ends after window `cut` (later counters, sysfs rows, PMIC reads) with
     garbage: no feature of windows 0..cut may move. A look-ahead anywhere would show here."""
     cell, ctr, sysfs, ctx = random_cell(tmp_path, "orig", 2)
     base = run(cell).sort_values("w_idx")
