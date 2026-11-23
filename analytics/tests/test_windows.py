@@ -114,29 +114,47 @@ def test_read_started_before_window_end_but_finished_after_is_not_used(tmp_path)
 
 def test_read_availability_from_known_durations():
     """Loop: read at t_i takes d_i, then sleeps 5 s, so t_{i+1} = t_i + d_i + 5 s and t_avail_i = t_i + d_i;
-    the last read gets t + 500 ms."""
+    the last read has no known availability."""
     d = np.array([40, 120, 494, 37]) * MS
     t = np.concatenate([[3 * MS], 3 * MS + np.cumsum(d[:-1] + 5_000_000_000)])
     avail, nfb = windows.read_availability(t)
     assert (avail[:-1] == t[:-1] + d[:-1]).all() and nfb == 0
-    assert avail[-1] == t[-1] + 500 * MS
-    # clock oddity: successor closer than 5 s -> t_i + 500 ms, counted; availability stays non-decreasing
+    assert avail[-1] == windows.NEVER_AVAILABLE
+    # clock oddity: successor closer than 5 s -> t_i + 5000 ms, counted; availability stays non-decreasing
     t2 = np.array([0, 5_040 * MS, 5_100 * MS, 10_200 * MS], dtype=np.int64)
     avail2, nfb2 = windows.read_availability(t2)
-    assert nfb2 == 1 and avail2.tolist() == [40 * MS, 5_040 * MS + 500 * MS, 5_540 * MS, 10_700 * MS]
+    assert nfb2 == 1
+    assert avail2.tolist() == [40 * MS, 10_040 * MS, 10_040 * MS, windows.NEVER_AVAILABLE]
     assert (np.diff(avail2) >= 0).all()
-    assert windows.read_availability(np.array([7], dtype=np.int64))[0].tolist() == [7 + 500 * MS]
+    assert windows.read_availability(np.array([7], dtype=np.int64))[0].tolist() == [windows.NEVER_AVAILABLE]
 
 
-def test_last_read_uses_margin_and_fallback_counted(tmp_path):
-    ctx = context_frame([0.0], [7])                    # single read: available at t_ms + 500 ms
-    cell, _ = simple_cell(tmp_path, ctx=ctx)
-    df = run(cell).sort_values("w_idx")
-    assert df["pmic_W"].iloc[:4].isna().all()           # windows 0..3 end before 500 ms
-    assert df.iloc[4]["pmic_W"] == pytest.approx(7 * 2 + 3) and df.iloc[4]["pmic_age_s"] == pytest.approx(0.0)
-    cell, _ = simple_cell(tmp_path, name="c1", ctx=context_frame([0.0, 100.0], [7, 8]))   # reads 100 ms apart
-    df = run(cell)
+def test_last_read_is_never_used(tmp_path):
+    """Reads start at t_ms 0 and 5100; read 1 is the last, so its availability is unknown. Windows that end
+    after its start (5200..6000 ms) keep read 0 with a growing age."""
+    ctx = context_frame([0.0, 5100.0], [7, 8])
+    cell, _ = simple_cell(tmp_path, n_win=60, ctx=ctx)
+    df = run(cell).sort_values("w_idx").reset_index(drop=True)
+    assert len(df) == 60
+    late = df[df["t_end_ns"] > B + 5100 * MS]
+    assert len(late) == 9                                  # windows ending at 5200 .. 6000 ms
+    assert (late["pmic_W"] == 7 * 2 + 3).all()             # read 0, never read 1 (8 * 2 + 3)
+    assert late["pmic_age_s"].iloc[-1] == pytest.approx(6.0 - 0.1)
+    assert late["pmic_age_s"].is_monotonic_increasing
+    # a single-read cell never uses its read
+    cell, _ = simple_cell(tmp_path, name="c1", n_win=60, ctx=context_frame([0.0], [7]))
+    assert run(cell)["pmic_W"].isna().all()
+
+
+def test_fallback_is_counted_and_uses_five_seconds(tmp_path):
+    cell, _ = simple_cell(tmp_path, n_win=60, ctx=context_frame([0.0, 100.0, 5300.0], [7, 8, 9]))
+    df = run(cell)                                           # read 0: t_1 - 5 s < t_0 -> available at 5000 ms
     assert df.attrs["pmic_avail_fallback"] == 1
+    assert df[df["t_end_ns"] < B + 5000 * MS]["pmic_W"].isna().all()
+    w = df[df["t_end_ns"] == B + 5000 * MS].iloc[0]
+    # read 0 is available at 5000 ms; read 1 (really available at 300 ms) is held to the same non-decreasing
+    # bound, so at 5000 ms the latest usable read is read 1
+    assert w["pmic_W"] == pytest.approx(8 * 2 + 3) and w["pmic_age_s"] == pytest.approx(0.0)
 
 
 def test_lags_come_from_previous_interval_only(tmp_path):
@@ -269,13 +287,16 @@ def test_interval_assignment_semantics():
 # ------------------------------------------------------------------ causality (the important ones)
 
 def ref_avail_ns(t_ns):
-    """Reference availability (loop version of windows.read_availability, realistic spacing only)."""
+    """Reference availability (loop version of windows.read_availability, realistic spacing only):
+    t_{i+1} - 5 s, fallback t_i + 5 s, the last read never available."""
     out = []
     for i, t in enumerate(t_ns):
-        if i + 1 < len(t_ns) and t_ns[i + 1] - 5_000_000_000 >= t:
+        if i + 1 == len(t_ns):
+            out.append(windows.NEVER_AVAILABLE)
+        elif t_ns[i + 1] - 5_000_000_000 >= t:
             out.append(t_ns[i + 1] - 5_000_000_000)
         else:
-            out.append(t + 500_000_000)
+            out.append(t + 5_000_000_000)
     return np.array(out, dtype=np.int64)
 
 
@@ -291,12 +312,12 @@ def random_cell(tmp_path, name, seed, n_win=400):
     sysfs = sysfs_frame(st, np.arange(len(st), dtype=float))
     # PMIC reads 5 s + 37..494 ms apart (as the harness loop produces); availability t_{i+1} - 5 s lands
     # exactly on a window end for one read and 1 ns after another
-    t_ms = [float(rng.integers(0, 2000))]
+    t0 = float(rng.integers(0, 2000))
+    t_ms = [t0, t0 + 5000 + float(rng.integers(37, 494)),
+            (ends[100] - B) / MS + 5000,                    # read 1 available exactly at window 100's end
+            (ends[170] - B) / MS + 5000.000001]             # read 2 available 1 ns after window 170's end
     while t_ms[-1] < (t_last - B) / MS - 5000:
         t_ms.append(t_ms[-1] + 5000 + float(rng.integers(37, 494)))
-    t_ms[2] = (ends[100] - B) / MS + 5000                 # read 1 available exactly at window 100's end
-    t_ms[3] = (ends[150] - B) / MS + 5000.000001   # read 2 available 1 ns after window 150's end
-    t_ms = sorted(t_ms)
     ctx = context_frame(t_ms, np.arange(len(t_ms)) + 1)
     k = np.arange(1, (t_last - B) // MS + 1)
     return write_cell(tmp_path, name, B + k * MS, np.full(len(k), 3.0), ctr, sysfs, ctx), ctr, sysfs, ctx
@@ -311,6 +332,7 @@ def test_sysfs_and_pmic_are_latest_at_or_before_window_end(tmp_path):
     ctx_t = B + np.round(ctx["t_ms"].to_numpy() * 1e6).astype(np.int64)
     avail = ref_avail_ns(ctx_t)
     assert (np.diff(avail) >= 0).all()
+    assert ctx_t[-1] < ctr["t_end_ns"].iloc[-1]            # the last read starts before the last window ends
     for _, r in df.iterrows():
         end = int(ctr["t_end_ns"].iloc[int(r["w_idx"])])
         ok = sysfs["t_real_ns"] <= end
@@ -398,10 +420,10 @@ def test_pmic_windows_are_availability_windows(tmp_path):
     t, P = long_trace()
     cell = write_cell(tmp_path, "c0", t, P, None, ctx=ctx)
     df = windows.pmic_windows(cell, data.read_meta(cell))
-    assert len(df) == 2
+    assert len(df) == 2                                     # n reads -> n - 1 windows; the last read has none
     r0, r1 = df.iloc[0], df.iloc[1]
     assert r0["t_start_ns"] == B + 100 * MS and r0["t_end_ns"] == B + 5200 * MS
-    assert r1["t_start_ns"] == B + 5200 * MS and r1["t_end_ns"] == B + 10700 * MS
+    assert r1["t_start_ns"] == B + 5200 * MS and r1["t_end_ns"] == B + 10700 * MS   # last t_ms + 500 ms: label bound
     assert r0["t_read_ns"] == B and r1["t_read_ns"] == B + 5100 * MS      # raw t_ms-based start
     assert r0["pmic_W"] == pytest.approx(1 * 2 + 3)          # read i, finished before the window start
     assert r1["pmic_W"] == pytest.approx(2 * 2 + 3)

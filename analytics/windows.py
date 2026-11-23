@@ -9,9 +9,10 @@ counters.csv / sysfs.csv / context.csv with an explicit as-of rule:
   * PMIC: latest context read whose availability time t_avail <= t_end_ns. context.csv `t_ms` is taken
     BEFORE the read starts (src/powersampler.py: _now(), then vcgencmd calls and the full dump, then a
     5 s sleep), so a read is only known once it finished. Reads are dated by availability: for a read
-    with a successor, t_avail_i = t_{i+1} - 5000 ms (the loop sleeps 5 s after a read finishes); the
-    last read of a cell gets t_ms + 500 ms (observed read durations are 37..494 ms); if the computed
-    t_avail_i < t_i (clock oddity) it is t_i + 500 ms and the event is counted in
+    with a successor, t_avail_i = t_{i+1} - 5000 ms (the loop sleeps 5 s after a read finishes). The
+    last read of a cell has no known availability time and is never used (later windows keep the
+    previous read, with a larger pmic_age_s). If the computed t_avail_i < t_i (clock oddity) it is
+    t_i + 5000 ms (the next read cannot have finished earlier) and the event is counted in
     attrs["pmic_avail_fallback"]. t_i is t0_real_ns + t_ms * 1e6. pmic_age_s = (t_end - t_avail) / 1e9.
 counters.csv is already offset-corrected to the Pi clock (the perf start offset is applied by the
 harness), so nothing is shifted here. The label (P_W, E_mJ, phase) is the only thing read from the
@@ -71,7 +72,8 @@ PMIC_COLS = ["cell_id", "t_read_ns", "t_start_ns", "t_end_ns", "dur_s", "P_W", "
 _RE_A = re.compile(r"^rail_(.+)_A current\(\d+\)$")
 _RE_V = re.compile(r"^rail_(.+)_V volt\(\d+\)$")
 CONTEXT_PERIOD_NS = 5_000_000_000   # src/powersampler.py CONTEXT_PERIOD_S: sleep after each read finishes
-READ_MARGIN_NS = 500_000_000        # availability margin after a read's t_ms (max observed duration 494 ms)
+NEVER_AVAILABLE = np.iinfo(np.int64).max   # availability of a cell's last read: no known time, never used
+LAST_WINDOW_MARGIN_NS = 500_000_000        # pmic_windows only: label bound after the last read's t_ms (not a feature)
 NAN = float("nan")
 
 
@@ -195,22 +197,22 @@ def _sysfs_asof(cell, t_end):
 def read_availability(t_read: np.ndarray) -> tuple[np.ndarray, int]:
     """(t_avail ns, n_fallback) for sorted read start times (see the module docstring).
 
-    t_avail_i = t_{i+1} - 5000 ms, or t_i + 500 ms when that is earlier than t_i (counted) and for the
-    last read. Forced non-decreasing so it can be searched."""
+    t_avail_i = t_{i+1} - 5000 ms, or t_i + 5000 ms when that is earlier than t_i (counted); the last
+    read is NEVER_AVAILABLE. Forced non-decreasing so it can be searched."""
     t = np.asarray(t_read, dtype=np.int64)
-    avail = t + READ_MARGIN_NS
+    avail = np.full(len(t), NEVER_AVAILABLE, dtype=np.int64)
     n_fallback = 0
     if len(t) > 1:
         cand = t[1:] - CONTEXT_PERIOD_NS
         bad = cand < t[:-1]
-        avail[:-1] = np.where(bad, t[:-1] + READ_MARGIN_NS, cand)
+        avail[:-1] = np.where(bad, t[:-1] + CONTEXT_PERIOD_NS, cand)
         n_fallback = int(bad.sum())
     return np.maximum.accumulate(avail), n_fallback
 
 
 class PmicReads(NamedTuple):
     t_read: np.ndarray    # t0_real_ns + t_ms * 1e6, ns (start of the read)
-    t_avail: np.ndarray   # when the read finished and is usable, ns
+    t_avail: np.ndarray   # when the read finished and is usable, ns (last read: NEVER_AVAILABLE)
     pmic_W: np.ndarray    # sum of current x voltage over the paired rails, per read
     n_pairs: int
     n_fallback: int
@@ -333,7 +335,8 @@ def pmic_windows(cell, meta: dict) -> pd.DataFrame:
     """One row per pair of consecutive PMIC reads: window i is [t_avail_i, t_avail_{i+1}) with the
     trace mean power, the energy, the majority phase and the PMIC power of read i (finished at the
     window start, so a causal feature). t_start_ns / t_end_ns are the availability bounds and
-    t_read_ns is the raw t_ms-based start of read i. The last read has no successor and no window.
+    t_read_ns is the raw t_ms-based start of read i. The last read has no window of its own; the
+    window of the second-to-last read ends 500 ms after the last read's t_ms (a label bound only).
     Empty frame if the cell has fewer than 2 reads. Works for v1 and v2 cells."""
     cell = Path(cell)
     pm = pmic_reads(cell, meta)
@@ -341,7 +344,8 @@ def pmic_windows(cell, meta: dict) -> pd.DataFrame:
     if pm is None or len(pm.t_read) < 2:
         out.attrs.update(pmic_pairs=0 if pm is None else pm.n_pairs, pmic_avail_fallback=0, empty=0)
         return out
-    ta = pm.t_avail
+    ta = pm.t_avail.copy()
+    ta[-1] = max(int(pm.t_read[-1]) + LAST_WINDOW_MARGIN_NS, int(ta[-2]))   # label bound, not a feature
     dt_s = sample_dt_s(cell, meta)
     t, P, codes, names = _read_trace(cell)
     lo, hi = np.searchsorted(t, ta[:-1], side="left"), np.searchsorted(t, ta[1:], side="left")
