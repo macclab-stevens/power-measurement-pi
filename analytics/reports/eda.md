@@ -232,60 +232,60 @@ Per configuration (slope W/degC, standard error, forward windows, cells, tempera
 
 | family | config | n_cells | n_windows | slope_pooled | se_pooled | slope_within | se_within | temp_range |
 |---|---|---|---|---|---|---|---|---|
-| C | yolo11m|yolo11m|fp32|320|1|4|2400|pinned|full | 3 | 303 | +0.269 | 0.015 | +0.280 | 0.015 | 15.4 |
-| C | yolo11m|yolo11m|fp32|480|1|4|2400|pinned|full | 3 | 611 | +0.193 | 0.012 | +0.210 | 0.012 | 16.0 |
-| A | yolo11m|yolo11m|fp32|640|1|4|1500|pinned|full | 3 | 1263 | +0.148 | 0.009 | +0.179 | 0.010 | 8.2 |
-| A | yolo11m|yolo11m|fp32|640|1|4|2000|pinned|full | 3 | 1105 | +0.159 | 0.009 | +0.169 | 0.009 | 13.8 |
-| A | yolo11m|yolo11m|fp32|640|1|4|2400|pinned|full | 5 | 1711 | +0.174 | 0.008 | +0.184 | 0.008 | 18.1 |
-| soak | yolo11m|yolo11m|fp32|640|1|4|2400|pinned|full|soak_minutes=30.0 | 1 | 17827 | +0.028 | 0.003 | +0.028 | 0.003 | 26.9 |
-| C | yolo11m|yolo11m|fp32|960|1|4|2400|pinned|full | 3 | 2339 | +0.121 | 0.008 | +0.126 | 0.009 | 18.1 |
-| B | yolo11n|yolo11n_fp16|fp16|640|1|4|2400|pinned|full | 3 | 382 | +0.210 | 0.013 | +0.259 | 0.013 | 17.0 |
-| B | yolo11n|yolo11n_int8s|int8|640|1|4|1500|pinned|full | 3 | 337 | +0.117 | 0.012 | +0.301 | 0.016 | 7.2 |
-| B | yolo11n|yolo11n_int8s|int8|640|1|4|2000|pinned|full | 3 | 264 | +0.138 | 0.013 | +0.291 | 0.015 | 14.3 |
-| B | yolo11n|yolo11n_int8s|int8|640|1|4|2400|pinned|full | 3 | 226 | +0.165 | 0.017 | +0.290 | 0.020 | 16.0 |
-| C | yolo11n|yolo11n|fp32|320|1|1|2400|pinned|full | 3 | 143 | +0.085 | 0.017 | +0.266 | 0.028 | 7.7 |
-| C | yolo11n|yolo11n|fp32|320|1|2|2400|pinned|full | 3 | 145 | +0.118 | 0.019 | +0.310 | 0.025 | 13.2 |
-| C | yolo11n|yolo11n|fp32|320|1|4|2400|pinned|full | 3 | 133 | +0.271 | 0.031 | +0.525 | 0.032 | 13.8 |
-| C | yolo11n|yolo11n|fp32|480|1|4|2400|pinned|full | 3 | 207 | +0.293 | 0.019 | +0.310 | 0.019 | 12.1 |
-| C | yolo11n|yolo11n|fp32|640|1|1|2400|pinned|full | 3 | 355 | +0.164 | 0.012 | +0.216 | 0.012 | 8.2 |
-| C | yolo11n|yolo11n|fp32|640|1|2|2400|pinned|full | 3 | 331 | +0.226 | 0.014 | +0.245 | 0.014 | 10.4 |
-| D | yolo11n|yolo11n|fp32|640|1|4|2400|ondemand|full | 5 | 508 | +0.237 | 0.010 | +0.249 | 0.009 | 14.9 |
-| D | yolo11n|yolo11n|fp32|640|1|4|2400|pinned|auto | 3 | 304 | +0.295 | 0.015 | +0.305 | 0.015 | 12.1 |
-| A-input | yolo11n|yolo11n|fp32|640|1|4|2400|pinned|full | 6 | 617 | +0.251 | 0.011 | +0.293 | 0.011 | 15.9 |
-| D | yolo11n|yolo11n|fp32|640|1|4|2400|pinned|full|concurrent_mode=model | 3 | 585 | +0.181 | 0.008 | +0.210 | 0.008 | 14.3 |
-| D | yolo11n|yolo11n|fp32|640|1|4|2400|pinned|full|concurrent_mode=spinner | 3 | 462 | +0.219 | 0.010 | +0.246 | 0.010 | 17.0 |
-| D | yolo11n|yolo11n|fp32|640|1|4|2400|pinned|full|input=stream | 3 | 481 | +0.166 | 0.010 | +0.242 | 0.011 | 18.2 |
-| D | yolo11n|yolo11n|fp32|640|1|4|2400|pinned|full|serve_fps=1.0 | 3 | 305 | +0.317 | 0.015 | +0.321 | 0.015 | 11.6 |
-| D | yolo11n|yolo11n|fp32|640|1|4|2400|pinned|full|serve_fps=15.0 | 3 | 305 | +0.268 | 0.014 | +0.276 | 0.014 | 13.2 |
-| D | yolo11n|yolo11n|fp32|640|1|4|2400|pinned|full|serve_fps=5.0 | 3 | 305 | +0.243 | 0.014 | +0.302 | 0.014 | 14.9 |
-| soak | yolo11n|yolo11n|fp32|640|1|4|2400|pinned|full|soak_minutes=30.0 | 1 | 17843 | +0.045 | 0.001 | +0.045 | 0.001 | 28.6 |
-| D | yolo11n|yolo11n|fp32|640|1|4|2400|pinned|off | 3 | 304 | +0.284 | 0.015 | +0.285 | 0.015 | 11.5 |
-| C | yolo11n|yolo11n|fp32|640|2|4|2400|pinned|full | 3 | 304 | +0.289 | 0.018 | +0.316 | 0.019 | 12.1 |
-| C | yolo11n|yolo11n|fp32|640|4|4|2400|pinned|full | 3 | 324 | +0.205 | 0.017 | +0.296 | 0.019 | 15.4 |
-| C | yolo11n|yolo11n|fp32|640|8|4|2400|pinned|full | 3 | 392 | +0.275 | 0.020 | +0.277 | 0.020 | 10.5 |
-| C | yolo11n|yolo11n|fp32|960|1|1|2400|pinned|full | 3 | 738 | +0.053 | 0.008 | +0.147 | 0.014 | 12.7 |
-| C | yolo11n|yolo11n|fp32|960|1|2|2400|pinned|full | 3 | 669 | +0.158 | 0.009 | +0.185 | 0.010 | 11.6 |
-| C | yolo11n|yolo11n|fp32|960|1|4|2400|pinned|full | 3 | 648 | +0.181 | 0.009 | +0.234 | 0.010 | 16.5 |
-| B | yolo11s|yolo11s_int8s|int8|640|1|4|2400|pinned|full | 3 | 472 | +0.171 | 0.009 | +0.217 | 0.009 | 15.9 |
-| C | yolo11s|yolo11s|fp32|320|1|4|2400|pinned|full | 3 | 211 | +0.272 | 0.019 | +0.342 | 0.019 | 13.8 |
-| C | yolo11s|yolo11s|fp32|480|1|4|2400|pinned|full | 3 | 384 | +0.258 | 0.014 | +0.276 | 0.014 | 14.9 |
-| C | yolo11s|yolo11s|fp32|640|1|1|2400|pinned|full | 3 | 771 | +0.081 | 0.009 | +0.147 | 0.013 | 12.1 |
-| C | yolo11s|yolo11s|fp32|640|1|2|2400|pinned|full | 3 | 646 | +0.212 | 0.013 | +0.215 | 0.013 | 11.5 |
-| A | yolo11s|yolo11s|fp32|640|1|4|1500|pinned|full | 3 | 772 | +0.117 | 0.008 | +0.214 | 0.010 | 9.3 |
-| A | yolo11s|yolo11s|fp32|640|1|4|2000|pinned|full | 3 | 670 | +0.190 | 0.010 | +0.206 | 0.010 | 12.6 |
-| D | yolo11s|yolo11s|fp32|640|1|4|2400|ondemand|full | 5 | 1029 | +0.154 | 0.007 | +0.192 | 0.008 | 20.9 |
-| A | yolo11s|yolo11s|fp32|640|1|4|2400|pinned|full | 5 | 1027 | +0.149 | 0.008 | +0.232 | 0.009 | 21.5 |
-| C | yolo11s|yolo11s|fp32|960|1|4|2400|pinned|full | 3 | 1394 | +0.111 | 0.007 | +0.139 | 0.008 | 20.3 |
-| A | yolov8m|yolov8m|fp32|640|1|4|1500|pinned|full | 3 | 1068 | +0.097 | 0.006 | +0.207 | 0.008 | 11.5 |
-| A | yolov8m|yolov8m|fp32|640|1|4|2000|pinned|full | 3 | 893 | +0.181 | 0.009 | +0.185 | 0.009 | 13.2 |
-| A | yolov8m|yolov8m|fp32|640|1|4|2400|pinned|full | 5 | 1329 | +0.216 | 0.008 | +0.219 | 0.008 | 19.8 |
-| A | yolov8s|yolov8s|fp32|640|1|4|1500|pinned|full | 3 | 770 | +0.131 | 0.007 | +0.226 | 0.008 | 9.9 |
-| A | yolov8s|yolov8s|fp32|640|1|4|2000|pinned|full | 3 | 653 | +0.205 | 0.009 | +0.206 | 0.010 | 13.8 |
-| A | yolov8s|yolov8s|fp32|640|1|4|2400|pinned|full | 5 | 988 | +0.185 | 0.008 | +0.215 | 0.008 | 21.5 |
+| C | yolo11m\|yolo11m\|fp32\|320\|1\|4\|2400\|pinned\|full | 3 | 303 | +0.269 | 0.015 | +0.280 | 0.015 | 15.4 |
+| C | yolo11m\|yolo11m\|fp32\|480\|1\|4\|2400\|pinned\|full | 3 | 611 | +0.193 | 0.012 | +0.210 | 0.012 | 16.0 |
+| A | yolo11m\|yolo11m\|fp32\|640\|1\|4\|1500\|pinned\|full | 3 | 1263 | +0.148 | 0.009 | +0.179 | 0.010 | 8.2 |
+| A | yolo11m\|yolo11m\|fp32\|640\|1\|4\|2000\|pinned\|full | 3 | 1105 | +0.159 | 0.009 | +0.169 | 0.009 | 13.8 |
+| A | yolo11m\|yolo11m\|fp32\|640\|1\|4\|2400\|pinned\|full | 5 | 1711 | +0.174 | 0.008 | +0.184 | 0.008 | 18.1 |
+| soak | yolo11m\|yolo11m\|fp32\|640\|1\|4\|2400\|pinned\|full\|soak_minutes=30.0 | 1 | 17827 | +0.028 | 0.003 | +0.028 | 0.003 | 26.9 |
+| C | yolo11m\|yolo11m\|fp32\|960\|1\|4\|2400\|pinned\|full | 3 | 2339 | +0.121 | 0.008 | +0.126 | 0.009 | 18.1 |
+| B | yolo11n\|yolo11n_fp16\|fp16\|640\|1\|4\|2400\|pinned\|full | 3 | 382 | +0.210 | 0.013 | +0.259 | 0.013 | 17.0 |
+| B | yolo11n\|yolo11n_int8s\|int8\|640\|1\|4\|1500\|pinned\|full | 3 | 337 | +0.117 | 0.012 | +0.301 | 0.016 | 7.2 |
+| B | yolo11n\|yolo11n_int8s\|int8\|640\|1\|4\|2000\|pinned\|full | 3 | 264 | +0.138 | 0.013 | +0.291 | 0.015 | 14.3 |
+| B | yolo11n\|yolo11n_int8s\|int8\|640\|1\|4\|2400\|pinned\|full | 3 | 226 | +0.165 | 0.017 | +0.290 | 0.020 | 16.0 |
+| C | yolo11n\|yolo11n\|fp32\|320\|1\|1\|2400\|pinned\|full | 3 | 143 | +0.085 | 0.017 | +0.266 | 0.028 | 7.7 |
+| C | yolo11n\|yolo11n\|fp32\|320\|1\|2\|2400\|pinned\|full | 3 | 145 | +0.118 | 0.019 | +0.310 | 0.025 | 13.2 |
+| C | yolo11n\|yolo11n\|fp32\|320\|1\|4\|2400\|pinned\|full | 3 | 133 | +0.271 | 0.031 | +0.525 | 0.032 | 13.8 |
+| C | yolo11n\|yolo11n\|fp32\|480\|1\|4\|2400\|pinned\|full | 3 | 207 | +0.293 | 0.019 | +0.310 | 0.019 | 12.1 |
+| C | yolo11n\|yolo11n\|fp32\|640\|1\|1\|2400\|pinned\|full | 3 | 355 | +0.164 | 0.012 | +0.216 | 0.012 | 8.2 |
+| C | yolo11n\|yolo11n\|fp32\|640\|1\|2\|2400\|pinned\|full | 3 | 331 | +0.226 | 0.014 | +0.245 | 0.014 | 10.4 |
+| D | yolo11n\|yolo11n\|fp32\|640\|1\|4\|2400\|ondemand\|full | 5 | 508 | +0.237 | 0.010 | +0.249 | 0.009 | 14.9 |
+| D | yolo11n\|yolo11n\|fp32\|640\|1\|4\|2400\|pinned\|auto | 3 | 304 | +0.295 | 0.015 | +0.305 | 0.015 | 12.1 |
+| A-input | yolo11n\|yolo11n\|fp32\|640\|1\|4\|2400\|pinned\|full | 6 | 617 | +0.251 | 0.011 | +0.293 | 0.011 | 15.9 |
+| D | yolo11n\|yolo11n\|fp32\|640\|1\|4\|2400\|pinned\|full\|concurrent_mode=model | 3 | 585 | +0.181 | 0.008 | +0.210 | 0.008 | 14.3 |
+| D | yolo11n\|yolo11n\|fp32\|640\|1\|4\|2400\|pinned\|full\|concurrent_mode=spinner | 3 | 462 | +0.219 | 0.010 | +0.246 | 0.010 | 17.0 |
+| D | yolo11n\|yolo11n\|fp32\|640\|1\|4\|2400\|pinned\|full\|input=stream | 3 | 481 | +0.166 | 0.010 | +0.242 | 0.011 | 18.2 |
+| D | yolo11n\|yolo11n\|fp32\|640\|1\|4\|2400\|pinned\|full\|serve_fps=1.0 | 3 | 305 | +0.317 | 0.015 | +0.321 | 0.015 | 11.6 |
+| D | yolo11n\|yolo11n\|fp32\|640\|1\|4\|2400\|pinned\|full\|serve_fps=15.0 | 3 | 305 | +0.268 | 0.014 | +0.276 | 0.014 | 13.2 |
+| D | yolo11n\|yolo11n\|fp32\|640\|1\|4\|2400\|pinned\|full\|serve_fps=5.0 | 3 | 305 | +0.243 | 0.014 | +0.302 | 0.014 | 14.9 |
+| soak | yolo11n\|yolo11n\|fp32\|640\|1\|4\|2400\|pinned\|full\|soak_minutes=30.0 | 1 | 17843 | +0.045 | 0.001 | +0.045 | 0.001 | 28.6 |
+| D | yolo11n\|yolo11n\|fp32\|640\|1\|4\|2400\|pinned\|off | 3 | 304 | +0.284 | 0.015 | +0.285 | 0.015 | 11.5 |
+| C | yolo11n\|yolo11n\|fp32\|640\|2\|4\|2400\|pinned\|full | 3 | 304 | +0.289 | 0.018 | +0.316 | 0.019 | 12.1 |
+| C | yolo11n\|yolo11n\|fp32\|640\|4\|4\|2400\|pinned\|full | 3 | 324 | +0.205 | 0.017 | +0.296 | 0.019 | 15.4 |
+| C | yolo11n\|yolo11n\|fp32\|640\|8\|4\|2400\|pinned\|full | 3 | 392 | +0.275 | 0.020 | +0.277 | 0.020 | 10.5 |
+| C | yolo11n\|yolo11n\|fp32\|960\|1\|1\|2400\|pinned\|full | 3 | 738 | +0.053 | 0.008 | +0.147 | 0.014 | 12.7 |
+| C | yolo11n\|yolo11n\|fp32\|960\|1\|2\|2400\|pinned\|full | 3 | 669 | +0.158 | 0.009 | +0.185 | 0.010 | 11.6 |
+| C | yolo11n\|yolo11n\|fp32\|960\|1\|4\|2400\|pinned\|full | 3 | 648 | +0.181 | 0.009 | +0.234 | 0.010 | 16.5 |
+| B | yolo11s\|yolo11s_int8s\|int8\|640\|1\|4\|2400\|pinned\|full | 3 | 472 | +0.171 | 0.009 | +0.217 | 0.009 | 15.9 |
+| C | yolo11s\|yolo11s\|fp32\|320\|1\|4\|2400\|pinned\|full | 3 | 211 | +0.272 | 0.019 | +0.342 | 0.019 | 13.8 |
+| C | yolo11s\|yolo11s\|fp32\|480\|1\|4\|2400\|pinned\|full | 3 | 384 | +0.258 | 0.014 | +0.276 | 0.014 | 14.9 |
+| C | yolo11s\|yolo11s\|fp32\|640\|1\|1\|2400\|pinned\|full | 3 | 771 | +0.081 | 0.009 | +0.147 | 0.013 | 12.1 |
+| C | yolo11s\|yolo11s\|fp32\|640\|1\|2\|2400\|pinned\|full | 3 | 646 | +0.212 | 0.013 | +0.215 | 0.013 | 11.5 |
+| A | yolo11s\|yolo11s\|fp32\|640\|1\|4\|1500\|pinned\|full | 3 | 772 | +0.117 | 0.008 | +0.214 | 0.010 | 9.3 |
+| A | yolo11s\|yolo11s\|fp32\|640\|1\|4\|2000\|pinned\|full | 3 | 670 | +0.190 | 0.010 | +0.206 | 0.010 | 12.6 |
+| D | yolo11s\|yolo11s\|fp32\|640\|1\|4\|2400\|ondemand\|full | 5 | 1029 | +0.154 | 0.007 | +0.192 | 0.008 | 20.9 |
+| A | yolo11s\|yolo11s\|fp32\|640\|1\|4\|2400\|pinned\|full | 5 | 1027 | +0.149 | 0.008 | +0.232 | 0.009 | 21.5 |
+| C | yolo11s\|yolo11s\|fp32\|960\|1\|4\|2400\|pinned\|full | 3 | 1394 | +0.111 | 0.007 | +0.139 | 0.008 | 20.3 |
+| A | yolov8m\|yolov8m\|fp32\|640\|1\|4\|1500\|pinned\|full | 3 | 1068 | +0.097 | 0.006 | +0.207 | 0.008 | 11.5 |
+| A | yolov8m\|yolov8m\|fp32\|640\|1\|4\|2000\|pinned\|full | 3 | 893 | +0.181 | 0.009 | +0.185 | 0.009 | 13.2 |
+| A | yolov8m\|yolov8m\|fp32\|640\|1\|4\|2400\|pinned\|full | 5 | 1329 | +0.216 | 0.008 | +0.219 | 0.008 | 19.8 |
+| A | yolov8s\|yolov8s\|fp32\|640\|1\|4\|1500\|pinned\|full | 3 | 770 | +0.131 | 0.007 | +0.226 | 0.008 | 9.9 |
+| A | yolov8s\|yolov8s\|fp32\|640\|1\|4\|2000\|pinned\|full | 3 | 653 | +0.205 | 0.009 | +0.206 | 0.010 | 13.8 |
+| A | yolov8s\|yolov8s\|fp32\|640\|1\|4\|2400\|pinned\|full | 5 | 988 | +0.185 | 0.008 | +0.215 | 0.008 | 21.5 |
 
 ### 6.2 Soak trajectories
 
-The two 30-minute soak cells (yolo11n and yolo11m, 640 px, 4 threads, 2400 MHz, fan full): one cell per model, **n = 1 each, so nothing here carries a confidence interval**. Forward-phase windows, time from the start of the forward phase, 10 s centred rolling mean. Time to 95 % is the first time the rolling-mean power reaches 95 % of the mean power over the last 5 minutes. Cold = first minute, hot = last 5 minutes. n = 2 cells (dataset v2 (nov2026 rig) 2 cells); dataset v2 (nov2026 rig; v1 has no counters or sysfs).
+The two 30-minute soak cells (yolo11n and yolo11m, 640 px, 4 threads, 2400 MHz, fan full): one cell per model, **n = 1 each, so nothing here carries a confidence interval**. Forward-phase windows, time from the start of the forward phase, 10 s centred rolling mean. Time to 95 % is the first time the rolling-mean power reaches 95 % of the mean power over the last 5 minutes (the rolling mean is centred; a trailing 10 s mean, which lags, gives 27.7 s for yolo11n and 13.4 s for yolo11m). Cold = first minute, hot = last 5 minutes. n = 2 cells (dataset v2 (nov2026 rig) 2 cells); dataset v2 (nov2026 rig; v1 has no counters or sysfs).
 
 | cell | n_windows | duration_s | t95_s | final_P_W | cold_P_W | hot_P_W | delta_P_W | delta_pct | cold_T_C | hot_T_C |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -399,9 +399,9 @@ Forward phase, largest within-cell |Spearman|: `instr_rate` raw +0.57 / dm +0.83
 
 ### 7.2 Forward power with counters off (`ref`) against counters on
 
-Mean forward power of plain `ref` cells (counters off) against the same configuration in the other v2 families (counters on), nov2026 rig, batch 1, fp32. Family, collection order and the counters switch are confounded, so this bounds the perf overhead only loosely. 1 configurations, 20 cells (dataset v2).
+Mean forward power of plain `ref` cells (counters off) against the same configuration in the other v2 families (counters on), nov2026 rig, batch 1, fp32. Family, collection order and the counters switch are confounded, so this bounds the perf overhead only loosely. 1 configuration, 20 cells (dataset v2).
 
-| base_model | imgsz | threads | cpu_mhz | P_off_W | P_on_W | n_off | n_on | delta_W | delta_pct |
+| base_model | imgsz | threads | cpu_mhz | P_off_W | P_on_W | n_off | n_on | off_minus_on_W | off_minus_on_pct |
 |---|---|---|---|---|---|---|---|---|---|
 | yolo11n | 640 | 4 | 2400 | 9.910 | 9.590 | 3 | 17 | +0.320 | +3.34 |
 

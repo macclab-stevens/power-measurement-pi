@@ -30,9 +30,18 @@ def md_table(df: pd.DataFrame, fmt: dict | None = None) -> str:
         if isinstance(v, (float, np.floating)):
             return "" if np.isnan(v) else fmt.get(c, "{:.4g}").format(v)
         return str(v)
-    head = "| " + " | ".join(map(str, df.columns)) + " |\n|" + "---|" * len(df.columns) + "\n"
-    return head + "".join("| " + " | ".join(cell(c, v) for c, v in zip(df.columns, row)) + " |\n"
+
+    def esc(t):
+        """A literal `|` would add table columns; newlines would end the row."""
+        return str(t).replace("|", "\\|").replace("\n", " ")
+    head = "| " + " | ".join(esc(c) for c in df.columns) + " |\n|" + "---|" * len(df.columns) + "\n"
+    return head + "".join("| " + " | ".join(esc(cell(c, v)) for c, v in zip(df.columns, row)) + " |\n"
                           for row in df.itertuples(index=False))
+
+
+def plural(n: int, word: str) -> str:
+    """'1 configuration', '3 configurations'."""
+    return f"{n} {word}" + ("" if n == 1 else "s")
 
 
 def prov(df: pd.DataFrame) -> str:
@@ -43,7 +52,7 @@ def prov(df: pd.DataFrame) -> str:
     by = w.groupby(df["rig"]).sum()
     by = by.reindex(sorted(by.index, key=lambda r: (r != "oct2026", r)))
     ver = ", ".join(f"{eda.VERSION.get(r, r)} ({r} rig) {int(n)}" for r, n in by.items())
-    cfg = f"{len(df)} configurations / " if "n_cells" in df else ""
+    cfg = f"{plural(len(df), 'configuration')} / " if "n_cells" in df else ""
     return f"n = {cfg}{int(w.sum())} cells (dataset {ver} cells)"
 
 

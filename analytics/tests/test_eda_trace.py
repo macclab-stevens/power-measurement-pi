@@ -179,3 +179,22 @@ def test_write_eda_trace_on_real_data_has_sections_and_figures(real_data, tmp_pa
     assert "yolo11n_soak30_640_t4_2400_r00" in full and "n = 1" in full and "dataset v2" in full
     assert {p.name for p in (tmp_path / "fig").glob("*.png")} == {"eda_temp_slopes.png", "eda_soak.png", "eda_acf.png",
                                                                   "eda_pmic_scatter.png"}
+
+
+def test_md_table_escapes_pipes_so_rows_keep_the_header_width():
+    import eda_write as ew
+    df = pd.DataFrame({"config": ["yolo11m|yolo11m|fp32|320|1|4|2400|pinned|full", "a|b"], "a|b": [1.5, float("nan")],
+                       "txt": ["x\ny", "z"]})
+    lines = ew.md_table(df).splitlines()
+
+    def n_cells(line):
+        return len(line.strip().strip("|").replace("\\|", "").split("|"))
+    assert len({n_cells(ln) for ln in lines}) == 1 and n_cells(lines[0]) == 3
+    assert "yolo11m\\|yolo11m\\|fp32" in lines[2] and "\\|" in lines[0] and len(lines) == 4
+    assert ew.plural(1, "configuration") == "1 configuration" and ew.plural(2, "configuration") == "2 configurations"
+
+
+def test_prov_singular_configuration():
+    import eda_write as ew
+    p = ew.prov(pd.DataFrame({"rig": ["nov2026"], "n_cells": [3]}))
+    assert p.startswith("n = 1 configuration / 3 cells")

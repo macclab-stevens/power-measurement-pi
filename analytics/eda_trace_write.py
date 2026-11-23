@@ -137,7 +137,7 @@ def write_eda_trace(cat, der, qc, report_dir, w=None, pw=None) -> str:
           "with elapsed time and with the clock-pinned load, so a slope is a description, not a causal estimate. "
           f"Configurations whose forward windows span less than {et.LOW_RANGE_C:g} degC do not identify a slope and are "
           f"excluded from the family summaries (still listed in the detail table below). {ew.prov(wc)}; "
-          f"{len(ts)} configurations, {len(fw)} forward windows; {ver}.\n",
+          f"{ew.plural(len(ts), 'configuration')}, {len(fw)} forward windows; {ver}.\n",
           ew.md_table(fs.rename(columns={"n_configs": "configs", "n_used": "used", "n_cells": "cells", "n_windows": "windows",
                                          "pooled_median": "pooled med", "pooled_min": "pooled min", "pooled_max": "pooled max",
                                          "within_median": "within med", "within_min": "within min", "within_max": "within max",
@@ -163,7 +163,8 @@ def write_eda_trace(cat, der, qc, report_dir, w=None, pw=None) -> str:
           "The two 30-minute soak cells (yolo11n and yolo11m, 640 px, 4 threads, 2400 MHz, fan full): one cell per model, "
           "**n = 1 each, so nothing here carries a confidence interval**. Forward-phase windows, time from the start of "
           "the forward phase, 10 s centred rolling mean. Time to 95 % is the first time the rolling-mean power reaches 95 % "
-          "of the mean power over the last 5 minutes. Cold = first minute, hot = last 5 minutes. "
+          "of the mean power over the last 5 minutes (the rolling mean is centred; a trailing 10 s mean, which lags, gives "
+          "27.7 s for yolo11n and 13.4 s for yolo11m). Cold = first minute, hot = last 5 minutes. "
           f"{ew.prov(wc[wc['cell_id'].isin(series)])}; {ver}.\n"]
     rows = [{"cell": c, **et.soak_summary(s)} for c, s in series.items()]
     if rows:
@@ -189,7 +190,7 @@ def write_eda_trace(cat, der, qc, report_dir, w=None, pw=None) -> str:
           "matrix order was shuffled, so a Spearman rho far from 0 would indicate drift (temperature, supply, "
           "clock) that survives the shuffle; the test cannot see an effect that the shuffle spread evenly. Each version "
           f"was collected on one day. {ew.prov(cells[cells['cell_id'].isin(od['cell_id'])])}; "
-          f"{od['config_key'].nunique()} configurations.\n", ew.md_table(sp, {"rho": "{:+.3f}", "p": "{:.3g}"})]
+          f"{ew.plural(od['config_key'].nunique(), 'configuration')}.\n", ew.md_table(sp, {"rho": "{:+.3f}", "p": "{:.3g}"})]
 
     # 7 -------------------------------------------------------------- counters
     cc = et.counter_correlations(w)
@@ -218,8 +219,8 @@ def write_eda_trace(cat, der, qc, report_dir, w=None, pw=None) -> str:
           "Mean forward power of plain `ref` cells (counters off) against the same configuration in the other v2 families "
           "(counters on), nov2026 rig, batch 1, fp32. Family, collection order and the counters switch are confounded, so "
           "this bounds the perf overhead only loosely. "
-          f"{len(po)} configurations, {int(po['n_off'].sum() + po['n_on'].sum()) if len(po) else 0} cells (dataset v2).\n",
-          ew.md_table(po, {"P_off_W": "{:.3f}", "P_on_W": "{:.3f}", "delta_W": "{:+.3f}", "delta_pct": "{:+.2f}"})]
+          f"{ew.plural(len(po), 'configuration')}, {int(po['n_off'].sum() + po['n_on'].sum()) if len(po) else 0} cells (dataset v2).\n",
+          ew.md_table(po.rename(columns={"delta_W": "off_minus_on_W", "delta_pct": "off_minus_on_pct"}), {"off_minus_on_W": "{:+.3f}", "off_minus_on_pct": "{:+.2f}", "P_off_W": "{:.3f}", "P_on_W": "{:.3f}", })]
 
     avail = set(w.loc[w["phase"] == "forward", "cell_id"])
     ids = et.acf_cells(info, avail)
