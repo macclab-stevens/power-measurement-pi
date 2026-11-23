@@ -363,8 +363,9 @@ def test_mode_l_ladder_rows_follow_the_protocol_order_with_exploratory_label(ana
 def test_no_output_is_written_outside_the_given_paths(built, tmp_path):
     paths, _ = built
     repo_reports = report.settings.HERE / "reports"
-    assert not (repo_reports / "results.md").exists()
-    assert not list((repo_reports / "fig").glob("report_*.png"))
+    made = (paths.out_dir / "results.md").stat().st_mtime       # the committed report may exist: it must be older
+    assert not (repo_reports / "results.md").exists() or (repo_reports / "results.md").stat().st_mtime < made
+    assert all(f.stat().st_mtime < made for f in (repo_reports / "fig").glob("report_*.png"))
     assert (paths.out_dir / "results.md").is_file()
 
 

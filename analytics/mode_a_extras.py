@@ -79,3 +79,27 @@ def run(t: pd.DataFrame, desc: pd.DataFrame, seed: int, paths: ri.Paths, *, n_jo
                        "target": "energy_mJ", "seed": seed, "n_configs_train_table": len(table), "n_folds": len(folds)}, paths.runs_log)
         summary["v2_vs_pooled"][training] = rid
     return summary
+
+
+SECONDARY = {"energy_mJ": ["B3LogLinear", "M3Factored"], "latency_ms": ["B3LogLinear"], "mean_P_W": ["B3LogLinear"]}
+
+
+def run_secondary(t: pd.DataFrame, desc: pd.DataFrame, seed: int, paths: ri.Paths, *, grids: dict | None = None,
+                  targets=None) -> dict:
+    """Final fits of the pre-declared secondary candidates (B3 for every target, M3 for energy) on every
+    configuration of `t`, pickled by `mode_a.fit_final` and logged as command `final-mode-a-secondary`.
+    A candidate that is already the AUTO-final model of that target (per the latest `mode-a-extras` fit
+    of this seed) is not refitted: its pickle is that model and re-pickling could change its sha256.
+    Returns {(target, candidate): runlog record}."""
+    recs = ri.read_records(paths.runs_log)
+    out = {}
+    for target in (targets or ri.TARGETS):
+        primary = ri.latest_record(recs, command="mode-a-extras", part="fit_final", target=target, seed=seed)
+        for cand in SECONDARY[target]:
+            if primary is not None and primary["candidate"] == cand:
+                continue
+            _, info = mode_a.fit_final(t, cand, target, seed, desc, grids)
+            out[(target, cand)] = runlog.append(
+                {"command": "final-mode-a-secondary", "part": "fit_final", "seed": seed, "target": target, "candidate": cand,
+                 "params": info["params"], "path": info["path"], "sha256": info["sha256"], "n_configs": len(t)}, paths.runs_log)
+    return out

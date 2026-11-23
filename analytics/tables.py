@@ -17,6 +17,18 @@ def _cv(x: pd.Series) -> float:
     return float(x.std(ddof=1) / x.mean()) if len(x) >= 2 else float("nan")
 
 
+def add_derived_columns(t: pd.DataFrame) -> pd.DataFrame:
+    """Copy of `t` plus the derived Mode A columns: log_{macs,params,weight_bytes,act_bytes}, cpu_ghz,
+    is_int8, is_fp16. Shared by `mode_a_table` and the lockbox feature rows so both are built identically."""
+    t = t.copy()
+    for k in ("macs", "params", "weight_bytes", "act_bytes"):
+        t[f"log_{k}"] = np.log(t[k].astype(float))
+    t["cpu_ghz"] = t["cpu_mhz"].astype(float) / 1000.0
+    t["is_int8"] = (t["precision"] == "int8").astype(int)
+    t["is_fp16"] = (t["precision"] == "fp16").astype(int)
+    return t
+
+
 def mode_a_table(cat: pd.DataFrame, der: pd.DataFrame, qc: pd.DataFrame, st: pd.DataFrame) -> pd.DataFrame:
     """One row per configuration over Mode A eligible, QC-primary cells (mode `forward`, primary
     slip-excluded values; cells with no finite energy are dropped). Raises ValueError naming a
@@ -49,11 +61,7 @@ def mode_a_table(cat: pd.DataFrame, der: pd.DataFrame, qc: pd.DataFrame, st: pd.
     t = pd.DataFrame(rows)
     if t.empty:
         return t
-    for k in ("macs", "params", "weight_bytes", "act_bytes"):
-        t[f"log_{k}"] = np.log(t[k].astype(float))
-    t["cpu_ghz"] = t["cpu_mhz"].astype(float) / 1000.0
-    t["is_int8"] = (t["precision"] == "int8").astype(int)
-    t["is_fp16"] = (t["precision"] == "fp16").astype(int)
+    t = add_derived_columns(t)
     return t.reset_index(drop=True)
 
 

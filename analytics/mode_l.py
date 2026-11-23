@@ -5,7 +5,9 @@ mode (does a short unmetered run of a new model predict its energy per image bet
 Nothing from a test cell reaches a fit: the outer fold fits on the other base models, the grid point is
 chosen by an inner leave-one-model-out over those models only, and window models only ever see the rows
 passed to `fit`. Energies are J (E_mJ / 1000), power W, probe energy per image mJ."""
+import hashlib
 import json
+import pickle
 import time
 import uuid
 from pathlib import Path
@@ -18,6 +20,7 @@ import deploy
 import evaluate
 import mode_l_models as mm
 import runlog
+import settings
 import splits
 import tables
 
@@ -106,6 +109,33 @@ def _select(rung: mm.Rung, seed: int, train: pd.DataFrame) -> dict:
             apes[gi].extend(_cell_apes(te, _fit(rung, seed, params, tr).predict(te)))
     med = [np.nanmedian(a) if np.isfinite(a).any() else np.inf for a in apes]
     return rung.grid[int(np.argmin(med))]
+
+
+def fit_final(w: pd.DataFrame, cat: pd.DataFrame, qc: pd.DataFrame | None, rung_name: str, seed: int,
+              rungs: dict | None = None) -> tuple:
+    """The shipped window model of one rung: the grid point is chosen by `_select` (leave one YOLO base
+    model out over all training cells), then the model is refitted on every QC-primary counter cell of the
+    YOLO base models and pickled to derived/models/mode_l_<rung>.pkl. Lockbox cells never enter (a
+    `source` column marks them). Returns (model, {"path", "sha256", "params", "n_cells", "n_windows",
+    "base_models"}). `seed` is the tree random_state (selection and final fit)."""
+    rungs = rungs or mm.default_rungs()
+    if rung_name not in rungs:
+        raise ValueError(f"unknown rung {rung_name!r}; expected one of {list(rungs)}")
+    if "source" in cat.columns:
+        cat = cat[cat["source"] != "lockbox"]
+    train = _prep(w, cat, qc)
+    if train.empty:
+        raise ValueError("no QC-primary YOLO counter windows to fit on")
+    rung = rungs[rung_name]
+    params = _select(rung, seed, train)
+    model = _fit(rung, seed, params, train)
+    out = settings.derived_dir() / "models"
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"mode_l_{rung_name}.pkl"
+    path.write_bytes(pickle.dumps(model))
+    return model, {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "params": params,
+                   "n_cells": int(train["cell_id"].nunique()), "n_windows": len(train),
+                   "base_models": sorted(train["base_model"].unique())}
 
 
 def _run_fold(held: str, w: pd.DataFrame, rungs: dict, seed: int) -> list:
