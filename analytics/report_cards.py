@@ -135,18 +135,17 @@ def _hashes(a, what: str, tail: str) -> list:
     rungs) from the run log, with sha256, parameters and run id."""
     ta, miss_a = rf.mode_a_frozen(a.recs, a.seed)
     tl_, miss_l = rf.mode_l_frozen(a.recs, a.seed)
-    ids = [*ta["run_id"], *tl_["run_id"]]
-    cap = lambda target, prov, extra: rt.caption(floor=None, split="all training data", target=target, prov=prov, run_ids=ids, extra=extra)
+    cap = lambda target, prov, extra, ids: rt.caption(floor=None, split="all training data", target=target, prov=prov, run_ids=list(ids), extra=extra)
     frozen = ("Pickles are not committed. Each is identified by the sha256 recorded in `runs.jsonl` (command `mode-a-extras`, "
               "`final-mode-a-secondary` or `final-mode-l`); `lockbox-predict` and `lockbox-score` refuse a pickle whose hash differs, and the "
               "fit commands refuse to run once `lockbox_predictions.csv` or `lockbox_frozen_models.json` exists. The `file` column compares the pickle "
               "on the machine that built this card with the recorded hash.")
     return ["## Hashes and runs\n", frozen + "\n",
             cap("frozen Mode A models", f"n = {len(ta)} frozen Mode A models", f"{what}. Roles: `primary` is the AUTO-final candidate of the target "
-                "(`mode-a-extras`), `secondary` the pre-declared extras (`final-mode-a-secondary`). {}".format(rf.missing_text(miss_a))),
+                "(`mode-a-extras`), `secondary` the pre-declared extras (`final-mode-a-secondary`). {}".format(rf.missing_text(miss_a)), ta["run_id"]),
             ew.md_table(ta) + "\n",
             cap("frozen Mode L rungs", f"n = {len(tl_)} frozen Mode L rungs", "`final-mode-l`: grid by leave-one-YOLO-model-out, refit on every QC-primary "
-                f"counter cell of the YOLO base models. {rf.missing_text(miss_l)}"),
+                f"counter cell of the YOLO base models. {rf.missing_text(miss_l)}", tl_["run_id"]),
             ew.md_table(tl_) + "\n", tail]
 
 
