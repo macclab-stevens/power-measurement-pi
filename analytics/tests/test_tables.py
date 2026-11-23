@@ -116,7 +116,7 @@ def test_nan_energy_cell_is_dropped():
 
 def test_real_data(real_data):
     cat = data.catalogue()
-    der = derive.derive_all(cat)
+    der = derive.derive_all(cat, cache=True)
     q = pd.read_csv(Path(qc.__file__).parent / "reports" / "qc_cells.csv")
     st = static.static_table(cat)
     t = tables.mode_a_table(cat, der, q, st)

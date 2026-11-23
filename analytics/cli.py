@@ -31,7 +31,7 @@ def cmd_derive(args) -> int:
     import derive
     import settings as st
     cat = data.catalogue()
-    df = derive.derive_all(cat, force=args.force)
+    df = derive.derive_all(cat, force=args.force, cache=True)
     print(f"{len(df)} rows from {df['cell_id'].nunique()} cells -> {st.derived_dir() / derive.CACHE_NAME}")
     print(df.groupby("mode").size().to_string())
     worst, worst_cell = 0.0, None
@@ -61,7 +61,7 @@ def cmd_qc(args) -> int:
     import runlog
     t0 = time.perf_counter()
     cat = data.catalogue()
-    der = derive.derive_all(cat)
+    der = derive.derive_all(cat, cache=True)
     bounds = qc.bounds_from_cfg()
     df = qc.run_qc(cat, der, bounds)
     REPORTS.mkdir(exist_ok=True)
@@ -94,7 +94,7 @@ def cmd_tables(args) -> int:
         print(f"error: {qc_path} is missing; run `uv run python cli.py qc` first", file=sys.stderr)
         return 1
     cat = data.catalogue()
-    der = derive.derive_all(cat)
+    der = derive.derive_all(cat, cache=True)
     t = tables.mode_a_table(cat, der, pd.read_csv(qc_path), static.static_table(cat))
     REPORTS.mkdir(exist_ok=True)
     out = REPORTS / "mode_a_configs.csv"
@@ -204,13 +204,14 @@ def cmd_deploy_validate(args) -> int:
     if not qc_path.is_file():
         print(f"error: {qc_path} is missing; run `uv run python cli.py qc` first", file=sys.stderr)
         return 1
+    seed = args.seed if args.seed is not None else settings.seed()
     try:
-        preds = deploy.load_mode_a_preds()
+        preds = deploy.load_mode_a_preds(seed=seed)
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     cat = data.catalogue()
-    v = deploy.validate(cat, derive.derive_all(cat), pd.read_csv(qc_path), preds)
+    v = deploy.validate(cat, derive.derive_all(cat, cache=True), pd.read_csv(qc_path), preds)
     REPORTS.mkdir(exist_ok=True)
     out = REPORTS / "deploy_validation.csv"
     v.to_csv(out, index=False)
@@ -220,7 +221,9 @@ def cmd_deploy_validate(args) -> int:
     print("skipped (no prediction):", v.attrs["skipped"] or "none")
     print("fan offsets:", v.attrs["fan_offsets"])
     print("soak factors (leave-one-soak-out):", v.attrs["soak_factors"])
-    runlog.append({"command": "deploy-validate", "n_rows": len(v), "skipped": v.attrs["skipped"],
+    print(f"Mode A runs {preds.attrs['run_ids']}, seed {seed}, seed matched {preds.attrs['seed_matched']}")
+    runlog.append({"command": "deploy-validate", "n_rows": len(v), "skipped": v.attrs["skipped"], "seed": seed,
+                   "mode_a_run_ids": preds.attrs["run_ids"], "mode_a_seed_matched": preds.attrs["seed_matched"],
                    "median_ape": {f"{c}/{p}": float(r["median"]) for (c, p), r in summ.iterrows()}})
     return 0
 
@@ -247,7 +250,7 @@ def cmd_mode_l(args) -> int:
     rungs = mode_l_models.default_rungs() if not args.smoke else mode_l_models.first_point(
         mode_l_models.default_rungs())
     out = mode_l.run_all(windows.build_windows(cat), windows.build_pmic_windows(cat), cat,
-                         derive.derive_all(cat), pd.read_csv(qc_path), seed=seed, n_jobs=args.n_jobs,
+                         derive.derive_all(cat, cache=True), pd.read_csv(qc_path), seed=seed, n_jobs=args.n_jobs,
                          mode_a_pred=preds, out_dir=settings.derived_dir() / "mode_l", rungs=rungs,
                          folds=args.fold)
     for r, m in out["metrics"].items():
@@ -338,7 +341,7 @@ def cmd_eda(args) -> int:
             return 1
     cat = data.catalogue()
     import eda_trace_write
-    der, qc = derive.derive_all(cat), pd.read_csv(paths[0])
+    der, qc = derive.derive_all(cat, cache=True), pd.read_csv(paths[0])
     md = eda.write_eda_config(cat, der, qc, pd.read_csv(paths[1]), REPORTS)
     md = eda.splice_trace(md, eda_trace_write.write_eda_trace(cat, der, qc, REPORTS))
     (REPORTS / "eda.md").write_text(md)
@@ -351,6 +354,10 @@ def cmd_eda(args) -> int:
 
 def add_derive_args(p) -> None:
     p.add_argument("--force", action="store_true", help="ignore the cache and recompute")
+
+
+def add_seed_arg(p) -> None:
+    p.add_argument("--seed", type=int, help="prefer the Mode A runs with this seed (default: the config.toml seed)")
 
 
 def add_mode_a_args(p) -> None:
@@ -381,7 +388,8 @@ COMMANDS = {
     "mode-a": ("nested Mode A evaluation per split and target -> derived/mode_a/<run_id>.parquet and runs.jsonl",
                cmd_mode_a, add_mode_a_args),
     "deploy-validate": ("validate the deployment calculator on serve, ondemand, fan and soak cells using the "
-                        "latest S-LOMO Mode A runs -> reports/deploy_validation.csv", cmd_deploy_validate, None),
+                        "latest S-LOMO Mode A runs (the --seed one if present) -> reports/deploy_validation.csv",
+                        cmd_deploy_validate, add_seed_arg),
     "windows": ("build derived/windows.parquet (100 ms counter windows) and derived/pmic_windows.parquet "
                 "(5 s PMIC windows); print drop, guard and memory figures", cmd_windows, add_derive_args),
     "mode-l": ("Mode L ladder (leave one YOLO model out), PMIC-only check and probe mode -> "

@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 import math
 
 import numpy as np
@@ -201,19 +202,79 @@ def test_derive_all_cache(tmp_path, monkeypatch):
     _cell(tmp_path, "a")
     _cell(tmp_path, "b", meta={"batch": 2})
     cat = data.catalogue()
-    df = derive.derive_all(cat)
+    df = derive.derive_all(cat, cache=True)
     assert sorted(df["cell_id"]) == ["a", "b"]
     cache = settings.derived_dir() / "derive.parquet"
     assert cache.is_file()
     mtime = cache.stat().st_mtime_ns
-    df2 = derive.derive_all(cat)
+    df2 = derive.derive_all(cat, cache=True)
     assert cache.stat().st_mtime_ns == mtime            # served from the cache
     pd.testing.assert_frame_equal(df.reset_index(drop=True), df2.reset_index(drop=True))
-    derive.derive_all(cat, force=True)
+    derive.derive_all(cat, force=True, cache=True)
     assert cache.stat().st_mtime_ns != mtime
-    # a different cell set invalidates the cache
-    df3 = derive.derive_all(cat[cat["cell_id"] == "a"])
-    assert list(df3["cell_id"]) == ["a"]
+
+
+def test_derive_all_default_does_not_touch_cache(tmp_path, monkeypatch):
+    # rule: the cache is read and written only when the caller passes cache=True (full catalogue)
+    monkeypatch.setenv("ANALYTICS_DATA", str(tmp_path))
+    _cell(tmp_path, "a")
+    _cell(tmp_path, "b")
+    cat = data.catalogue()
+    cache = settings.derived_dir() / "derive.parquet"
+    derive.derive_all(cat, cache=True)
+    before = cache.read_bytes()
+    df = derive.derive_all(cat[cat["cell_id"] == "a"])           # subset call, default cache=False
+    assert list(df["cell_id"]) == ["a"]
+    assert cache.read_bytes() == before                           # full-catalogue cache survives
+    assert sorted(derive.derive_all(cat, cache=True)["cell_id"]) == ["a", "b"]
+    assert cache.read_bytes() == before                           # and is still served
+
+
+def test_derive_all_unreadable_cache_is_a_miss(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANALYTICS_DATA", str(tmp_path))
+    _cell(tmp_path, "a")
+    cat = data.catalogue()
+    cache = settings.derived_dir() / "derive.parquet"
+    cache.write_bytes(b"not a parquet file")
+    df = derive.derive_all(cat, cache=True)                       # must not raise
+    assert list(df["cell_id"]) == ["a"]
+    assert pq_ok(cache)                                           # and the cache is repaired
+
+
+def pq_ok(path):
+    import pyarrow.parquet as pq
+    return pq.read_table(path).num_rows == 1
+
+
+def test_derive_all_cache_write_is_atomic(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANALYTICS_DATA", str(tmp_path))
+    _cell(tmp_path, "a")
+    cat = data.catalogue()
+    cache = settings.derived_dir() / "derive.parquet"
+    derive.derive_all(cat, cache=True)
+    good = cache.read_bytes()
+    import os
+    real_replace = os.replace
+    seen = []
+
+    def spy(src, dst):
+        seen.append((str(src), str(dst)))
+        assert Path(src).is_file() and Path(src) != cache      # written to a temp file first
+        return real_replace(src, dst)
+    monkeypatch.setattr(os, "replace", spy)
+    derive.derive_all(cat, force=True, cache=True)
+    assert seen and seen[-1][1] == str(cache)
+    assert list(settings.derived_dir().glob("*.tmp*")) == []
+    # a failing write leaves the old cache intact
+    def boom(*a, **k):
+        raise OSError("disk full")
+    monkeypatch.setattr(os, "replace", boom)
+    try:
+        derive.derive_all(cat, force=True, cache=True)
+    except OSError:
+        pass
+    assert cache.read_bytes() == good or pq_ok(cache)
+    assert list(settings.derived_dir().glob("*.tmp*")) == []
 
 
 def test_derive_never_writes_outside_derived(tmp_path, monkeypatch):

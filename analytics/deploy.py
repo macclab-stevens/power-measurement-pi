@@ -54,18 +54,29 @@ def cell_table(cat: pd.DataFrame, der: pd.DataFrame, qc: pd.DataFrame | None = N
     return _primary(cat, qc).merge(d, on="cell_id", how="inner").reset_index(drop=True)
 
 
-def idle_table(cat: pd.DataFrame, der: pd.DataFrame, qc: pd.DataFrame) -> pd.DataFrame:
-    """Idle power per (rig, cpu_key, fan_mode): median baseline_W over QC-primary cells of both rigs
-    (every cell contributes one baseline, whatever its workload). Columns: rig, cpu_key, fan_mode,
-    P_idle_W, n, iqr_W."""
+def _idle_cells(cat: pd.DataFrame, der: pd.DataFrame, qc: pd.DataFrame) -> pd.DataFrame:
+    """QC-primary catalogue rows with a finite baseline_W and their cpu_key (one row per cell)."""
     base = der.drop_duplicates("cell_id")[["cell_id", "baseline_W"]]
     c = _primary(cat, qc).merge(base, on="cell_id")
     c = c[np.isfinite(c["baseline_W"].astype(float))].copy()
     c["cpu_key"] = [cpu_key(r) for _, r in c.iterrows()]
+    return c
+
+
+def _idle_aggregate(c: pd.DataFrame, exclude_cell: str | None = None) -> pd.DataFrame:
+    if exclude_cell is not None:
+        c = c[c["cell_id"] != exclude_cell]
     g = c.groupby(["rig", "cpu_key", "fan_mode"])["baseline_W"]
-    out = g.agg(P_idle_W="median", n="size",
-                iqr_W=lambda x: float(x.quantile(0.75) - x.quantile(0.25))).reset_index()
-    return out
+    return g.agg(P_idle_W="median", n="size",
+                 iqr_W=lambda x: float(x.quantile(0.75) - x.quantile(0.25))).reset_index()
+
+
+def idle_table(cat: pd.DataFrame, der: pd.DataFrame, qc: pd.DataFrame, exclude_cell: str | None = None) -> pd.DataFrame:
+    """Idle power per (rig, cpu_key, fan_mode): median baseline_W over QC-primary cells of both rigs
+    (every cell contributes one baseline, whatever its workload). Columns: rig, cpu_key, fan_mode,
+    P_idle_W, n, iqr_W. `exclude_cell` leaves that cell out (leave-one-cell-out, used by `validate`
+    so a validated cell's own baseline never enters the idle power that predicts it)."""
+    return _idle_aggregate(_idle_cells(cat, der, qc), exclude_cell)
 
 
 def _is_plain(t: pd.DataFrame) -> pd.DataFrame:
@@ -270,9 +281,16 @@ def validate(cat: pd.DataFrame, der: pd.DataFrame, qc: pd.DataFrame, preds: pd.D
     1/5/15 fps), ondemand (yolo11s ondemand, forward per image and serve), soak (forward phase with the
     soak factor of the other soak only), fan (offsets measured on these cells: not a validation).
     Rows whose configuration has no prediction are skipped; counts are in df.attrs["skipped"] (case ->
-    n) and the fan offsets, soak factors and idle table in attrs."""
+    n) and the fan offsets, soak factors and idle table in attrs.
+
+    Idle power is leave-one-cell-out: every validated row uses the idle table built without that
+    row's own cell (global constraint 4); a cell with no other cell in its (rig, cpu_key, fan_mode)
+    row has no leak-free idle power and is skipped (counted in `skipped`). `attrs["idle"]` is the full
+    table, for reference only."""
     t = cell_table(cat, der, qc)
-    idle = idle_table(cat, der, qc)
+    idle_c = _idle_cells(cat, der, qc)
+    idle = _idle_aggregate(idle_c)
+    idle_loco: dict = {}
     offsets = fan_offsets(cell_table(cat, der, qc))
     p_by = preds.drop_duplicates("config_key").set_index("config_key")
     rows, skipped, soaks = [], {}, {}
@@ -285,11 +303,19 @@ def validate(cat: pd.DataFrame, der: pd.DataFrame, qc: pd.DataFrame, preds: pd.D
             return
         pr = p_by.loc[key]
         e, tm = float(pr["e_img_mJ"]), float(pr["t_img_ms"])
-        p = predict(scen, e, tm, idle, offsets, soak)
+        cid = row["cell_id"]
+        if cid not in idle_loco:
+            idle_loco[cid] = _idle_aggregate(idle_c, exclude_cell=cid)
+        own_idle = idle_loco[cid]
+        try:
+            p = predict(scen, e, tm, own_idle, offsets, soak)
+        except KeyError:                       # no other cell gives this row's idle power
+            skipped[case] = skipped.get(case, 0) + 1
+            return
         lo = hi = None
         if "lo90_mJ" in extra and np.isfinite(pr["lo90_mJ"]):
-            lo = predict(scen, float(pr["lo90_mJ"]), tm, idle, offsets, soak)["E_J"]
-            hi = predict(scen, float(pr["hi90_mJ"]), tm, idle, offsets, soak)["E_J"]
+            lo = predict(scen, float(pr["lo90_mJ"]), tm, own_idle, offsets, soak)["E_J"]
+            hi = predict(scen, float(pr["hi90_mJ"]), tm, own_idle, offsets, soak)["E_J"]
         fl = pr["flagged"] if "flagged" in extra else None
         rows.append(_val_row(case, row, phase, measured_J, p, source, notes, lo=lo, hi=hi, flagged=fl))
 

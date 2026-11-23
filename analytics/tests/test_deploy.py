@@ -180,6 +180,8 @@ def _val_spec():
     spec += [({"cell_id": "fps5", "serve_fps": 5.0}, dict(sdur=30000.0, sE=300000.0), True)]
     spec += [({"cell_id": "od", "base_model": "yolo11s", "variant": "yolo11s", "governor": "ondemand"},
               dict(e=6600.0, lat=640.0, sdur=8400.0, sE=74000.0, base=4.1), True)]
+    spec += [({"cell_id": "od2", "base_model": "yolo11s", "variant": "yolo11s", "governor": "ondemand"},
+              dict(e=6600.0, lat=640.0, sdur=8400.0, sE=74000.0, base=4.3), True)]
     spec += [({"cell_id": "alien", "base_model": "effb0", "variant": "effb0", "mode_a_eligible": True},
               dict(sdur=3000.0, sE=20000.0), True)]
     spec += [({"cell_id": "npr", "mode_a_eligible": True}, dict(sdur=4900.0, sE=38000.0), False)]
@@ -218,7 +220,8 @@ def test_validate_serve_fps_saturation_flag_and_batch():
     r = v[v.case == "serve-fps"].iloc[0]
     assert r.cell_id == "fps5" and "serve_fps=5" in r.notes and r.measured_J == pytest.approx(300.0)
     cat, der, qc = _frames([({"cell_id": "b", "mode_a_eligible": True, "batch": 4},
-                             dict(sdur=4000.0, sE=30000.0, batch=4), True)])
+                             dict(sdur=4000.0, sE=30000.0, batch=4), True),
+                            ({"cell_id": "other"}, dict(), True)])      # idle power needs another cell
     k = "yolo11n|yolo11n|fp32|640|4|4|2400|nov2026"
     p = pd.DataFrame({"config_key": [k], "e_img_mJ": [1000.0], "t_img_ms": [150.0]})
     v2 = deploy.validate(cat, der, qc, p).iloc[0]
@@ -228,12 +231,49 @@ def test_validate_serve_fps_saturation_flag_and_batch():
 
 def test_validate_ondemand_forward_and_serve():
     v = _validated()
-    r = v[v.case == "ondemand"].set_index("phase")
+    r = v[(v.case == "ondemand") & (v.cell_id == "od")].set_index("phase")
     assert set(r.index) == {"forward", "serve"}
     assert r.loc["forward", "predicted_J"] == pytest.approx(6.6) and r.loc["forward", "ape"] == pytest.approx(0.0)
-    # serve: 10 x 6.6 J + (8.4 - 6.4) s x ondemand idle (median of one cell, 4.1 W)
-    assert r.loc["serve", "predicted_J"] == pytest.approx(66.0 + 2.0 * 4.1)
+    # serve: 10 x 6.6 J + (8.4 - 6.4) s x the ondemand idle of the OTHER ondemand cell (4.3 W), not its own 4.1
+    assert r.loc["serve", "predicted_J"] == pytest.approx(66.0 + 2.0 * 4.3)
     assert r.loc["serve", "measured_J"] == pytest.approx(74.0)
+
+
+def test_validate_idle_excludes_the_validated_cell_for_every_case():
+    # leave-one-cell-out: a validated cell's own baseline never enters the idle power predicting it
+    spec = [(dict(cell_id=f"a{i}"), dict(base=b), True) for i, b in enumerate([4.0, 5.0, 6.0])]
+    spec += [({"cell_id": "ser", "mode_a_eligible": True}, dict(sdur=4900.0, sE=38000.0, base=9.0), True)]
+    cat, der, qc = _frames(spec)
+    v = deploy.validate(cat, der, qc, _preds())
+    row = v[v.cell_id == "ser"].iloc[0]
+    # median(4, 5, 6) = 5.0 without the cell; including its own 9.0 it would be 5.5
+    assert row.predicted_J == pytest.approx(30.0 + 1.9 * 5.0)
+    assert v.attrs["idle"].set_index(["rig", "cpu_key", "fan_mode"]).loc[("nov2026", "2400", "full"), "P_idle_W"] == 5.5
+    # ondemand and fan cells: each from the table that leaves it out
+    spec = [({"cell_id": f"od{i}", "base_model": "yolo11s", "variant": "yolo11s", "governor": "ondemand"},
+             dict(e=6600.0, lat=640.0, sdur=8400.0, sE=74000.0, base=b), True) for i, b in enumerate([4.0, 4.4, 5.0])]
+    cat, der, qc = _frames(spec)
+    o = deploy.validate(cat, der, qc, _preds())
+    got = o[o.phase == "serve"].set_index("cell_id")["predicted_J"]
+    for cid, other_median in (("od0", 4.7), ("od1", 4.5), ("od2", 4.2)):
+        assert got[cid] == pytest.approx(66.0 + 2.0 * other_median)
+
+
+def test_validate_skips_a_cell_with_no_idle_row_apart_from_itself():
+    spec = [({"cell_id": "only", "base_model": "yolo11s", "variant": "yolo11s", "governor": "ondemand"},
+             dict(e=6600.0, lat=640.0, sdur=8400.0, sE=74000.0, base=4.1), True)]
+    cat, der, qc = _frames(spec)
+    v = deploy.validate(cat, der, qc, _preds())
+    assert v.empty and v.attrs["skipped"]["ondemand"] == 2          # forward and serve: no leak-free idle row
+
+
+def test_idle_table_exclude_cell():
+    spec = [(dict(cell_id=f"a{i}"), dict(base=b), True) for i, b in enumerate([4.0, 5.0, 9.0])]
+    cat, der, qc = _frames(spec)
+    full = deploy.idle_table(cat, der, qc).iloc[0]
+    loco = deploy.idle_table(cat, der, qc, exclude_cell="a2").iloc[0]
+    assert (full["P_idle_W"], full["n"]) == (5.0, 3) and (loco["P_idle_W"], loco["n"]) == (4.5, 2)
+    assert deploy.idle_table(cat, der, qc, exclude_cell="nope").iloc[0]["n"] == 3
 
 
 def test_validate_soak_uses_other_soak_only_and_reports_no_soak():
@@ -309,7 +349,7 @@ def test_real_idle_fan_and_soak(real_data, capsys):
     import derive
     import settings
     cat = data.catalogue()
-    der = derive.derive_all(cat)
+    der = derive.derive_all(cat, cache=True)
     qc = pd.read_csv(settings.HERE / "reports" / "qc_cells.csv")
     idle = deploy.idle_table(cat, der, qc)
     off = deploy.fan_offsets(deploy.cell_table(cat, der, qc))
@@ -323,6 +363,40 @@ def test_real_idle_fan_and_soak(real_data, capsys):
     assert ("nov2026", "ondemand", "full") in set(map(tuple, idle[["rig", "cpu_key", "fan_mode"]].values))
     assert off["off"]["idle_W"] < 0 < f
     assert deploy.soak_factor(der, cat, exclude_cell="yolo11n_soak30_640_t4_2400_r00", qc=qc) > 0
+
+
+def test_cli_deploy_validate_passes_the_seed_and_records_run_ids(tmp_path, monkeypatch, capsys):
+    import cli
+    import data
+    import derive
+    import runlog
+    log = tmp_path / "runs.jsonl"
+    monkeypatch.setattr(runlog, "DEFAULT_LOG", log)
+    monkeypatch.setattr(cli, "REPORTS", tmp_path)
+    pd.DataFrame({"cell_id": ["a"], "primary": [True]}).to_csv(tmp_path / "qc_cells.csv", index=False)
+    seen = {}
+    preds = _preds()
+    preds.attrs["run_ids"] = {"energy_mJ": "rid_e", "latency_ms": "rid_l"}
+    preds.attrs["seed_matched"] = {"energy_mJ": True, "latency_ms": False}
+
+    def fake_load(log_path=None, mode_a_dir=None, seed=None):
+        seen["seed"] = seed
+        return preds
+    cat, der, qc = _frames(_val_spec())
+    monkeypatch.setattr(deploy, "load_mode_a_preds", fake_load)
+    monkeypatch.setattr(data, "catalogue", lambda *a, **k: cat)
+    monkeypatch.setattr(derive, "derive_all", lambda *a, **k: der)
+    qc.to_csv(tmp_path / "qc_cells.csv", index=False)
+    assert cli.main(["deploy-validate", "--seed", "77"]) == 0
+    assert seen["seed"] == 77
+    rec = json.loads(log.read_text().splitlines()[-1])
+    assert rec["command"] == "deploy-validate" and rec["seed"] == 77
+    assert rec["mode_a_run_ids"] == {"energy_mJ": "rid_e", "latency_ms": "rid_l"}
+    assert rec["mode_a_seed_matched"] == {"energy_mJ": True, "latency_ms": False}
+    assert cli.main(["deploy-validate"]) == 0                      # default: the config seed
+    import settings
+    assert seen["seed"] == settings.seed()
+    assert json.loads(log.read_text().splitlines()[-1])["seed"] == settings.seed()
 
 
 def test_cli_deploy_validate_fails_clearly_without_mode_a_runs(tmp_path, monkeypatch, capsys):

@@ -5,6 +5,7 @@ columns equal derived.json. The primary columns additionally drop every frame th
 power-meter time slip (alignment.json), so one resynchronisation glitch cannot bend a cell's mean.
 Durations and energies are read from dur_ms / E_mJ, never recomputed from the trace.
 """
+import os
 from pathlib import Path
 
 import numpy as np
@@ -141,19 +142,48 @@ def _cache_key(cat: pd.DataFrame) -> str:
     return h.hexdigest()
 
 
-def derive_all(cat: pd.DataFrame, force: bool = False) -> pd.DataFrame:
+def _read_cache(cache: Path, key: str) -> pd.DataFrame | None:
+    """The cached table if it is readable and its key matches; any failure to read it is a miss."""
+    if not cache.is_file():
+        return None
+    try:
+        tbl = pq.read_table(cache)
+    except (OSError, pa.ArrowException, ValueError):
+        return None
+    if (tbl.schema.metadata or {}).get(b"derive_key") != key.encode():
+        return None
+    return tbl.to_pandas()
+
+
+def _write_cache(cache: Path, df: pd.DataFrame, key: str) -> None:
+    """Write via a temp file in the same directory and os.replace, so a reader never sees a torn file."""
+    tmp = cache.with_name(f"{cache.name}.tmp{os.getpid()}")
+    try:
+        tbl = pa.Table.from_pandas(df, preserve_index=False)
+        pq.write_table(tbl.replace_schema_metadata({"derive_key": key}), tmp)
+        os.replace(tmp, cache)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def derive_all(cat: pd.DataFrame, force: bool = False, cache: bool = False) -> pd.DataFrame:
     """derive_cell over every cell in the catalogue: one row per cell and mode.
 
-    Cached in derived_dir()/derive.parquet; the key is the hash of derive.py, the dataset index hash
-    and the cell list, stored in the parquet metadata. force=True recomputes."""
-    cache = settings.derived_dir() / CACHE_NAME
-    key = _cache_key(cat)
-    if not force and cache.is_file():
-        tbl = pq.read_table(cache)
-        if (tbl.schema.metadata or {}).get(b"derive_key") == key.encode():
-            return tbl.to_pandas()
+    Cache rule: derived_dir()/derive.parquet holds the derivation of the FULL catalogue and is read
+    and written only when the caller passes cache=True, which only the CLI commands and the pipelines
+    that pass `data.catalogue()` do. The default cache=False (subset calls, tests) neither reads nor
+    writes it, so a subset call can never replace the full-catalogue cache. The key is the hash of
+    derive.py, the dataset index hash and the cell list, stored in the parquet metadata. An unreadable
+    or mismatching cache is a miss; the write is atomic (temp file + os.replace). force=True
+    recomputes (and, with cache=True, rewrites)."""
+    path = settings.derived_dir() / CACHE_NAME if cache else None
+    key = _cache_key(cat) if cache else ""
+    if cache and not force:
+        hit = _read_cache(path, key)
+        if hit is not None:
+            return hit
     rows = [r for p in cat["path"] for r in derive_cell(p)]
     df = pd.DataFrame(rows, columns=COLUMNS)
-    tbl = pa.Table.from_pandas(df, preserve_index=False)
-    pq.write_table(tbl.replace_schema_metadata({"derive_key": key}), cache)
+    if cache:
+        _write_cache(path, df, key)
     return df
