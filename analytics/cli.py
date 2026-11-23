@@ -297,7 +297,11 @@ def cmd_eda(args) -> int:
             print(f"error: {p} is missing; run `uv run python cli.py qc` and `tables` first", file=sys.stderr)
             return 1
     cat = data.catalogue()
-    md = eda.write_eda_config(cat, derive.derive_all(cat), pd.read_csv(paths[0]), pd.read_csv(paths[1]), REPORTS)
+    import eda_trace_write
+    der, qc = derive.derive_all(cat), pd.read_csv(paths[0])
+    md = eda.write_eda_config(cat, der, qc, pd.read_csv(paths[1]), REPORTS)
+    md = eda.splice_trace(md, eda_trace_write.write_eda_trace(cat, der, qc, REPORTS))
+    (REPORTS / "eda.md").write_text(md)
     figs = sorted((REPORTS / "fig").glob("eda_*.png"))
     print(f"{len(md.splitlines())} lines -> {REPORTS / 'eda.md'}; {len(figs)} figures, "
           f"{sum(f.stat().st_size for f in figs) / 1e6:.2f} MB")
@@ -333,8 +337,8 @@ COMMANDS = {
                         "latest S-LOMO Mode A runs -> reports/deploy_validation.csv", cmd_deploy_validate, None),
     "windows": ("build derived/windows.parquet (100 ms counter windows) and derived/pmic_windows.parquet "
                 "(5 s PMIC windows); print drop, guard and memory figures", cmd_windows, add_derive_args),
-    "eda": ("write reports/eda.md (configuration-level exploration, sections 1-5, 9, 10) and reports/fig/eda_*.png; "
-            "needs qc_cells.csv and mode_a_configs.csv", cmd_eda, None),
+    "eda": ("write reports/eda.md (sections 1-10: configuration level plus the trace-level sections 6-8 spliced in) and "
+            "reports/fig/eda_*.png; needs qc_cells.csv and mode_a_configs.csv", cmd_eda, None),
 }
 
 
