@@ -272,8 +272,9 @@ Features may only use data available at the window's end:
   fan state);
 - the latest `context.csv` PMIC read that had finished by the window end, plus its age. A read's
   `t_ms` is taken before the read starts and a read takes 37-494 ms, so its availability time is the
-  next read's time minus the 5 s logging period (the last read: `t_ms` + 500 ms). Amended 2026-11-23
-  after review found the first version used reads up to 45 ms early;
+  next read's time minus the 5 s logging period; a cell's last read has no known availability time and
+  is never used (reads take up to 2.5 s). Amended 2026-11-23 after review found the first version used
+  reads up to 45 ms early;
 - static clock, fan and governor settings.
 
 A unit test proves no window uses a counter interval, sysfs row or PMIC read that ends after it
