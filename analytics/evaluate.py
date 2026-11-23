@@ -122,6 +122,9 @@ def subgroup_table(pred: pd.DataFrame, by, y: str = "y_true", yhat: str = "y_pre
     """One row per group of `by`: the `by` columns, the `metrics` keys and, when both `lo90` and
     `hi90` exist, `coverage90`. Sorted by `by`."""
     by = [by] if isinstance(by, str) else list(by)
+    for col in by:
+        if pred[col].isna().any():
+            raise ValueError(f"group column {col!r} contains nulls")
     with_cov = "lo90" in pred.columns and "hi90" in pred.columns
     rows = []
     for key, g in pred.groupby(by, sort=True):

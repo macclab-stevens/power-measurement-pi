@@ -5,6 +5,7 @@ Rules (thresholds in config.toml [qc]):
   Q2      alignment max_residual_ms >= q2                 exclude
   Q3flag  slip_scored_frac > q3                           flag only
   Q4      a current throttle bit (bits & 0xF) or uv_alarm kept, but not primary
+  Q4unparsed  a throttle word that cannot be parsed flag only (the cell stays primary)
   Q5flag  median |P - V*I| / P (every 50th trace row) > q5 flag only
   Q6      t_pi_ns not strictly increasing, sample_ratio outside [lo, hi], or an unknown phase label
           quarantine (= exclude)
@@ -28,11 +29,11 @@ KNOWN_PHASES = frozenset([
     "", "idle", "load_weights", "warmup", "sync:start", "sync:end", "baseline_A", "baseline_B", "gap",
     "serve", "concurrent_drain", "forward", "prefill", "decode", "train"])
 KNOWN_PREFIXES = ("first:", "bench:")
-RULE_IDS = ("Q1flag", "Q2", "Q3flag", "Q4", "Q5flag", "Q6")
+RULE_IDS = ("Q1flag", "Q2", "Q3flag", "Q4", "Q4unparsed", "Q5flag", "Q6")
 COLUMNS = [
     "cell_id", "include", "primary", "rules", "max_residual_ms", "n_slips", "slip_samples",
     "slips_in_scored", "slip_frames_excluded", "slip_scored_frac", "ctx_read_frac_scored",
-    "throttle_start", "throttle_end", "throttle_current", "pv_median_rel", "n_samples",
+    "throttle_start", "throttle_end", "throttle_current", "throttle_unparsed", "pv_median_rel", "n_samples",
     "expected_samples", "sample_ratio", "monotonic", "dup_timestamps", "unknown_phases",
     "start_temp_C", "max_temp_C"]
 NAN = float("nan")
@@ -56,12 +57,21 @@ def bounds_from_cfg(cfg: dict | None = None) -> dict:
 
 
 def parse_bits(x) -> int:
-    """Throttle word from an int, a float, a decimal or hex string ('0x50005'); missing -> 0."""
+    """Throttle word from an int, a float, a decimal string (zero-padded allowed: '05') or a hex string
+    ('0x50005'); missing -> 0. Raises ValueError for a value that cannot be read."""
     if x is None:
         return 0
     if isinstance(x, str):
         s = x.strip()
-        return int(s, 0) if s else 0
+        if not s:
+            return 0
+        try:
+            return int(s, 16) if s.lower().startswith("0x") else int(s, 10)
+        except ValueError:
+            f = float(s)                                  # '5.0'; garbage raises ValueError here
+            if not np.isfinite(f) or f != int(f):
+                raise ValueError(f"not a throttle word: {x!r}")
+            return int(f)
     if isinstance(x, float) and np.isnan(x):
         return 0
     return int(x)
@@ -69,6 +79,15 @@ def parse_bits(x) -> int:
 
 def _current(bits) -> bool:
     return bool(parse_bits(bits) & CURRENT_THROTTLE_MASK)
+
+
+def _current_safe(bits, unparsed: list) -> bool:
+    """_current, but an unreadable value counts as not current and is recorded in `unparsed`."""
+    try:
+        return _current(bits)
+    except (ValueError, OverflowError):
+        unparsed.append(bits)
+        return False
 
 
 def _measured_modes(meta: dict) -> list[str]:
@@ -135,17 +154,19 @@ def throttle_stats(cell: Path, meta: dict) -> dict:
     ctx = data.read_csv_opt(cell, "context.csv")
     sysfs = data.read_csv_opt(cell, "sysfs.csv")
     cur = False
+    bad: list = []
     start_temp = NAN
     if ctx is not None and len(ctx):
         if "throttle_bits" in ctx:
-            cur = any(_current(b) for b in ctx["throttle_bits"].dropna().unique())
+            cur = any([_current_safe(b, bad) for b in ctx["throttle_bits"].dropna().unique()])
         if "temp_C" in ctx:
             start_temp = float(pd.to_numeric(ctx["temp_C"], errors="coerce").iloc[0])
     if sysfs is not None and "uv_alarm" in sysfs:
         cur = cur or bool((pd.to_numeric(sysfs["uv_alarm"], errors="coerce") == 1).any())
     mt = meta.get("max_temp_C")
-    return {"throttle_start": _current(meta.get("throttled_start")),
-            "throttle_end": _current(meta.get("throttled_end")), "throttle_current": cur,
+    start, end = _current_safe(meta.get("throttled_start"), bad), _current_safe(meta.get("throttled_end"), bad)
+    return {"throttle_start": start, "throttle_end": end, "throttle_current": cur,
+            "throttle_unparsed": bool(bad),
             "start_temp_C": start_temp, "max_temp_C": NAN if mt is None else float(mt)}
 
 
@@ -176,6 +197,8 @@ def _analyse(row: pd.Series, drows: pd.DataFrame | None, bounds: dict) -> tuple[
         rules.append("Q3flag")
     if r["throttle_start"] or r["throttle_end"] or r["throttle_current"]:
         rules.append("Q4")
+    if r["throttle_unparsed"]:
+        rules.append("Q4unparsed")
     if r["pv_median_rel"] > bounds["q5_pv_rel_flag"]:
         rules.append("Q5flag")
     if q6_reasons(r, bounds):
@@ -297,7 +320,7 @@ def report_md(df: pd.DataFrame, cat: pd.DataFrame, bounds: dict) -> str:
          "## Bounds", ""]
     L += [f"- `{k}` = {v}" for k, v in bounds.items()]
     L += ["", "## Rule counts (cells triggering each rule)", "",
-          "Q1flag, Q3flag, Q5flag only annotate. Q2 and Q6 exclude (`include` False). Q4 keeps the cell "
+          "Q1flag, Q3flag, Q4unparsed, Q5flag only annotate. Q2 and Q6 exclude (`include` False). Q4 keeps the cell "
           "but it is not `primary`.", "", _table_md(rule_counts(df, cat)), "",
           "## Excluded cells (Q2 or Q6)", ""]
     L += [f"- `{c}`: {w}" for c, w in ex] or ["None."]

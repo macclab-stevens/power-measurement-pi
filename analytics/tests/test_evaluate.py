@@ -290,6 +290,20 @@ def test_subgroup_table_coverage_when_both_bounds_present():
     assert "coverage90" not in evaluate.subgroup_table(only_lo, ["model"]).columns
 
 
+def test_subgroup_table_rejects_null_group_keys():
+    p = _pred()
+    p.loc[p.index[0], "model"] = None
+    with pytest.raises(ValueError, match="null"):
+        evaluate.subgroup_table(p, ["model"])
+    q = _pred()
+    q.loc[q.index[1], "model"] = np.nan
+    with pytest.raises(ValueError, match="model"):
+        evaluate.subgroup_table(q, "model")
+    with pytest.raises(ValueError):                       # any of several keys
+        r = pd.DataFrame({"model": ["a", "b"], "clock": [1500.0, np.nan], "y_true": [1.0, 2.0], "y_pred": [1.0, 2.0]})
+        evaluate.subgroup_table(r, ["model", "clock"])
+
+
 def test_subgroup_table_accepts_string_by():
     t = evaluate.subgroup_table(_pred(), "model")
     assert list(t["model"]) == ["a", "b", "c"]

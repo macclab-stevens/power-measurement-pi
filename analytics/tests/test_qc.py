@@ -222,6 +222,45 @@ def test_vocabulary_helper():
     assert qc.parse_bits(float("nan")) == 0 and qc.parse_bits("") == 0
 
 
+def test_parse_bits_accepts_zero_padded_decimal_and_hex():
+    assert qc.parse_bits("05") == 5 and qc.parse_bits("0005") == 5 and qc.parse_bits("0") == 0
+    assert qc.parse_bits("0x50005") == 0x50005 and qc.parse_bits("0X5") == 5 and qc.parse_bits(" 0x5 ") == 5
+    assert qc.parse_bits("5.0") == 5 and qc.parse_bits(np.int64(7)) == 7
+    for bad in ("garbage", "0xzz", "5.5", "1e400", "--"):
+        with pytest.raises(ValueError):
+            qc.parse_bits(bad)
+
+
+def test_zero_padded_context_bits_are_read(tmp_path):
+    files = {"context.csv": "t_ms,temp_C,arm_MHz,throttle_bits\n0.1,45.5,2400,\"00\"\n5000,46,2400,\"05\"\n"}
+    mk(tmp_path, files=files)
+    r = run(tmp_path)
+    assert r["rules"] == "Q4" and r["primary"] is False and r["throttle_unparsed"] is False
+
+
+def test_unparseable_throttle_value_flags_the_cell_and_keeps_it_primary(tmp_path):
+    mk(tmp_path, meta={"throttled_end": "n/a"})
+    r = run(tmp_path)                                    # must not raise
+    assert r["rules"] == "Q4unparsed" and r["throttle_unparsed"] is True
+    assert r["include"] is True and r["primary"] is True
+    mk(tmp_path, "d", files={"context.csv": "t_ms,temp_C,arm_MHz,throttle_bits\n0.1,45.5,2400,0\n5000,46,2400,oops\n"})
+    r = run(tmp_path, "d")
+    assert r["rules"] == "Q4unparsed" and r["primary"] is True
+    # a readable current bit still wins
+    mk(tmp_path, "e", meta={"throttled_start": "0x5", "throttled_end": "n/a"})
+    r = run(tmp_path, "e")
+    assert r["rules"] == "Q4;Q4unparsed" and r["primary"] is False
+
+
+def test_q4unparsed_is_a_counted_flag_rule(tmp_path):
+    assert "Q4unparsed" in qc.RULE_IDS and "throttle_unparsed" in qc.COLUMNS
+    mk(tmp_path, meta={"throttled_end": "n/a"})
+    cat = data.catalogue(tmp_path)
+    df = qc.run_qc(cat, derive.derive_all(cat), BOUNDS)
+    assert qc.rule_counts(df, cat).loc["Q4unparsed", "all"] == 1
+    assert "Q4unparsed" in qc.report_md(df, cat, BOUNDS)
+
+
 def test_run_qc_over_catalogue(tmp_path, monkeypatch):
     monkeypatch.setenv("ANALYTICS_DATA", str(tmp_path))
     mk(tmp_path, "a")
