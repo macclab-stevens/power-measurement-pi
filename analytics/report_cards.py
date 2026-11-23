@@ -9,6 +9,8 @@ import eda_write as ew
 import evaluate
 import mode_a
 import mode_a_models as mm
+import report_frozen as rf
+import report_inputs as ri
 import report_l
 import report_tables as rt
 import report_tables_l as tl
@@ -20,10 +22,17 @@ OUT_OF_SCOPE_COMMON = [
 ]
 LIMITS_COMMON = [
     "A single device and a single measurement rig pair (the oct2026 and nov2026 rigs): between-board and between-meter variation is not measured.",
-    "The lockbox (about 15 new cells collected after the `analytics-frozen` tag) is pending: nothing here is a pristine out-of-sample test, "
-    "and the protocol note discloses that configuration-level summaries were viewed before any model was fitted.",
     "Mode A and Mode L fold counts are small (9 and 5 base models); intervals and coverage estimates are coarse.",
 ]
+
+
+def limits_common(a) -> list:
+    lock = ("The lockbox has been scored (`lockbox.md`); every number in this card is a training-data S-LOMO or Mode L number, "
+            "and the protocol note discloses that configuration-level summaries were viewed before any model was fitted."
+            if ri.lockbox_scored(a.paths) else
+            "The lockbox (about 15 new cells collected after the `analytics-frozen` tag) is pending: nothing here is a pristine "
+            "out-of-sample test, and the protocol note discloses that configuration-level summaries were viewed before any model was fitted.")
+    return [LIMITS_COMMON[0], lock, *LIMITS_COMMON[1:]]
 
 
 def _head(title: str, a, what: str) -> list:
@@ -73,8 +82,9 @@ def mode_a_card(a) -> str:
           f"Training data: the Mode A configuration table, {ew.plural(len(c), 'configuration')} from {cells} QC-primary cells; "
           f"{rt.version_text(c, c['config_key'])}. Headline split S-LOMO (leave one base model out, 9 folds); other splits S-LSO, S-LVO, S-LCO, RANDOM "
           "are in `results.md`. Hyperparameters and AUTO are chosen by inner leave-one-model-out on each outer fold's training models only.\n"]
-    L += ["## Features\n", "Known before running anything: " + ", ".join(f"`{f}`" for f in mm.FEATURES)
-          + ". Never used: latency, temperature, baseline power or counters of the run being predicted.\n"]
+    L += ["## Features\n", "Known before running anything: " + ", ".join(f"`{f}`" for f in mm.ALL_FEATURES)
+          + f". `{mm.RIG_FEATURE}` is 1 for the nov2026 rig and 0 for the oct2026 rig (derived from the `rig` column); M1 and M2 use all of them, "
+          f"B3 uses {', '.join(f'`{f}`' for f in mm.B3_FEATURES)}. Never used: latency, temperature, baseline power or counters of the run being predicted.\n"]
     rows = []
     for t in ri_targets():
         raw = a.pooled[("S-LOMO", t)].set_index("candidate")
@@ -101,19 +111,43 @@ def mode_a_card(a) -> str:
     L += ["## Worst subgroups\n", "AUTO on S-LOMO energy, the three base models and the similarity classes with the largest MdAPE:\n",
           cap("energy_mJ", "By base model."), ew.md_table(_worst(ref.df, "base_model")) + "\n",
           cap("energy_mJ", "By similarity class."), ew.md_table(_worst(ref.df, "similarity_class")) + "\n"]
-    L += _list("Limitations", [*LIMITS_COMMON, "Mode A trains on pinned-clock, fan-full cells; the deployment calculator adds governor, fan and soak "
+    L += _list("Limitations", [*limits_common(a), "Mode A trains on pinned-clock, fan-full cells; the deployment calculator adds governor, fan and soak "
                                "effects from single measured offsets (one soak per model, fan offsets from yolo11n).",
                                "Static features of INT8 and FP16 variants come from the FP32 base model; FP16 (one configuration) is unsupported."])
-    fits = [{"target": t, "candidate": f.get("candidate"), "params": json.dumps(f.get("params"), sort_keys=True),
-             "AUTO chose (folds)": json.dumps(f.get("auto_counts"), sort_keys=True), "sha256": f.get("sha256"),
-             "run_id": f.get("run_id")} for t, f in a.extras["fits"].items()]
-    L += ["## Hashes and runs\n", rt.caption(floor=None, split="all data", target="energy_mJ, latency_ms, mean_P_W", prov=f"n = {len(fits)} final models trained on {len(c)} configurations",
-                                           run_ids=[f["run_id"] for f in fits], extra="Final models are refitted on every configuration, grid chosen by leave-one-model-out; "
-                                                                                    "binaries are not committed (rebuilt by `cli.py mode-a-extras`)."),
-          ew.md_table(pd.DataFrame(fits)) + "\n",
-          f"Table sha256 `{a.master.rec.get('table_sha256')}`. Split sha256: "
-          + ", ".join(f"{s} `{r.rec.get('split_sha256')}`" for s, r in ((k[0], v) for k, v in a.ma.items() if k[1] == "energy_mJ")) + ".\n"]
+    L += _hashes(a, f"Mode A models are trained on all {len(c)} configurations, grid chosen by leave-one-model-out",
+                 f"Table sha256 `{a.master.rec.get('table_sha256')}`. Split sha256: "
+                 + ", ".join(f"{s} `{r.rec.get('split_sha256')}`" for s, r in ((k[0], v) for k, v in a.ma.items() if k[1] == "energy_mJ")) + ".\n")
     return "\n".join(L).rstrip() + "\n"
+
+
+def _frozen_l_limit(a) -> str:
+    t, miss = rf.mode_l_frozen(a.recs, a.seed)
+    if t.empty:
+        return "No Mode L model is frozen yet (`final-mode-l` has not run)."
+    cells, wins = t["cells"].dropna().unique(), t["windows"].dropna().unique()
+    return (f"{'The eight rungs are frozen' if not miss else f'{len(t)} rungs are frozen (not frozen: ' + ', '.join(miss) + ')'} "
+            f"(`final-mode-l`): each was fitted once on {', '.join(str(int(x)) for x in cells)} cells ({', '.join(f'{int(x):,}' for x in wins)} windows) of "
+            "YOLO v8/11 models; non-YOLO models are an extrapolation the lockbox tests. A refit after the lockbox is measured is refused.")
+
+
+def _hashes(a, what: str, tail: str) -> list:
+    """The `## Hashes and runs` section of both cards: every frozen model (Mode A primary and secondary, the eight Mode L
+    rungs) from the run log, with sha256, parameters and run id."""
+    ta, miss_a = rf.mode_a_frozen(a.recs, a.seed)
+    tl_, miss_l = rf.mode_l_frozen(a.recs, a.seed)
+    ids = [*ta["run_id"], *tl_["run_id"]]
+    cap = lambda target, prov, extra: rt.caption(floor=None, split="all training data", target=target, prov=prov, run_ids=ids, extra=extra)
+    frozen = ("Pickles are not committed. Each is identified by the sha256 recorded in `runs.jsonl` (command `mode-a-extras`, "
+              "`final-mode-a-secondary` or `final-mode-l`); `lockbox-predict` and `lockbox-score` refuse a pickle whose hash differs, and the "
+              "fit commands refuse to run once `lockbox_predictions.csv` or `lockbox_frozen_models.json` exists. The `file` column compares the pickle "
+              "on the machine that built this card with the recorded hash.")
+    return ["## Hashes and runs\n", frozen + "\n",
+            cap("frozen Mode A models", f"n = {len(ta)} frozen Mode A models", f"{what}. Roles: `primary` is the AUTO-final candidate of the target "
+                "(`mode-a-extras`), `secondary` the pre-declared extras (`final-mode-a-secondary`). {}".format(rf.missing_text(miss_a))),
+            ew.md_table(ta) + "\n",
+            cap("frozen Mode L rungs", f"n = {len(tl_)} frozen Mode L rungs", "`final-mode-l`: grid by leave-one-YOLO-model-out, refit on every QC-primary "
+                f"counter cell of the YOLO base models. {rf.missing_text(miss_l)}"),
+            ew.md_table(tl_) + "\n", tail]
 
 
 def ri_targets() -> list:
@@ -156,11 +190,12 @@ def mode_l_card(a) -> str:
           ew.md_table(_worst_folds(lo, raw)) + "\n",
           rt.caption(floor=report_l._floor(a), split="leave one YOLO base model out", target="phase energy", prov=report_l._prov(a), run_ids=ml["run_id"], extra="Median APE per phase."),
           ew.md_table(ph) + "\n"]
-    L += _list("Limitations", [*LIMITS_COMMON, *report_l.LIMITS,
-                               "No Mode L model file is frozen yet: the final rung is refitted on all data when the lockbox is frozen."])
-    L += ["## Hashes and runs\n", f"Mode L run `{ml['run_id']}` (parts lomo, pmic_v1, probe), seed {ml['rec'].get('seed')}, commit `{str(ml['rec'].get('commit', ''))[:10]}`, "
-          f"data hash `{str(ml['rec'].get('data_hash', ''))[:16]}`. Probe mode used Mode A run(s) "
-          f"{', '.join('`' + str(x) + '`' for x in sorted({str(x) for x in ml['probe']['mode_a_run_id'].dropna()})) or 'none'}.\n"]
+    L += _list("Limitations", [*limits_common(a), *report_l.LIMITS,
+                               _frozen_l_limit(a)])
+    L += _hashes(a, "Mode L rungs are fitted on every QC-primary counter cell of the YOLO base models",
+                 f"Evaluation: Mode L run `{ml['run_id']}` (parts lomo, pmic_v1, probe), seed {ml['rec'].get('seed')}, commit "
+                 f"`{str(ml['rec'].get('commit', ''))[:10]}`, data hash `{str(ml['rec'].get('data_hash', ''))[:16]}`. Probe mode used Mode A run(s) "
+                 f"{', '.join('`' + str(x) + '`' for x in sorted({str(x) for x in ml['probe']['mode_a_run_id'].dropna()})) or 'none'}.\n")
     return "\n".join(L).rstrip() + "\n"
 
 

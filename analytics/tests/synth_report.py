@@ -94,6 +94,14 @@ def make_inputs(root, seeds=(MASTER, MASTER + 1, MASTER + 2)) -> ri.Paths:
         _log(p.runs_log, {"run_id": uuid.uuid4().hex, "command": "mode-a-extras", "part": "fit_final", "seed": MASTER, "target": t,
                           "candidate": "M1Ridge", "params": {"alpha": 1.0}, "path": f"/x/{t}.pkl", "sha256": "e" * 64,
                           "auto_counts": {"M1Ridge": 5}})
+    for t, c in (("energy_mJ", "B3LogLinear"), ("energy_mJ", "M3Factored"), ("latency_ms", "B3LogLinear"), ("mean_P_W", "B3LogLinear")):
+        _log(p.runs_log, {"run_id": uuid.uuid4().hex, "command": "final-mode-a-secondary", "part": "fit_final", "seed": MASTER, "target": t,
+                          "candidate": c, "params": {} if c == "B3LogLinear" else {"latency": {"name": "M1Ridge", "params": {"alpha": 10.0}}},
+                          "path": f"/x/{t}_{c}.pkl", "sha256": f"{len(c)}{t[:3]}".ljust(64, "s"), "n_configs": len(configs)})
+    for i, r in enumerate(RUNGS):
+        _log(p.runs_log, {"run_id": uuid.uuid4().hex, "command": "final-mode-l", "part": "fit_final", "seed": MASTER, "rung": r,
+                          "path": f"/x/mode_l_{r}.pkl", "sha256": f"l{i}".ljust(64, "l"), "params": {"alpha": 10.0} if r == "L2" else {},
+                          "n_cells": 161, "n_windows": 198619, "base_models": YOLO_L})
     lc = pd.DataFrame([{"heldout": h, "k": k, "subset": "a;b", "mdape": 0.3 / k + 0.02 * i}
                        for i, h in enumerate(splits.YOLO) for k in (2, 3, 4, 5)])
     rid = uuid.uuid4().hex
@@ -156,6 +164,21 @@ def make_inputs(root, seeds=(MASTER, MASTER + 1, MASTER + 2)) -> ri.Paths:
 
 def family_map() -> pd.Series:
     return pd.Series({f"{f}_{c}": "A" if c < 2 else "soak" for f in YOLO_L for c in range(3)})
+
+
+def cell_config_map() -> pd.Series:
+    """cell_id -> Mode A configuration key of the synthetic held-out Mode L cells: cells 0 and 1 of a model share a
+    configuration (two repeats), cell 2 is another one (so 10 configurations in 15 cells)."""
+    return pd.Series({f"{f}_{c}": f"{f}|cfg{'A' if c < 2 else 'B'}" for f in YOLO_L for c in range(3)})
+
+
+def catalogue_frame() -> pd.DataFrame:
+    """A catalogue holding exactly the synthetic held-out Mode L cells, whose `deploy.mode_a_key_for_cell` is `cell_config_map`
+    up to the key text (two configurations per model)."""
+    rows = [{"cell_id": f"{f}_{c}", "source": "v2", "family": "A" if c < 2 else "soak", "base_model": f, "variant": f,
+             "precision": "fp32", "imgsz": 640, "batch": 1, "threads": 4, "cpu_mhz": 2400 if c < 2 else 1500, "rig": "nov2026",
+             "governor": "pinned"} for f in YOLO_L for c in range(3)]
+    return pd.DataFrame(rows)
 
 
 def overhead_frame() -> pd.DataFrame:

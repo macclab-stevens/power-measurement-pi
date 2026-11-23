@@ -38,6 +38,11 @@ def mode_a_key_for_cell(row) -> str:
     return tables.config_key(r)
 
 
+def cell_config_map(cat: pd.DataFrame) -> pd.Series:
+    """cell_id -> Mode A configuration key (`mode_a_key_for_cell`) of every row of `cat`; empty for an empty table."""
+    return pd.Series({r["cell_id"]: mode_a_key_for_cell(r) for _, r in cat.iterrows()}, dtype=object)
+
+
 def cpu_key(row) -> str:
     """`ondemand` for ondemand cells, else str(cpu_mhz)."""
     return "ondemand" if row["governor"] == "ondemand" else str(int(row["cpu_mhz"]))

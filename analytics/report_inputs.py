@@ -153,3 +153,8 @@ def latest_record(recs: list, **match) -> dict | None:
     """Last record matching `match` (no parquet needed)."""
     hits = [r for r in recs if all(r.get(k) == v for k, v in match.items())]
     return hits[-1] if hits else None
+
+
+def lockbox_scored(paths: Paths) -> bool:
+    """True once `lockbox-score` has written `lockbox.md` into the report folder."""
+    return (Path(paths.out_dir) / "lockbox.md").is_file()

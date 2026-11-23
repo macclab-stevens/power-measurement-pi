@@ -9,11 +9,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import evaluate
 import report
 import report_inputs as ri
 import report_tables as rt
 import report_tables_l as tl
-from synth_report import MASTER, family_map, make_configs, make_inputs, overhead_frame
+from synth_report import MASTER, catalogue_frame, cell_config_map, family_map, make_configs, make_inputs, overhead_frame
 
 N_BOOT = 15
 
@@ -28,14 +29,14 @@ def built(tmp_path_factory):
     paths = make_inputs(root)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        files = report.build(paths, seed=MASTER, n_boot=N_BOOT, family=family_map(), overhead=overhead_frame())
+        files = report.build(paths, seed=MASTER, n_boot=N_BOOT, family=family_map(), cell_config=cell_config_map(), overhead=overhead_frame())
     report.write(paths, files)
     return paths, files
 
 
 @pytest.fixture(scope="module")
 def analysis(built):
-    return report.analyse(built[0], seed=MASTER, n_boot=N_BOOT, family=family_map())
+    return report.analyse(built[0], seed=MASTER, n_boot=N_BOOT, family=family_map(), cell_config=cell_config_map())
 
 
 def tables_of(text: str):
@@ -125,9 +126,41 @@ def test_cards_have_the_section_11_headings_and_fixed_text(built):
     assert "e" * 64 in files["model_card_mode_a.md"]            # final model sha256
 
 
+def test_cards_list_every_frozen_model_with_sha256_and_params_from_the_runlog(built):
+    _, files = built
+    recs = ri.read_records(built[0].runs_log)
+    fm = [r for r in recs if r.get("command") in ("mode-a-extras", "final-mode-a-secondary", "final-mode-l") and r.get("part") == "fit_final"]
+    assert len(fm) == 3 + 4 + 8
+    for name in ("model_card_mode_a.md", "model_card_mode_l.md"):
+        sec = files[name].split("## Hashes and runs")[1]
+        for r in fm:
+            assert r["sha256"] in sec and r["run_id"] in sec, (name, r.get("rung") or (r["target"], r["candidate"]))
+        assert "latency" in sec and "alpha" in sec                       # M3's nested params and L2's alpha are printed
+        assert "rebuilt by" not in sec and "rebuild" not in sec.lower()
+        assert "cli.py mode-a-extras" not in sec
+        assert "primary" in sec and "secondary" in sec and "final-mode-l" in sec and "final-mode-a-secondary" in sec
+
+
+def test_mode_a_card_lists_rig_nov_among_the_features_and_mode_l_card_says_the_rungs_are_frozen(built):
+    _, files = built
+    feat = files["model_card_mode_a.md"].split("## Features")[1].split("##")[0]
+    assert "`rig_nov`" in feat and "`log_macs`" in feat
+    assert "No Mode L model file is frozen yet" not in files["model_card_mode_l.md"]
+    lim = files["model_card_mode_l.md"].split("## Limitations")[1].split("## Hashes")[0]
+    assert "eight rungs are frozen" in lim and "161 cells" in lim
+
+
+def test_a_missing_frozen_model_is_named_in_the_card(tmp_path):
+    paths = make_inputs(tmp_path)
+    lines = [ln for ln in paths.runs_log.read_text().splitlines() if '"rung": "L4-trees"' not in ln]
+    paths.runs_log.write_text("\n".join(lines) + "\n")
+    files = report.build(paths, seed=MASTER, n_boot=N_BOOT, family=family_map(), cell_config=cell_config_map(), overhead=overhead_frame())
+    assert "not frozen: L4-trees" in files["model_card_mode_l.md"]
+
+
 def test_seed_spread_lists_the_seeds_present(tmp_path):
     paths = make_inputs(tmp_path, seeds=(MASTER,))
-    a = report.analyse(paths, seed=MASTER, n_boot=N_BOOT, family=family_map())
+    a = report.analyse(paths, seed=MASTER, n_boot=N_BOOT, family=family_map(), cell_config=cell_config_map())
     assert sorted(a.seed_runs) == [MASTER]
     text = "\n".join(report.section_seeds(a))
     assert "Only one seed is present" in text and "1 of 3 present" in text
@@ -359,10 +392,105 @@ def test_probe_verdict_applies_the_noise_floor_rule(analysis):
 
 def test_mode_l_ladder_rows_follow_the_protocol_order_with_exploratory_label(analysis):
     a = analysis
-    raw = tl.ladder_raw(a.ml["lomo"], N_BOOT, MASTER)
+    raw = tl.ladder_raw(a.ml["lomo"], N_BOOT, MASTER, cell_config_map())
     assert list(raw["rung"]) == ["L0", "L1", "L1-cell", "L2", "L3-ridge", "L3-trees", "L4-ridge", "L4-trees"]
     assert list(tl.show_ladder(raw)["rung"])[2] == "L1-cell (exploratory)"
     assert (raw["n"] == 15).all()
+
+
+# ------------------------------------------------------------------ Mode L verdicts are per configuration
+
+def _lomo(cells: dict, rungs=("L0", "L1")) -> pd.DataFrame:
+    """cells: {cell_id: {rung: APE}} -> a lomo frame (E_true 100 J, E_pred = 100 (1 + APE))."""
+    rows = [{"fold": "f", "cell_id": c, "rung": r, "exploratory": False, "E_true_J": 100.0, "E_pred_J": 100.0 * (1 + v[r]),
+             "ape": v[r], "E_true_meas_J": 80.0, "E_pred_meas_J": 80.0 * (1 + v[r]), "ape_1s": 0.1, "ape_10s": 0.1,
+             "mae_window_W": 0.3, "l1_fallback_frac": np.nan} for c, v in cells.items() for r in rungs]
+    return pd.DataFrame(rows)
+
+
+def test_vs_l0_is_paired_over_configurations_not_cells():
+    # 24 cells in 3 configurations (8 repeats each): L1 is worse than L0 in every cell, so a per-cell Wilcoxon (n = 24) is
+    # highly significant, but with 3 configurations the smallest two-sided Wilcoxon p is 0.25.
+    cells = {f"c{i}": {"L0": 0.05 + 0.001 * i, "L1": 0.15 + 0.001 * i} for i in range(24)}
+    cfg = pd.Series({f"c{i}": f"cfg{i % 3}" for i in range(24)})
+    per_cell = evaluate.paired_wilcoxon([v["L1"] for v in cells.values()], [v["L0"] for v in cells.values()])
+    assert per_cell["p"] < 1e-4
+    out = tl.vs_l0_raw(_lomo(cells), 0.0, cfg)
+    r = out.iloc[0]
+    assert r["rung"] == "L1" and r["n"] == 3 and r["n_cells"] == 24
+    assert r["p"] == pytest.approx(0.25) and r["p_holm"] >= 0.05 and r["verdict"] == "not significant"
+    shown = tl.show_vs_l0(out)
+    assert list(shown.columns)[:4] == ["rung", "vs", "n configurations", "n cells"]
+    assert shown.iloc[0]["n configurations"] == 3 and shown.iloc[0]["n cells"] == 24
+
+
+def test_vs_l0_aggregates_each_configuration_over_its_cells_before_testing():
+    # one configuration with a wild cell: the per-configuration mean absolute log error, not the cell, enters the test
+    cells = {"a0": {"L0": 0.10, "L1": 0.10}, "a1": {"L0": 0.10, "L1": 0.30}, "b0": {"L0": 0.2, "L1": 0.1}}
+    cfg = pd.Series({"a0": "A", "a1": "A", "b0": "B"})
+    ce = tl.config_errors(_lomo(cells), cfg)
+    a1 = ce[(ce["rung"] == "L1") & (ce["config_key"] == "A")].iloc[0]
+    assert a1["n_cells"] == 2 and a1["mean_ape"] == pytest.approx(0.2)
+    assert a1["mean_abslog"] == pytest.approx((abs(np.log(1.1)) + abs(np.log(1.3))) / 2)
+
+
+def test_ladder_adds_n_configurations_and_median_of_per_configuration_mean_ape(analysis):
+    raw = tl.ladder_raw(analysis.ml["lomo"], N_BOOT, MASTER, cell_config_map())
+    assert (raw["n"] == 15).all() and (raw["n_configs"] == 10).all()
+    lo = analysis.ml["lomo"].assign(cfg=lambda d: d["cell_id"].map(cell_config_map()))
+    want = lo[lo["rung"] == "L2"].groupby("cfg")["ape"].mean().median()
+    assert raw.set_index("rung").loc["L2", "median_cfg_ape"] == pytest.approx(want)
+    shown = tl.show_ladder(raw)
+    assert {"n configurations", "median per-configuration mean APE %"} <= set(shown.columns)
+
+
+def test_mode_l_tables_and_findings_state_n_configurations_and_n_cells(built):
+    _, files = built
+    text = files["results.md"]
+    s9 = text.split("## 9. Mode L")[1].split("## 10.")[0]
+    assert "10 configurations" in s9 and "15 held-out cells" in s9
+    vs = next(t for t in tables_of(s9) if "n configurations" in t[1] and "Holm p" in t[1])
+    assert "n cells" in vs[1] and vs[0].count("configuration") >= 1
+    f = [ln for ln in text.split("### Findings at a glance")[1].split("## 2.")[0].splitlines() if ln.startswith("- Mode L, whole-cell")]
+    assert len(f) == 7 and all("n = 10 configurations (15 cells)" in ln for ln in f)
+    probe = [ln for ln in text.split("### Findings at a glance")[1].split("## 2.")[0].splitlines() if ln.startswith("- Probe mode")]
+    assert probe and all(re.search(r"n = 6 configurations, \d+ pairs", ln) for ln in probe)
+
+
+def test_mode_l_report_refuses_a_held_out_cell_with_no_configuration(tmp_path):
+    paths = make_inputs(tmp_path)
+    cfg = cell_config_map().drop("yolo11n_0")
+    with pytest.raises(ri.ReportInputError, match="yolo11n_0.*configuration"):
+        report.build(paths, seed=MASTER, n_boot=N_BOOT, family=family_map(), cell_config=cfg, overhead=overhead_frame())
+
+
+def test_interval_sentence_follows_the_data_not_a_fixed_claim(analysis):
+    df = analysis.ma[("S-LOMO", "energy_mJ")].df
+    base = df["candidate"].isin(report.mode_a.BASELINES)
+    assert df.loc[base, "lo90"].isna().all()              # the synthetic baselines carry no interval
+    assert "Baselines have no prediction interval" not in report.interval_sentence(df)
+    assert "coverage is blank" in report.interval_sentence(df)
+    real_like = df.assign(lo90=df["lo90"].fillna(df["y_pred"] * 0.8), hi90=df["hi90"].fillna(df["y_pred"] * 1.2))
+    s = report.interval_sentence(real_like)
+    assert "baselines included" in s and "blank" not in s and "inner leave-one-model-out residual" in s
+
+
+def test_results_never_claims_baselines_have_no_interval(built):
+    text = built[1]["results.md"]
+    assert "Baselines have no prediction interval" not in text and "Baselines have no interval" not in text
+
+
+def test_lockbox_sentence_depends_on_whether_lockbox_md_exists(tmp_path):
+    paths = make_inputs(tmp_path)
+    kw = dict(seed=MASTER, n_boot=N_BOOT, family=family_map(), cell_config=cell_config_map(), overhead=overhead_frame())
+    before = report.build(paths, **kw)
+    assert "the lockbox has not been collected" in before["results.md"]
+    assert "pending" in before["model_card_mode_a.md"]
+    (paths.out_dir / "lockbox.md").write_text("# Lockbox results\n")
+    after = report.build(paths, **kw)
+    assert "the lockbox has not been collected" not in after["results.md"]
+    assert "`lockbox.md`" in after["results.md"] and "no lockbox result" in after["results.md"]
+    assert "is pending" not in after["model_card_mode_a.md"] and "`lockbox.md`" in after["model_card_mode_a.md"]
 
 
 def test_no_output_is_written_outside_the_given_paths(built, tmp_path):
@@ -381,9 +509,15 @@ def test_no_output_is_written_outside_the_given_paths(built, tmp_path):
 def test_cli_registers_the_new_commands_and_report_writes_to_the_given_paths(tmp_path, monkeypatch):
     import cli
     import data
+    import deploy
+    import derive
+    import eda_trace
     paths = make_inputs(tmp_path)
     monkeypatch.setattr(ri.Paths, "default", classmethod(lambda cls: paths))
-    monkeypatch.setattr(data, "catalogue", lambda: pd.DataFrame(columns=["cell_id", "family"]))
+    monkeypatch.setattr(data, "catalogue", catalogue_frame)
+    monkeypatch.setattr(derive, "derive_all", lambda cat, cache=True: pd.DataFrame())
+    monkeypatch.setattr(deploy, "cell_table", lambda *a, **k: pd.DataFrame())
+    monkeypatch.setattr(eda_trace, "perf_overhead", lambda t: None)
     args = cli.build_parser().parse_args(["report", "--n-boot", "10"])
     assert args.n_boot == 10 and args.seed is None
     assert cli.build_parser().parse_args(["mode-a-extras", "--seed", "5"]).seed == 5

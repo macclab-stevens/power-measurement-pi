@@ -161,6 +161,23 @@ def refuse_if_lockbox_cells(what: str) -> None:
                            f"(models are frozen before the lockbox is measured)")
 
 
+def frozen_markers(out_dir) -> list:
+    """Names of the files in `out_dir` that mark the models as frozen for the lockbox: the predictions and the manifest."""
+    return [n for n in (PREDICTIONS_CSV, MANIFEST) if (Path(out_dir) / n).exists()]
+
+
+def refuse_if_frozen(what: str, out_dir, force: bool = False) -> list:
+    """`what` fits or freezes a model; once `lockbox_predictions.csv` or `lockbox_frozen_models.json` exists (written by
+    `lockbox-predict`) it is refused: a refit would change a model the committed predictions were made with. Returns the
+    markers that were present and overridden by `force` (empty if none). `force` does not override `refuse_if_lockbox_cells`."""
+    present = frozen_markers(out_dir)
+    if present and not force:
+        raise LockboxError(f"`{what}` is refused: {', '.join(present)} exists in {out_dir}, so the models are frozen for the lockbox and "
+                           f"`{what}` would fit or overwrite one of them. Forcing (--force) invalidates the lockbox: nothing scored after it is "
+                           f"a pre-registered test")
+    return present
+
+
 # ------------------------------------------------------------------ intervals, novelty, threshold
 
 def interval_quantiles(slomo: pd.DataFrame, candidate: str) -> tuple:

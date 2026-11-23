@@ -18,13 +18,13 @@ LIMITS = [
 
 def ladder(a) -> pd.DataFrame:
     if "ladder" not in a.cache:
-        a.cache["ladder"] = tl.ladder_raw(a.ml["lomo"], a.n_boot, a.boot_seed)
+        a.cache["ladder"] = tl.ladder_raw(a.ml["lomo"], a.n_boot, a.boot_seed, a.cell_config)
     return a.cache["ladder"]
 
 
 def _vs_l0(a) -> pd.DataFrame:
     if "vs_l0" not in a.cache:
-        a.cache["vs_l0"] = tl.vs_l0_raw(a.ml["lomo"], a.noise["energy_mJ"])
+        a.cache["vs_l0"] = tl.vs_l0_raw(a.ml["lomo"], a.noise["energy_mJ"], a.cell_config)
     return a.cache["vs_l0"]
 
 
@@ -46,7 +46,8 @@ def overhead_text(a) -> str:
 
 def _prov(a) -> str:
     lomo = a.ml["lomo"]
-    return f"n = {lomo['cell_id'].nunique()} held-out cells in {lomo['fold'].nunique()} folds (dataset v2, nov2026 rig)"
+    return (f"n = {lomo['cell_id'].nunique()} held-out cells in {lomo['cell_id'].map(a.cell_config).nunique()} configurations and "
+            f"{lomo['fold'].nunique()} folds (dataset v2, nov2026 rig)")
 
 
 def _floor(a) -> str:
@@ -68,7 +69,7 @@ def ladder_headline(a) -> pd.DataFrame:
     for r in ladder(a).itertuples():
         rows.append({"rung": tl.rung_label(r.rung, r.exploratory), "split": "leave one YOLO model out", "target": "whole-cell energy",
                      "metric": "MdAPE %", "estimate": rt.pct(r.mdape), "95 % CI": f"[{rt.pct(r.mdape_lo)}, {rt.pct(r.mdape_hi)}]",
-                     "n": int(r.n), "run_id": a.ml["run_id"],
+                     "n": int(r.n), "n configurations": int(r.n_configs), "run_id": a.ml["run_id"],
                      "status": "exploratory (added after a scored fold)" if r.exploratory else "pre-registered rung"})
     return pd.DataFrame(rows)
 
@@ -96,11 +97,12 @@ def findings(a) -> list:
     out = []
     for r in _vs_l0(a).itertuples():
         out.append(f"Mode L, whole-cell energy: {tl.rung_label(r.rung, r.exploratory)} against L0: **{r.verdict}** (median paired APE "
-                   f"difference {100 * r.median_d:+.2f} pp, Holm p = {r.p_holm:.3g}, n = {r.n}; run_id `{a.ml['run_id']}`).")
+                   f"difference of the per-configuration mean APE {100 * r.median_d:+.2f} pp, Holm p = {r.p_holm:.3g}, "
+                   f"n = {r.n} configurations ({r.n_cells} cells); run_id `{a.ml['run_id']}`).")
     for r in _probe(a).itertuples():
         out.append(f"Probe mode, {tl.rung_label(r.rung, r.exploratory)}: probe MdAPE {rt.pct(r.probe[0])} % against Mode A {rt.pct(r.modea[0])} % "
                    f"on the same pairs: **{r.verdict}** (median paired APE difference {100 * r.median_d:+.2f} pp, Holm p = {r.p_holm:.3g}, "
-                   f"n = {r.n} pairs; run_id `{a.ml['run_id']}`).")
+                   f"n = {r.configs} configurations, {r.n} pairs; run_id `{a.ml['run_id']}`).")
     return out
 
 
@@ -112,10 +114,11 @@ def sections(a) -> list:
          "Rungs in protocol order; each is fitted on the other YOLO base models and scored on the held-out model's cells (whole-cell energy "
          "from 100 ms window power predictions). Intervals are cluster bootstrap over the held-out base models (5 clusters, so wide). "
          f"{tl.EXPLORATORY_NOTE} {overhead_text(a)}\n",
-         _cap(a, "Whole cell, measured segment, 1 s and 10 s horizons."), ew.md_table(tl.show_ladder(raw), {"window MAE W": "{:.3f}", "L1 fallback share": "{:.3f}"}) + "\n",
+         _cap(a, "Whole cell, measured segment, 1 s and 10 s horizons; the MdAPE is over cells, the last statistic over configurations."), ew.md_table(tl.show_ladder(raw), {"window MAE W": "{:.3f}", "L1 fallback share": "{:.3f}"}) + "\n",
          _cap(a, "Median phase energy APE per rung and phase (cells that have the phase)."), ew.md_table(tl.phase_table(lo)) + "\n",
          _cap(a, "Median whole-cell APE per rung and dataset family."), ew.md_table(tl.family_table(lo, a.family)) + "\n",
-         _cap(a, "Each rung against L0, paired by held-out cell, Holm over the family."), ew.md_table(tl.show_vs_l0(_vs_l0(a))) + "\n",
+         _cap(a, "Each rung against L0, paired by held-out configuration (Wilcoxon on per-configuration mean absolute log errors, Holm over "
+                 "the family); n counts configurations, each the mean over its held-out cells."), ew.md_table(tl.show_vs_l0(_vs_l0(a))) + "\n",
          _cap(a, "Whole-cell energy APE per rung."), figs.fig_link(a.paths, box, "Mode L whole-cell APE per rung")]
     pm = ml["pmic_v1"]
     n1, n2 = (pm.drop_duplicates("cell_id")["family"] == "v1").sum(), (pm.drop_duplicates("cell_id")["family"] != "v1").sum()

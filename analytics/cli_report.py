@@ -6,12 +6,9 @@ import settings
 
 
 def cmd_mode_a_extras(args) -> int:
-    import lockbox
-    try:
-        lockbox.refuse_if_lockbox_cells("mode-a-extras")
-    except lockbox.LockboxError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+    import cli_lockbox
+    if (bad := cli_lockbox.guard("mode-a-extras", args.force)) is not None:
+        return bad
     import data
     import pandas as pd
     import report_inputs as ri
@@ -54,7 +51,9 @@ def cmd_report(args) -> int:
         qc = pd.read_csv(paths.qc_csv) if paths.qc_csv.is_file() else None
         overhead = (eda_trace.perf_overhead(deploy.cell_table(cat, derive.derive_all(cat, cache=True), qc))
                     if qc is not None and len(cat) else None)
-        files = report.build(paths, seed=seed, n_boot=args.n_boot, family=data.training_cells(cat).set_index("cell_id")["family"], overhead=overhead)
+        train = data.training_cells(cat)
+        files = report.build(paths, seed=seed, n_boot=args.n_boot, family=train.set_index("cell_id")["family"],
+                             cell_config=deploy.cell_config_map(train), overhead=overhead)
     except ri.ReportInputError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -70,6 +69,8 @@ def cmd_report(args) -> int:
 
 def add_extras_args(p) -> None:
     p.add_argument("--seed", type=int, help="default: the config.toml seed")
+    p.add_argument("--force", action="store_true", help="run although the models are frozen (lockbox_predictions.csv or "
+                   "lockbox_frozen_models.json exists); invalidates the lockbox, logged as freeze-override")
     p.add_argument("--n-jobs", type=int, default=2, help="outer folds in parallel (default 2)")
 
 

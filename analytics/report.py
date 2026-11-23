@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 import eda_write as ew
+import mode_a
 import report_cards
 import report_figs as figs
 import report_inputs as ri
@@ -54,6 +55,7 @@ class Analysis:
     deploy_rec: dict
     family: pd.Series
     overhead: pd.DataFrame | None
+    cell_config: pd.Series
     pooled: dict = field(default_factory=dict)
     base: dict = field(default_factory=dict)
     paired: dict = field(default_factory=dict)
@@ -71,8 +73,10 @@ class Analysis:
 
 
 def analyse(paths: Paths, *, seed: int | None = None, n_boot: int = N_BOOT, family: pd.Series | None = None,
-            overhead: pd.DataFrame | None = None) -> Analysis:
-    """Load every input (raising ReportInputError if one is missing) and compute the Mode A tables once."""
+            overhead: pd.DataFrame | None = None, cell_config: pd.Series | None = None) -> Analysis:
+    """Load every input (raising ReportInputError if one is missing) and compute the Mode A tables once.
+    `cell_config` maps a cell id to its Mode A configuration key (`deploy.cell_config_map`); every held-out Mode L cell
+    must be in it, because the Mode L verdicts are paired over configurations."""
     seed = settings.seed() if seed is None else seed
     recs = ri.read_records(paths.runs_log)
     configs = ri.load_table(paths.configs_csv, "configuration table", "uv run python cli.py tables")
@@ -81,7 +85,12 @@ def analyse(paths: Paths, *, seed: int | None = None, n_boot: int = N_BOOT, fami
     a = Analysis(paths, seed, n_boot, configs, qc, recs, ri.load_mode_a(paths, recs, seed),
                  ri.load_seed_runs(paths, recs, seed), ri.load_extras(paths, recs, seed), ri.load_mode_l(paths, recs, seed),
                  dep, ri.latest_record(recs, command="deploy-validate") or {},
-                 family if family is not None else pd.Series(dtype=object), overhead)
+                 family if family is not None else pd.Series(dtype=object), overhead,
+                 cell_config if cell_config is not None else pd.Series(dtype=object))
+    missing = sorted(set(a.ml["lomo"]["cell_id"]) - set(a.cell_config.index))
+    if missing:
+        raise ReportInputError(f"no Mode A configuration for {len(missing)} held-out Mode L cells ({', '.join(missing[:3])}...): the report "
+                               "pairs Mode L comparisons over configurations; pass the catalogue's cell-to-configuration map")
     a.noise = {t: rt.noise_floor(configs, t) for t in ri.TARGETS}
     for (split, target), ref in a.ma.items():
         raw = rt.pooled_table(ref.df, split, n_boot, settings.seed())
@@ -139,13 +148,21 @@ def findings(a: Analysis) -> list:
     return out
 
 
+def lockbox_sentence(paths: Paths) -> str:
+    """Whether the lockbox has been scored, from the presence of `lockbox.md` next to the report."""
+    if ri.lockbox_scored(paths):
+        return ("The lockbox has been scored: `lockbox.md` holds that result. Every number in this report is a training-data "
+                "(S-LOMO and Mode L) number; there is no lockbox result in it.")
+    return "Nothing here is a lockbox result: the lockbox has not been collected."
+
+
 def section_headline(a: Analysis) -> list:
     r = a.master
     return ["## 1. Headline claims\n",
             f"Every row names one split, one target, one metric, an interval and a run_id. Intervals are cluster-bootstrap 95 % "
             f"({a.n_boot} resamples, seed {a.boot_seed}; clusters are base models). Percentages are percent absolute error unless stated. "
             f"Data: {prov_ma(a, 'S-LOMO', 'energy_mJ')}. Run `{r.rec.get('commit', '')[:10]}`, data hash `{str(r.rec.get('data_hash', ''))[:12]}`. "
-            f"Nothing here is a lockbox result: the lockbox has not been collected.\n",
+            f"{lockbox_sentence(a.paths)}\n",
             rt.caption(split="S-LOMO", target="energy_mJ", prov=prov_ma(a, "S-LOMO", "energy_mJ"), run_ids=r.run_id,
                        floor=rt.floor_text(a.noise["energy_mJ"], "energy_mJ"), extra="H1 is the headline; H2 is its best-baseline comparator."),
             md(headline_rows(a)),
@@ -156,11 +173,21 @@ def section_headline(a: Analysis) -> list:
             "### Findings at a glance (positive and negative)\n", *[f"- {x}" for x in findings(a)], "\n"]
 
 
+def interval_sentence(df: pd.DataFrame) -> str:
+    """Whether the baselines carry a 90 % interval, said from the prediction frame (every candidate gets one from its
+    own inner leave-one-model-out residual quantiles in `mode_a._run_fold`; a frame without them shows blank coverage)."""
+    base = df[df["candidate"].isin(mode_a.BASELINES)]
+    if len(base) and base["lo90"].notna().all() and base["hi90"].notna().all():
+        return ("Every candidate, baselines included, has a 90 % prediction interval from its own inner leave-one-model-out residual "
+                "quantiles, so coverage is reported for all of them.")
+    return "Candidates without a stored 90 % interval show a blank coverage (the baselines in this run's predictions have none; coverage is blank)."
+
+
 def section_mode_a(a: Analysis) -> list:
     L = ["## 2. Mode A results by split and target\n",
          "Candidates in protocol order: B0 median, B1 energy proportional to MACs per clock, B2 most similar seen model scaled by MACs, "
          "B3 log-linear OLS, M1 ridge, M2 gradient-boosted trees, M3 factored latency x power (energy only), AUTO (best of M1 to M3 by inner "
-         "leave-one-model-out MdAPE). Baselines have no prediction interval, so their coverage is blank. Coverage rests on few clusters and is coarse. "
+         f"leave-one-model-out MdAPE). {interval_sentence(a.ma[('S-LOMO', 'energy_mJ')].df)} Coverage rests on few clusters and is coarse. "
          "Paired tests use absolute log errors per test configuration; \"indistinguishable\" means the median paired APE difference is below the noise floor.\n"]
     for split in ri.SPLITS:
         L += [f"### {split}\n", f"{SPLIT_TEXT[split]}.\n"]

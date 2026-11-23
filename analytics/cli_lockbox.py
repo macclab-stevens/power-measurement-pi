@@ -15,13 +15,21 @@ def _seed(args) -> int:
     return args.seed if args.seed is not None else settings.seed()
 
 
-def _guard(what: str) -> int | None:
-    """1 (after printing why) when lockbox cells exist: nothing may be fitted or frozen from then on."""
+def guard(what: str, force: bool = False) -> int | None:
+    """1 (after printing why) when `what`, a command that fits or freezes a model, must not run: lockbox cells exist
+    (never overridable), or `lockbox-predict` has written its predictions or manifest (overridable by `force`, which
+    is logged as a `freeze-override` line)."""
     import lockbox
+    import report_inputs as ri
+    import runlog
+    paths = ri.Paths.default()
     try:
         lockbox.refuse_if_lockbox_cells(what)
+        over = lockbox.refuse_if_frozen(what, paths.out_dir, force)
     except lockbox.LockboxError as exc:
         return _fail(exc)
+    if over:
+        runlog.append({"command": "freeze-override", "what": what, "markers": over}, paths.runs_log)
     return None
 
 
@@ -32,7 +40,7 @@ def _training_catalogue():
 
 
 def cmd_final_mode_l(args) -> int:
-    if (bad := _guard("final-mode-l")) is not None:
+    if (bad := guard("final-mode-l", args.force)) is not None:
         return bad
     import pandas as pd
     import report_inputs as ri
@@ -60,7 +68,7 @@ def cmd_final_mode_l(args) -> int:
 
 
 def cmd_final_mode_a_secondary(args) -> int:
-    if (bad := _guard("final-mode-a-secondary")) is not None:
+    if (bad := guard("final-mode-a-secondary", args.force)) is not None:
         return bad
     import pandas as pd
     import report_inputs as ri
@@ -142,8 +150,18 @@ def add_seed(p) -> None:
     p.add_argument("--seed", type=int, help="seed of the frozen fits (default: the config.toml seed)")
 
 
-def add_final_l_args(p) -> None:
+def add_force(p) -> None:
+    p.add_argument("--force", action="store_true", help="run although the models are frozen (lockbox_predictions.csv or "
+                   "lockbox_frozen_models.json exists); invalidates the lockbox, logged as freeze-override")
+
+
+def add_seed_force(p) -> None:
     add_seed(p)
+    add_force(p)
+
+
+def add_final_l_args(p) -> None:
+    add_seed_force(p)
     p.add_argument("--n-jobs", type=int, default=2, help="rungs fitted in parallel (default 2)")
     p.add_argument("--rung", action="append", help="fit only this rung (repeatable; default all eight)")
 
@@ -159,7 +177,7 @@ COMMANDS = {
     "final-mode-l": ("freeze the eight Mode L rungs (grid by leave-one-YOLO-model-out, refit on all QC-primary counter "
                      "cells) -> derived/models/mode_l_<rung>.pkl and runs.jsonl", cmd_final_mode_l, add_final_l_args),
     "final-mode-a-secondary": ("freeze B3 (all targets) and M3 (energy) on all configurations -> derived/models/ and "
-                               "runs.jsonl", cmd_final_mode_a_secondary, add_seed),
+                               "runs.jsonl", cmd_final_mode_a_secondary, add_seed_force),
     "lockbox-predict": ("write reports/lockbox_predictions.csv from the frozen Mode A models and tool static features, "
                         "before any lockbox cell exists", cmd_lockbox_predict, add_predict_args),
     "lockbox-score": ("score the frozen models on ~/pi-power-data/lockbox -> reports/lockbox.md and derived/lockbox/; "

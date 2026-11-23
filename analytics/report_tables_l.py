@@ -32,16 +32,34 @@ def _boot(d, g, fn, n_boot, seed):
     return evaluate.cluster_bootstrap(d, g, fn, n_boot, seed=seed)
 
 
-def ladder_raw(lomo: pd.DataFrame, n_boot: int, seed: int) -> pd.DataFrame:
+def config_errors(lomo: pd.DataFrame, cell_config: pd.Series) -> pd.DataFrame:
+    """Per (rung, Mode A configuration): n_cells held out, the mean APE and the mean absolute log error
+    |log(E_pred / E_true)| over the configuration's held-out cells. The configuration of a cell is
+    `cell_config[cell_id]` (`deploy.mode_a_key_for_cell`). Protocol: paired comparisons run on these
+    per-configuration errors, so repeats of one configuration are one observation, not several."""
+    d = lomo.assign(config_key=lomo["cell_id"].map(cell_config))
+    if d["config_key"].isna().any():
+        raise ValueError("no Mode A configuration for held-out cells " + ", ".join(sorted(d.loc[d["config_key"].isna(), "cell_id"].unique())[:5]))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        d["abslog"] = np.abs(np.log(d["E_pred_J"].to_numpy(float) / d["E_true_J"].to_numpy(float)))
+    d["abslog"] = d["abslog"].where(np.isfinite(d["abslog"]))
+    g = d.groupby(["rung", "config_key"], sort=False)
+    return g.agg(n_cells=("cell_id", "size"), mean_ape=("ape", "mean"), mean_abslog=("abslog", "mean")).reset_index()
+
+
+def ladder_raw(lomo: pd.DataFrame, n_boot: int, seed: int, cell_config: pd.Series) -> pd.DataFrame:
     """Per rung over held-out cells: whole-cell and measured-segment MdAPE with cluster-bootstrap intervals
-    (clusters = held-out base models), medians of the 1 s and 10 s block APE, window MAE, L1 fallback share."""
+    (clusters = held-out base models), medians of the 1 s and 10 s block APE, window MAE, L1 fallback share, and
+    the number of held-out configurations with the median over them of the per-configuration mean APE."""
     ex = _expl(lomo)
+    cfg = config_errors(lomo, cell_config).groupby("rung")["mean_ape"].agg(["size", "median"])
     rows = []
     for rung, g in lomo.groupby("rung", sort=False):
         whole = g[["fold", "E_true_J", "E_pred_J"]].reset_index(drop=True)
         meas = g[["fold", "E_true_meas_J", "E_pred_meas_J"]].reset_index(drop=True)
         mw, mm = evaluate.metrics(g["E_true_J"], g["E_pred_J"]), evaluate.metrics(g["E_true_meas_J"], g["E_pred_meas_J"])
-        r = {"rung": rung, "exploratory": ex[rung], "n": mw["n"], "mdape": mw["mdape"], "mape": mw["mape"],
+        r = {"rung": rung, "exploratory": ex[rung], "n": mw["n"], "n_configs": int(cfg.loc[rung, "size"]),
+             "median_cfg_ape": float(cfg.loc[rung, "median"]), "mdape": mw["mdape"], "mape": mw["mape"],
              "bias_pct": mw["bias_pct"], "n_meas": mm["n"], "mdape_meas": mm["mdape"],
              "ape_1s": float(g["ape_1s"].median()), "ape_10s": float(g["ape_10s"].median()),
              "mae_window_W": float(g["mae_window_W"].median()),
@@ -56,8 +74,10 @@ def ladder_raw(lomo: pd.DataFrame, n_boot: int, seed: int) -> pd.DataFrame:
 def show_ladder(raw: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame({
         "rung": [rung_label(r, e) for r, e in zip(raw["rung"], raw["exploratory"])], "n": raw["n"],
+        "n configurations": raw["n_configs"],
         "whole-cell MdAPE % [95 % CI]": [pct_ci(*r) for r in zip(raw["mdape"], raw["mdape_lo"], raw["mdape_hi"])],
         "whole-cell bias % [95 % CI]": [pct_ci(*r) for r in zip(raw["bias_pct"], raw["bias_lo"], raw["bias_hi"])],
+        "median per-configuration mean APE %": raw["median_cfg_ape"].map(pct),
         "measured-segment MdAPE % [95 % CI]": [pct_ci(*r) for r in zip(raw["mdape_meas"], raw["meas_lo"], raw["meas_hi"])],
         "n measured": raw["n_meas"], "1 s block APE %": raw["ape_1s"].map(pct), "10 s block APE %": raw["ape_10s"].map(pct),
         "window MAE W": raw["mae_window_W"], "L1 fallback share": raw["l1_fallback"]})
@@ -89,19 +109,25 @@ def family_table(lomo: pd.DataFrame, family: pd.Series) -> pd.DataFrame:
     return sort_rungs(pd.DataFrame(rows), "_k").drop(columns="_k")
 
 
-def vs_l0_raw(lomo: pd.DataFrame, noise: float, base: str = "L0") -> pd.DataFrame:
-    """Each other rung against L0, paired by held-out cell: Wilcoxon on whole-cell APE, Holm over the family
-    (all other rungs, `L1-cell` included for conservatism), verdict as for Mode A."""
+def vs_l0_raw(lomo: pd.DataFrame, noise: float, cell_config: pd.Series, base: str = "L0") -> pd.DataFrame:
+    """Each other rung against L0, paired by held-out Mode A configuration (protocol: per-configuration absolute
+    log errors, each configuration's errors averaged over its held-out cells first). Wilcoxon on those, Holm over the
+    family (all other rungs, `L1-cell` included for conservatism); the verdict uses the median paired difference
+    of the per-configuration mean APE against the noise floor, as for Mode A. `n` counts configurations,
+    `n_cells` the held-out cells of the rung in them."""
     ex = _expl(lomo)
-    ref = lomo[lomo["rung"] == base].set_index("cell_id")["ape"]
+    ce = config_errors(lomo, cell_config)
+    ref = ce[ce["rung"] == base].set_index("config_key")
     rows = []
-    for rung, g in lomo.groupby("rung", sort=False):
+    for rung, g in ce.groupby("rung", sort=False):
         if rung == base:
             continue
-        a = g.set_index("cell_id")["ape"].reindex(ref.index)
-        w = evaluate.paired_wilcoxon(a.to_numpy(), ref.to_numpy())
-        rows.append({"rung": rung, "exploratory": ex[rung], "n": int((a.notna() & ref.notna()).sum()),
-                     "p": w["p"], "median_d": w["median_diff"]})
+        g = g.set_index("config_key").reindex(ref.index)
+        w = evaluate.paired_wilcoxon(g["mean_abslog"].to_numpy(), ref["mean_abslog"].to_numpy())
+        ok = g["mean_abslog"].notna() & ref["mean_abslog"].notna()
+        d = (g["mean_ape"] - ref["mean_ape"])[ok]
+        rows.append({"rung": rung, "exploratory": ex[rung], "n": int(ok.sum()), "n_cells": int(g.loc[ok, "n_cells"].sum()),
+                     "p": w["p"], "median_dlog": w["median_diff"], "median_d": float(d.median()) if len(d) else float("nan")})
     out = pd.DataFrame(rows)
     if out.empty:
         return out
@@ -113,8 +139,10 @@ def vs_l0_raw(lomo: pd.DataFrame, noise: float, base: str = "L0") -> pd.DataFram
 
 def show_vs_l0(out: pd.DataFrame, base: str = "L0") -> pd.DataFrame:
     return pd.DataFrame({
-        "rung": [rung_label(r, e) for r, e in zip(out["rung"], out["exploratory"])], "vs": base, "n": out["n"],
-        "median paired diff, APE (pp)": out["median_d"].map(lambda v: f"{100 * v:+.2f}"),
+        "rung": [rung_label(r, e) for r, e in zip(out["rung"], out["exploratory"])], "vs": base, "n configurations": out["n"],
+        "n cells": out["n_cells"],
+        "median paired diff, per-configuration mean APE (pp)": out["median_d"].map(lambda v: f"{100 * v:+.2f}"),
+        "median paired diff, abs log error": out["median_dlog"].map(lambda v: f"{v:+.4f}"),
         "Wilcoxon p": out["p"].map(lambda v: f"{v:.3g}"), "Holm p": out["p_holm"].map(lambda v: f"{v:.3g}"),
         "verdict": out["verdict"]})
 
