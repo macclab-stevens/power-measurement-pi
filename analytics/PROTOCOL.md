@@ -49,7 +49,10 @@ log-linear OLS; M1 Ridge (alpha in logspace(-2, 4, 7)), M2 HistGradientBoosting 
 learning_rate {0.05, 0.1} x max_iter {100, 300} x min_samples_leaf {3, 5}), M3 factored latency x
 power; AUTO = best of M1-M3 by inner leave-one-model-out MdAPE.
 Mode L rungs: L0 lookup, L1 calibrated PMIC, L2 busy / cycles ridge, L3 all counters (ridge, trees),
-L4 L3 + PMIC.
+L4 L3 + PMIC. Mode L grids: ridge alpha in logspace(-2, 4, 7); trees max_depth {3, 5} x learning_rate
+{0.1} x max_iter {200} x min_samples_leaf {50, 200}; every window weighted 1 / (windows in its cell).
+Windows before a cell's first available PMIC read have no PMIC feature; L1 predicts them with the L0
+lookup fitted in the same fold (share reported).
 
 ## Selection, intervals, tests
 
@@ -87,3 +90,7 @@ under-voltage bits were current in any cell (all non-zero words are the 0x50000 
   samples stay in the energy (they are a real, uniform cost). Q1 is flag-only, so no cell changes
   status. Q5 is uninformative on this data: `P_W` is computed as `V_V x I_A` in alignment, so the
   discrepancy is exactly 0 in every cell; the rule is kept for future data.
+- 2026-11-23, Mode L grids (before any Mode L fit): the plan said "grids as Mode A M1/M2"; that grid
+  (leaves of 3-5 samples, 24 points) is unsuited to ~160k autocorrelated 100 ms windows and would cost
+  hours per run on the NUC. Replaced by the 4-point tree grid above with leaves of 50 / 200 windows.
+  The L1 fallback for windows with no PMIC read yet is fixed in advance.
