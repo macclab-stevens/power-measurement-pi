@@ -92,7 +92,7 @@ def test_negative_results_are_stated_in_findings(built):
     head = files["results.md"].split("## 2.")[0]
     assert "Findings at a glance" in head
     assert re.search(r"\*\*(indistinguishable|not significant|worse|better)", head)
-    assert "does not beat Mode A" in head or "the probe beats Mode A" in head
+    assert re.search(r"Probe mode, L\d.*\*\*(indistinguishable|not significant|worse|better)", head)
     assert "coverage" in head
 
 
@@ -244,13 +244,112 @@ def test_worst_table_orders_by_ape_and_joins_qc(analysis):
     assert (w["n_cells"] == 3).all()
 
 
-def test_v2_vs_pooled_scores_pooled_run_on_the_nov2026_test_configs_only(analysis):
+def test_v2_vs_pooled_scores_both_arms_on_exactly_the_same_nov2026_pairs(analysis):
     a = analysis
-    t, n, note = rt.v2_vs_pooled(a.extras["pooled"].df, a.extras["v2only"].df, a.configs, N_BOOT, MASTER)
+    pooled, v2 = a.extras["pooled"].df, a.extras["v2only"].df
     nov = set(a.configs.loc[a.configs["rig"] == "nov2026", "config_key"])
-    assert n == a.extras["v2only"].df.query("candidate == 'AUTO'").shape[0]
-    assert set(a.extras["v2only"].df["config_key"]) <= nov
-    assert len(t) == 8 and "Wilcoxon p" in note
+    pairs = lambda d: set(zip(d.loc[d["candidate"] == "AUTO", "fold"], d.loc[d["candidate"] == "AUTO", "config_key"]))
+    # the synthetic data has oct2026 configurations of yolov8n and yolo11n, as the real data does
+    assert pairs(pooled) - {p for p in pairs(pooled) if p[1] in nov}, "fixture must have v1 rows in the pooled test sets"
+    restricted = rt.restrict_to_nov(pooled, a.configs)
+    assert pairs(restricted) == pairs(v2) and pairs(restricted) < pairs(pooled)
+    t, n, note = rt.v2_vs_pooled(pooled, v2, a.configs, N_BOOT, MASTER)
+    assert n == len(pairs(v2)) < len(pairs(pooled)) and "Wilcoxon p" in note and len(t) == 8
+    # the pooled column is computed on the restricted rows, not on all of them
+    want = rt.pooled_table(restricted, "S-LOMO", N_BOOT, MASTER).set_index("candidate")
+    auto = t[t["candidate"] == "AUTO"].iloc[0]
+    assert auto["pooled v1+v2 MdAPE % [95 % CI]"].startswith(rt.pct(want.loc["AUTO", "mdape"]))
+    unrestricted = rt.pooled_table(pooled, "S-LOMO", N_BOOT, MASTER).set_index("candidate")
+    assert rt.pct(unrestricted.loc["AUTO", "mdape"]) != rt.pct(want.loc["AUTO", "mdape"])
+    assert set(v2["config_key"]) <= nov
+    # arms that score different pairs are refused
+    with pytest.raises(ValueError, match="same .fold, configuration. pairs"):
+        rt.v2_vs_pooled(pooled, v2[v2["config_key"] != sorted(v2["config_key"])[0]], a.configs, N_BOOT, MASTER)
+
+
+def test_pooled_arm_trained_on_all_rows_and_v2_arm_on_nov2026_rows(analysis, tmp_path):
+    a = analysis
+    n_pool, n_v2 = report.check_arms(a)
+    assert n_pool == len(a.configs) and n_v2 == int((a.configs["rig"] == "nov2026").sum()) < n_pool
+    assert f"trained on all {n_pool} configurations" in "\n".join(report.section_v2(a))
+    a.extras["pooled"].rec["n_configs_train_table"] = n_v2        # an arm that did not train on every row
+    try:
+        with pytest.raises(ri.ReportInputError, match="mode-a-extras"):
+            report.check_arms(a)
+    finally:
+        a.extras["pooled"].rec["n_configs_train_table"] = n_pool
+
+
+def test_headline_table_is_one_claim_and_its_best_baseline(analysis, built):
+    h = report.headline_rows(analysis)
+    assert list(h["id"]) == ["H1", "H2"]
+    r = h.iloc[0]
+    assert (r["split"], r["target"], r["metric"], r["claim"]) == ("S-LOMO", "energy_mJ", "MdAPE %", "Mode A AUTO")
+    assert re.fullmatch(r"\[[\d.]+, [\d.]+\]", r["95 % CI"]) and r["run_id"] == analysis.master.run_id and r["n"] > 0
+    assert h.iloc[1]["claim"].startswith("Mode A B") and h.iloc[1]["split"] == "S-LOMO"
+    text = built[1]["results.md"]
+    head1 = text.split("### Mode L ladder (whole-cell energy APE; no single pre-registered rung)")[0]
+    assert "Mode L" not in head1.split("## 1. Headline claims")[1].split("###")[0].split("| H2 |")[1].split("\n\n")[0]
+    assert "### Mode L ladder (whole-cell energy APE; no single pre-registered rung)" in text
+    ladder = text.split("### Mode L ladder (whole-cell energy APE; no single pre-registered rung)")[1].split("### Findings")[0]
+    for rung in ("L0", "L1 ", "L1-cell (exploratory)", "L4-trees"):
+        assert f"| {rung}" in ladder
+    assert "H3" not in text
+
+
+def test_every_error_table_states_the_noise_floor(built):
+    _, files = built
+    res = files["results.md"].split("## 12. Counter overhead")[0]
+    ts = tables_of(res)
+    assert len(ts) > 60
+    for cap, hdr, _ in ts:
+        assert "noise floor" in cap.lower(), (hdr, cap[:160])
+    mode_a_part = res.split("## 2. Mode A")[1].split("## 9.")[0]
+    for cap, hdr, _ in tables_of(mode_a_part):
+        assert re.search(r"noise floor \(median repeat CV|noise floor not defined", cap, re.I), cap[:200]
+    mode_l_part = res.split("## 9. Mode L")[1]
+    for cap, hdr, _ in tables_of(mode_l_part):
+        assert "Mode A's energy noise floor" in cap and "reused" in cap, cap[:200]
+    for name in ("model_card_mode_a.md", "model_card_mode_l.md"):
+        for cap, hdr, _ in tables_of(files[name].split("## Hashes and runs")[0]):
+            assert "noise floor" in cap.lower(), (name, cap[:160])
+
+
+def test_caption_requires_an_explicit_floor():
+    with pytest.raises(TypeError):
+        rt.caption(split="s", target="t", prov="n = 1", run_ids="r")
+    assert "Noise floor" not in rt.caption(split="s", target="t", prov="n = 1", run_ids="r", floor=None)
+
+
+def test_probe_caption_n_is_the_per_rung_pair_count_and_matches_the_table(built):
+    _, files = built
+    text = files["results.md"].split("## 11. Probe mode")[1].split("## 12.")[0]
+    lines = text.splitlines()
+    i = next(k for k, ln in enumerate(lines) if ln.startswith("| rung | n pairs"))
+    rows = [[c.strip() for c in ln.strip("|").split("|")] for ln in lines[i + 2:i + 10]]
+    ns = {r[1] for r in rows}
+    assert len(rows) == 8 and len(ns) == 1
+    cap = next(ln for ln in reversed(lines[:i]) if ln.startswith("*Split"))
+    assert f"n = {ns.pop()} ordered pairs per rung (8 rungs) of repeats in 6 configurations" in cap
+    assert "n = 96" not in cap
+
+
+def test_probe_verdict_applies_the_noise_floor_rule(analysis):
+    probe = analysis.ml["probe"].copy()
+    probe["rung"] = "L2"
+    probe["exploratory"] = False
+    probe["mode_a_mJ"] = probe["true_mJ"] * 1.10
+    probe["mode_a_ape"] = 0.10
+    probe["probe_mJ"] = probe["true_mJ"] * 1.09                    # 1 pp better, consistently
+    probe["ape"] = 0.09
+    probe = probe[probe["j"] < probe["k"]]
+    probe["ape"] += np.linspace(0, 0.0005, len(probe))
+    near = tl.probe_raw(probe, N_BOOT, MASTER, noise=0.02)
+    assert near.iloc[0]["verdict"] == "indistinguishable (below noise floor)"
+    assert tl.probe_raw(probe, N_BOOT, MASTER, noise=0.0).iloc[0]["verdict"] in ("better", "not significant")
+    assert "verdict" in tl.show_probe(near).columns and "probe better?" not in tl.show_probe(near).columns
+    worse = probe.assign(probe_mJ=probe["true_mJ"] * 1.5, ape=0.5)
+    assert tl.probe_raw(worse, N_BOOT, MASTER, noise=0.02).iloc[0]["median_d"] > 0
 
 
 def test_mode_l_ladder_rows_follow_the_protocol_order_with_exploratory_label(analysis):

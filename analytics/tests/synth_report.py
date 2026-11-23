@@ -27,7 +27,7 @@ def make_configs() -> pd.DataFrame:
                     key = f"{m}|{prec}|{th}|{mhz}"
                     rows.append({"config_key": key, "base_model": m, "variant": m if prec == "fp32" else f"{m}_int8",
                                  "precision": prec, "imgsz": 640, "batch": 1, "threads": th, "cpu_mhz": mhz,
-                                 "rig": "nov2026" if mi < 6 else "oct2026", "n_cells": 3, "energy_cv": 0.02,
+                                 "rig": "nov2026" if mi < 6 and not (m in ("yolov8n", "yolo11n") and th == 1) else "oct2026", "n_cells": 3, "energy_cv": 0.02,
                                  "latency_cv": 0.03, "energy_mJ": 1000.0 * (mi + 1) * (1 + 0.1 * th) * 1500 / mhz,
                                  "latency_ms": 100.0 * (mi + 1) / th ** 0.3, "mean_P_W": 6.0 + mi * 0.2 + th * 0.1,
                                  "cell_ids": ";".join(f"{key}#{r}" for r in range(3))})
@@ -100,14 +100,14 @@ def make_inputs(root, seeds=(MASTER, MASTER + 1, MASTER + 2)) -> ri.Paths:
     lc.to_parquet(p.extras_dir / f"{rid}.parquet", index=False)
     _log(p.runs_log, {"run_id": rid, "command": "mode-a-extras", "part": "learning_curve", "seed": MASTER, "target": "energy_mJ",
                       "candidate": "M1Ridge", "params": {"alpha": 1.0}})
-    yolo_cfg = configs[configs["base_model"].isin(splits.YOLO)]
+    nov_cfg = configs[configs["rig"] == "nov2026"]
     for training in ("pooled", "v2only"):
-        t = configs if training == "pooled" else yolo_cfg
+        t = configs if training == "pooled" else nov_cfg
         res = pd.concat([_pred(t, "S-LOMO", "energy_mJ", MASTER, rng).query("fold in @splits.YOLO")], ignore_index=True)
         rid = uuid.uuid4().hex
         res.to_parquet(p.extras_dir / f"{rid}.parquet", index=False)
         _log(p.runs_log, {"run_id": rid, "command": "mode-a-extras", "part": "v2_vs_pooled", "training": training, "split": "S-LOMO",
-                          "target": "energy_mJ", "seed": MASTER})
+                          "target": "energy_mJ", "seed": MASTER, "n_configs_train_table": len(t)})
     # deployment validation
     dep = pd.DataFrame([{"case": c, "cell_id": f"cell{i}", "phase": ph, "measured_J": 100.0, "predicted_J": 100.0 * (1 + 0.05 * i),
                          "ape": 0.05 * i, "source": "lomo", "notes": "n", "predicted_J_no_soak": 100.0, "lo90_J": 80.0, "hi90_J": 130.0,

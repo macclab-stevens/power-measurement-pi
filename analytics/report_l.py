@@ -30,7 +30,7 @@ def _vs_l0(a) -> pd.DataFrame:
 
 def _probe(a) -> pd.DataFrame:
     if "probe" not in a.cache:
-        a.cache["probe"] = tl.probe_raw(a.ml["probe"], a.n_boot, a.boot_seed)
+        a.cache["probe"] = tl.probe_raw(a.ml["probe"], a.n_boot, a.boot_seed, a.noise["energy_mJ"])
     return a.cache["probe"]
 
 
@@ -49,9 +49,34 @@ def _prov(a) -> str:
     return f"n = {lomo['cell_id'].nunique()} held-out cells in {lomo['fold'].nunique()} folds (dataset v2, nov2026 rig)"
 
 
+def _floor(a) -> str:
+    return rt.floor_reused(a.noise["energy_mJ"])
+
+
 def _cap(a, extra: str) -> str:
     return rt.caption(split="leave one YOLO base model out", target="whole-cell energy", prov=_prov(a),
-                      run_ids=a.ml["run_id"], extra=extra)
+                      run_ids=a.ml["run_id"], floor=_floor(a), extra=extra)
+
+
+def ladder_caption(a) -> str:
+    return _cap(a, "Median whole-cell energy APE per rung over held-out cells; `L1-cell` is exploratory (see section 9).")
+
+
+def ladder_headline(a) -> pd.DataFrame:
+    """One row per rung: the same claim fields as the Mode A headline (split, target, metric, interval, n, run_id)."""
+    rows = []
+    for r in ladder(a).itertuples():
+        rows.append({"rung": tl.rung_label(r.rung, r.exploratory), "split": "leave one YOLO model out", "target": "whole-cell energy",
+                     "metric": "MdAPE %", "estimate": rt.pct(r.mdape), "95 % CI": f"[{rt.pct(r.mdape_lo)}, {rt.pct(r.mdape_hi)}]",
+                     "n": int(r.n), "run_id": a.ml["run_id"],
+                     "status": "exploratory (added after a scored fold)" if r.exploratory else "pre-registered rung"})
+    return pd.DataFrame(rows)
+
+
+def probe_n(pt: pd.DataFrame) -> str:
+    """Finite ordered pairs per rung (one number, or min to max if rungs differ) and the number of rungs."""
+    lo, hi = int(pt["n"].min()), int(pt["n"].max())
+    return f"{lo if lo == hi else f'{lo} to {hi}'} ordered pairs per rung ({len(pt)} rungs)"
 
 
 def _seed_matched(pr: pd.DataFrame) -> str:
@@ -74,8 +99,8 @@ def findings(a) -> list:
                    f"difference {100 * r.median_d:+.2f} pp, Holm p = {r.p_holm:.3g}, n = {r.n}; run_id `{a.ml['run_id']}`).")
     for r in _probe(a).itertuples():
         out.append(f"Probe mode, {tl.rung_label(r.rung, r.exploratory)}: probe MdAPE {rt.pct(r.probe[0])} % against Mode A {rt.pct(r.modea[0])} % "
-                   f"on the same pairs; {'the probe beats Mode A' if r.better else 'the probe does not beat Mode A'} "
-                   f"(Holm p = {r.p_holm:.3g}, n = {r.n} pairs; run_id `{a.ml['run_id']}`).")
+                   f"on the same pairs: **{r.verdict}** (median paired APE difference {100 * r.median_d:+.2f} pp, Holm p = {r.p_holm:.3g}, "
+                   f"n = {r.n} pairs; run_id `{a.ml['run_id']}`).")
     return out
 
 
@@ -90,8 +115,7 @@ def sections(a) -> list:
          _cap(a, "Whole cell, measured segment, 1 s and 10 s horizons."), ew.md_table(tl.show_ladder(raw), {"window MAE W": "{:.3f}", "L1 fallback share": "{:.3f}"}) + "\n",
          _cap(a, "Median phase energy APE per rung and phase (cells that have the phase)."), ew.md_table(tl.phase_table(lo)) + "\n",
          _cap(a, "Median whole-cell APE per rung and dataset family."), ew.md_table(tl.family_table(lo, a.family)) + "\n",
-         _cap(a, "Each rung against L0, paired by held-out cell, Holm over the family; "
-              + rt.floor_text(a.noise["energy_mJ"], "energy_mJ") + " (Mode A's energy floor, used here as the indistinguishability margin)."), ew.md_table(tl.show_vs_l0(_vs_l0(a))) + "\n",
+         _cap(a, "Each rung against L0, paired by held-out cell, Holm over the family."), ew.md_table(tl.show_vs_l0(_vs_l0(a))) + "\n",
          _cap(a, "Whole-cell energy APE per rung."), figs.fig_link(a.paths, box, "Mode L whole-cell APE per rung")]
     pm = ml["pmic_v1"]
     n1, n2 = (pm.drop_duplicates("cell_id")["family"] == "v1").sum(), (pm.drop_duplicates("cell_id")["family"] != "v1").sum()
@@ -100,7 +124,7 @@ def sections(a) -> list:
           "over v1 and v2 cells. v1 has no counters, so this is the one cross-family test of the PMIC rung with current data.\n",
           rt.caption(split="leave one workload (model_key) out", target="whole-cell energy",
                      prov=f"n = {pm['cell_id'].nunique()} cells (dataset v1 {n1}, v2 {n2} cells)", run_ids=ml["run_id"],
-                     extra=tl.EXPLORATORY_NOTE),
+                     floor=_floor(a), extra=tl.EXPLORATORY_NOTE),
           ew.md_table(tl.pmic_table(pm, a.n_boot, a.boot_seed), {"median slope b": "{:.3f}", "L1 fallback share": "{:.3f}"}) + "\n"]
     pt = _probe(a)
     best = _probe_best(a)
@@ -110,21 +134,21 @@ def sections(a) -> list:
           "compared with the Mode A S-LOMO AUTO prediction for the same configuration. Pairs are not independent, so the paired test is run over "
           "configurations (per-configuration median error).\n",
           rt.caption(split="S-LOMO (Mode A) and leave one YOLO base model out (Mode L)", target="energy_mJ per image",
-                     prov=f"n = {len(pr)} ordered pairs of repeats in {pr['config_key'].nunique()} configurations (dataset v2)",
-                     run_ids=[ml["run_id"], *sorted({str(x) for x in pr["mode_a_run_id"].dropna()})],
+                     prov=f"n = {probe_n(pt)} of repeats in {pr['config_key'].nunique()} configurations (dataset v2)",
+                     run_ids=[ml["run_id"], *sorted({str(x) for x in pr["mode_a_run_id"].dropna()})], floor=_floor(a),
                      extra=f"Second run id: the Mode A S-LOMO energy run the comparison used; seed matched: "
                            f"{_seed_matched(pr)}. {tl.EXPLORATORY_NOTE}"),
           ew.md_table(tl.show_probe(pt)) + "\n"]
     if best:
         name = figs.probe_scatter(pr, best, a.paths.fig_dir)
-        L += [rt.caption(split="probe against Mode A", target="energy_mJ per image", prov=f"n = {int((pr['rung'] == best).sum())} pairs",
-                         run_ids=ml["run_id"], extra=f"Rung {best} is the non-exploratory rung with the lowest probe median APE (selected post hoc)."),
+        L += [rt.caption(split="probe against Mode A", target="energy_mJ per image", prov=f"n = {int(pt.loc[pt['rung'] == best, 'n'].iloc[0])} ordered pairs",
+                         run_ids=ml["run_id"], floor=_floor(a), extra=f"Rung {best} is the non-exploratory rung with the lowest probe median APE (selected post hoc)."),
               figs.fig_link(a.paths, name, "probe and Mode A predictions against measured energy per image")]
     L += ["## 12. Counter overhead and stated limits\n", overhead_text(a) + "\n"]
     if a.overhead is not None and len(a.overhead):
         L += [rt.caption(split="counters off (ref) against on", target="forward mean power, W",
                          prov=f"n = {int(a.overhead['n_off'].sum() + a.overhead['n_on'].sum())} cells in {len(a.overhead)} configurations (dataset v2)",
-                         run_ids="not a model run (descriptive)"), ew.md_table(a.overhead) + "\n"]
+                         run_ids="not a model run (descriptive)", floor=None), ew.md_table(a.overhead) + "\n"]
     L += ["Stated limits of Mode L:\n", *[f"- {x}" for x in LIMITS], "\n"]
     return L
 

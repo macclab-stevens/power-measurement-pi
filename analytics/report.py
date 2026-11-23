@@ -20,7 +20,7 @@ import report_l
 import report_tables as rt
 import settings
 import report_tables_l as tl
-from report_inputs import Paths
+from report_inputs import Paths, ReportInputError
 
 N_BOOT = 2000
 SPLIT_TEXT = {
@@ -97,6 +97,10 @@ def md(df: pd.DataFrame, fmt=None) -> str:
     return ew.md_table(df, fmt) + "\n"
 
 
+def nf_energy(a: Analysis) -> str:
+    return rt.floor_text(a.noise["energy_mJ"], "energy_mJ")
+
+
 def prov_ma(a: Analysis, split: str, target: str) -> str:
     ref = a.ma[(split, target)]
     keys = ref.df["config_key"].unique()
@@ -104,7 +108,8 @@ def prov_ma(a: Analysis, split: str, target: str) -> str:
 
 
 def headline_rows(a: Analysis) -> pd.DataFrame:
-    """One row per headline claim: id, claim, split, target, metric, estimate, interval, n, run_id, status."""
+    """The headline claim H1 (AUTO, S-LOMO, energy_mJ, MdAPE with its interval) and its comparator H2 (best
+    baseline, same split, target and metric). Mode L has no single pre-registered rung: it is a separate table."""
     rows = []
     raw = a.pooled[("S-LOMO", "energy_mJ")].set_index("candidate")
     ref = a.master
@@ -113,12 +118,6 @@ def headline_rows(a: Analysis) -> pd.DataFrame:
         rows.append({"id": cid, "claim": f"Mode A {rt.SHORT[cand]}", "split": "S-LOMO", "target": "energy_mJ",
                      "metric": "MdAPE %", "estimate": rt.pct(r["mdape"]), "95 % CI": f"[{rt.pct(r['mdape_lo'])}, {rt.pct(r['mdape_hi'])}]",
                      "n": int(r["n"]), "run_id": ref.run_id, "status": status})
-    ml = report_l.ladder(a)
-    for i, r in enumerate(ml.itertuples(), 1):
-        rows.append({"id": f"H{i + 2}", "claim": f"Mode L {rt.SHORT.get(r.rung, r.rung)}" + (" (exploratory)" if r.exploratory else ""),
-                     "split": "leave one YOLO model out", "target": "whole-cell energy", "metric": "MdAPE %",
-                     "estimate": rt.pct(r.mdape), "95 % CI": f"[{rt.pct(r.mdape_lo)}, {rt.pct(r.mdape_hi)}]", "n": int(r.n),
-                     "run_id": a.ml["run_id"], "status": "exploratory (added after a scored fold)" if r.exploratory else "pre-registered rung"})
     return pd.DataFrame(rows)
 
 
@@ -147,7 +146,14 @@ def section_headline(a: Analysis) -> list:
             f"({a.n_boot} resamples, seed {a.boot_seed}; clusters are base models). Percentages are percent absolute error unless stated. "
             f"Data: {prov_ma(a, 'S-LOMO', 'energy_mJ')}. Run `{r.rec.get('commit', '')[:10]}`, data hash `{str(r.rec.get('data_hash', ''))[:12]}`. "
             f"Nothing here is a lockbox result: the lockbox has not been collected.\n",
-            md(headline_rows(a)), "### Findings at a glance (positive and negative)\n", *[f"- {x}" for x in findings(a)], "\n"]
+            rt.caption(split="S-LOMO", target="energy_mJ", prov=prov_ma(a, "S-LOMO", "energy_mJ"), run_ids=r.run_id,
+                       floor=rt.floor_text(a.noise["energy_mJ"], "energy_mJ"), extra="H1 is the headline; H2 is its best-baseline comparator."),
+            md(headline_rows(a)),
+            "### Mode L ladder (whole-cell energy APE; no single pre-registered rung)\n",
+            "Mode L is a ladder: no single rung is the pre-registered headline, so every rung is listed with the same metric and interval. "
+            f"{report_l.overhead_text(a)}\n",
+            report_l.ladder_caption(a), md(report_l.ladder_headline(a)),
+            "### Findings at a glance (positive and negative)\n", *[f"- {x}" for x in findings(a)], "\n"]
 
 
 def section_mode_a(a: Analysis) -> list:
@@ -161,28 +167,26 @@ def section_mode_a(a: Analysis) -> list:
         for target in ri.TARGETS:
             ref, key = a.ma[(split, target)], (split, target)
             base, nf = a.base[key], a.noise[target]
-            cap = rt.caption(split=split, target=f"{target} ({rt.NOUN[target]}, {rt.UNITS[target]})",
-                             prov=prov_ma(a, split, target), run_ids=ref.run_id,
-                             extra=f"Seed {ref.seed}; {rt.floor_text(nf, target)}; best baseline {rt.SHORT[base]}; bootstrap clusters: "
-                                   f"{rt.group_col(split)}.")
-            L += [f"#### {target}\n", cap, md(rt.show_pooled(a.pooled[key], target))]
-            L += [rt.caption(split=split, target=target, prov=prov_ma(a, split, target), run_ids=ref.run_id,
-                             extra="Paired Wilcoxon against the best baseline, Holm-adjusted over the learned candidates."),
-                  md(rt.show_paired(a.paired[key], base))]
-            L += [rt.caption(split=split, target=target, prov=prov_ma(a, split, target), run_ids=ref.run_id,
-                             extra="By similarity class; n counts predictions."), md(rt.similarity_table(ref.df))]
-            L += [rt.caption(split=split, target=target, prov=prov_ma(a, split, target), run_ids=ref.run_id,
-                             extra="By base model."), md(rt.model_table(ref.df, base), {"novelty": "{:.3f}"})]
+
+            def cap(extra, target=target, split=split, ref=ref, nf=nf):
+                return rt.caption(split=split, target=f"{target} ({rt.NOUN[target]}, {rt.UNITS[target]})",
+                                  prov=prov_ma(a, split, target), run_ids=ref.run_id, floor=rt.floor_text(nf, target),
+                                  extra=f"Seed {ref.seed}. {extra}")
+            L += [f"#### {target}\n", cap(f"Best baseline {rt.SHORT[base]}; bootstrap clusters: {rt.group_col(split)}."),
+                  md(rt.show_pooled(a.pooled[key], target)),
+                  cap("Paired Wilcoxon against the best baseline, Holm-adjusted over the learned candidates."),
+                  md(rt.show_paired(a.paired[key], base)),
+                  cap("By similarity class; n counts predictions."), md(rt.similarity_table(ref.df)),
+                  cap("By base model."), md(rt.model_table(ref.df, base), {"novelty": "{:.3f}"})]
             if target == "energy_mJ":
-                L += [rt.caption(split=split, target=target, prov=prov_ma(a, split, target), run_ids=ref.run_id,
-                                 extra="By precision, image size, threads, batch, clock and rig (fixed subgroups)."),
+                L += [cap("By precision, image size, threads, batch, clock and rig (fixed subgroups)."),
                       md(rt.factor_table(ref.df, a.configs, base))]
     return L
 
 
 def section_seeds(a: Analysis) -> list:
     t, raw = rt.seed_table(a.seed_runs, a.configs, a.n_boot, a.boot_seed)
-    cap = rt.caption(split="S-LOMO", target="energy_mJ", prov=prov_ma(a, "S-LOMO", "energy_mJ"),
+    cap = rt.caption(floor=nf_energy(a), split="S-LOMO", target="energy_mJ", prov=prov_ma(a, "S-LOMO", "energy_mJ"),
                      run_ids=list(t["run_id"]),
                      extra=f"Protocol seeds {list(ri.SEED_SPREAD)}; {len(t)} of {len(ri.SEED_SPREAD)} present in runs.jsonl.")
     rng = (f"AUTO MdAPE ranges from {rt.pct(raw['auto'].min())} % to {rt.pct(raw['auto'].max())} % over the {len(raw)} seeds present."
@@ -196,7 +200,7 @@ def section_novelty(a: Analysis) -> list:
     name = figs.error_vs_novelty(auto, a.paths.fig_dir)
     return ["## 4. Error against novelty\n",
             rt.caption(split="S-LOMO", target="energy_mJ", prov=prov_ma(a, "S-LOMO", "energy_mJ"), run_ids=ref.run_id,
-                       extra=f"n = {len(auto)} AUTO predictions plotted. Hollow markers carry the `no-similar-model` flag."),
+                       floor=rt.floor_text(a.noise["energy_mJ"], "energy_mJ"), extra=f"n = {len(auto)} AUTO predictions plotted. Hollow markers carry the `no-similar-model` flag."),
             figs.fig_link(a.paths, name, "AUTO absolute percentage error against novelty, S-LOMO energy")]
 
 
@@ -205,7 +209,7 @@ def section_worst(a: Analysis) -> list:
     w = rt.worst_table(ref.df, a.configs, a.qc)
     n_auto = int((ref.df["candidate"] == "AUTO").sum())
     return ["## 5. Worst-10 configurations\n",
-            rt.caption(split="S-LOMO", target="energy_mJ", prov=f"n = {len(w)} of {n_auto} AUTO predictions", run_ids=ref.run_id,
+            rt.caption(floor=nf_energy(a), split="S-LOMO", target="energy_mJ", prov=f"n = {len(w)} of {n_auto} AUTO predictions", run_ids=ref.run_id,
                        extra="Largest AUTO absolute percentage errors, joined to the QC rows of the configuration's cells "
                              "(the narrative autopsy is in `analytics/reports/autopsy.md`)."), md(w, {"measured": "{:.1f}", "predicted": "{:.1f}", "novelty": "{:.3f}"})]
 
@@ -215,21 +219,35 @@ def section_learning(a: Analysis) -> list:
     rec = lc.rec
     name = figs.learning_curve(lc.df, a.paths.fig_dir)
     return ["## 6. Learning curve\n",
-            rt.caption(split="S-LOMO YOLO folds", target="energy_mJ", prov=f"n = {len(lc.df)} fits",
+            rt.caption(floor=nf_energy(a), split="S-LOMO YOLO folds", target="energy_mJ", prov=f"n = {len(lc.df)} fits",
                        run_ids=lc.run_id, extra=f"Candidate {rt.SHORT.get(rec.get('candidate'), rec.get('candidate'))} with the final-fit "
                                                 f"hyperparameters (no inner search); seed {rec.get('seed')}; at most 10 training subsets per k, all other "
                                                 f"configurations (non-YOLO) always in training."),
             md(rt.learning_table(lc.df)), figs.fig_link(a.paths, name, "MdAPE against number of training YOLO models")]
 
 
+def check_arms(a: Analysis) -> tuple:
+    """Training sizes of the two arms from their run records; the pooled arm must have trained on every row of the
+    configuration table and the v2-only arm on its nov2026 rows (else `mode-a-extras` ran on another table)."""
+    ex = a.extras
+    n_pool, n_v2 = ex["pooled"].rec.get("n_configs_train_table"), ex["v2only"].rec.get("n_configs_train_table")
+    want = (len(a.configs), int((a.configs["rig"] == "nov2026").sum()))
+    if (n_pool, n_v2) != want:
+        raise ReportInputError(f"mode-a-extras trained the pooled / v2-only arms on {n_pool} / {n_v2} configurations but the table has "
+                               f"{want[0]} / {want[1]} (all / nov2026); rerun `uv run python cli.py mode-a-extras`")
+    return n_pool, n_v2
+
+
 def section_v2(a: Analysis) -> list:
     ex = a.extras
     t, n, note = rt.v2_vs_pooled(ex["pooled"].df, ex["v2only"].df, a.configs, a.n_boot, a.boot_seed)
+    n_pool, n_v2 = check_arms(a)
     return ["## 7. v2-only against pooled training\n",
             "S-LOMO YOLO folds, energy. Both runs are scored on the same test configurations (the nov2026 rig ones); only the training "
             "data differ. The v2-only run drops every v1 (oct2026) configuration, including the three non-YOLO models.\n",
-            rt.caption(split="S-LOMO YOLO folds", target="energy_mJ", prov=f"n = {n} test configurations (dataset v2, nov2026 rig)",
-                       run_ids=[ex["pooled"].run_id, ex["v2only"].run_id], extra="First run id: pooled; second: v2-only."),
+            rt.caption(floor=nf_energy(a), split="S-LOMO YOLO folds", target="energy_mJ", prov=f"n = {n} test configurations (dataset v2, nov2026 rig)",
+                       run_ids=[ex["pooled"].run_id, ex["v2only"].run_id],
+                       extra=f"First run id: pooled, trained on all {n_pool} configurations; second: v2-only, trained on the {n_v2} nov2026 ones."),
             md(t), note + "\n"]
 
 
@@ -238,7 +256,7 @@ def section_deploy(a: Analysis) -> list:
     ids = a.deploy_rec.get("run_id")
     mids = [a.ma[("S-LOMO", t)].run_id for t in ("energy_mJ", "latency_ms")]
     run_ids = ([ids] if ids else []) + mids
-    cap = lambda extra: rt.caption(split="held-out S-LOMO AUTO predictions", target="whole-deployment energy, J",
+    cap = lambda extra: rt.caption(floor=nf_energy(a), split="held-out S-LOMO AUTO predictions", target="whole-deployment energy, J",
                                    prov=f"n = {len(d)} validation rows (dataset v1 and v2 cells as listed)", run_ids=run_ids, extra=extra)
     return ["## 8. Deployment validation\n",
             "The calculator is fed only held-out Mode A predictions. The fan rows fit their offsets on the same cells and are not a validation; "
@@ -273,7 +291,7 @@ def section_provenance(a: Analysis) -> list:
             f"Table sha256 `{str(a.master.rec.get('table_sha256', ''))[:16]}`; split hashes (sha256, 12 characters): {hashes}. "
             f"Run seed {a.seed}, bootstrap seed {a.boot_seed}. Dataset: v1 (branch `dataset-2026-10-matrix`, 224 cells) and v2 (branch `dataset-2026-11-v2`, 179 cells). "
             "Protocol: `analytics/PROTOCOL.md`; its amendment log applies (the `L1-cell` rung is exploratory).\n",
-            rt.caption(split="all", target="all", prov=f"n = {len(rows)} run outputs used", run_ids="see table"), md(pd.DataFrame(rows))]
+            rt.caption(split="all", target="all", prov=f"n = {len(rows)} run outputs used", run_ids="see table", floor=None), md(pd.DataFrame(rows))]
 
 
 def render_results(a: Analysis) -> str:

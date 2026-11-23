@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 
 import evaluate
-from report_tables import P_SIG, pct, pct_ci, verdict
+from report_tables import pct, pct_ci, verdict
 
 RUNG_ORDER = ["L0", "L1", "L1-cell", "L2", "L3-ridge", "L3-trees", "L4-ridge", "L4-trees"]
 PHASES = ["idle", "load_weights", "warmup", "forward", "serve"]
@@ -141,9 +141,11 @@ def pmic_table(pm: pd.DataFrame, n_boot: int, seed: int) -> pd.DataFrame:
     return sort_rungs(pd.DataFrame(rows), "_k").drop(columns="_k")
 
 
-def probe_raw(probe: pd.DataFrame, n_boot: int, seed: int) -> pd.DataFrame:
+def probe_raw(probe: pd.DataFrame, n_boot: int, seed: int, noise: float = float("nan")) -> pd.DataFrame:
     """Probe mode against Mode A on the same (configuration, j, k) pairs: MdAPE with intervals (clusters = base
-    models) and a paired Wilcoxon over configurations (per-configuration median error), Holm over rungs."""
+    models) and a paired Wilcoxon over configurations (per-configuration median error), Holm over rungs, and the
+    verdict of the Mode A rule (`indistinguishable` when |median paired APE difference| < `noise`). `n` is the
+    number of finite ordered pairs of the rung."""
     p = probe[np.isfinite(probe["mode_a_mJ"]) & np.isfinite(probe["probe_mJ"])].copy()
     p["base_model"] = p["config_key"].str.split("|").str[0]
     ex, rows = _expl(probe), []
@@ -161,7 +163,7 @@ def probe_raw(probe: pd.DataFrame, n_boot: int, seed: int) -> pd.DataFrame:
     out = sort_rungs(pd.DataFrame(rows))
     if not out.empty:
         out["p_holm"] = evaluate.holm(out["p"])
-        out["better"] = [bool(h < P_SIG and m < 0) for h, m in zip(out["p_holm"], out["median_d"])]
+        out["verdict"] = [verdict(m, h, noise) for m, h in zip(out["median_d"], out["p_holm"])]
     return out
 
 
@@ -173,7 +175,7 @@ def show_probe(out: pd.DataFrame) -> pd.DataFrame:
         "Mode A MdAPE % [95 % CI]": [pct_ci(*t) for t in out["modea"]],
         "median paired diff, probe minus Mode A (pp)": out["median_d"].map(lambda v: f"{100 * v:+.2f}"),
         "Wilcoxon p": out["p"].map(lambda v: f"{v:.3g}"), "Holm p": out["p_holm"].map(lambda v: f"{v:.3g}"),
-        "probe better?": ["yes" if b else "no" for b in out["better"]]})
+        "verdict": out["verdict"]})
 
 
 def deploy_summary(dep: pd.DataFrame) -> pd.DataFrame:

@@ -68,11 +68,18 @@ def version_text(configs: pd.DataFrame, keys) -> str:
     return ew.prov(sub)
 
 
-def caption(*, split: str, target: str, prov: str, run_ids, extra: str = "") -> str:
+def floor_reused(nf: float) -> str:
+    """Floor text for Mode L and probe tables, which reuse Mode A's energy noise floor."""
+    return f"Mode A's energy {floor_text(nf, 'energy_mJ')}, reused here as the indistinguishability margin"
+
+
+def caption(*, split: str, target: str, prov: str, run_ids, floor: str | None, extra: str = "") -> str:
     """One-line provenance above every table: split, target, n with dataset version(s) (`prov`, e.g. from
-    `version_text`) and run_id."""
+    `version_text`), run_id and the noise floor (`floor`, from `floor_text` / `floor_reused`; pass None only
+    for tables that are not error tables). `floor` has no default so that no caption can omit it silently."""
     ids = f"`{run_ids}`" if isinstance(run_ids, str) else ", ".join(f"`{r}`" for r in run_ids)
-    return f"*Split: {split}. Target: {target}. {prov}. run_id: {ids}.*" + (f" {extra}" if extra else "") + "\n"
+    return (f"*Split: {split}. Target: {target}. {prov}. run_id: {ids}." + (f" {floor[0].upper()}{floor[1:]}." if floor else "") + "*"
+            + (f" {extra}" if extra else "") + "\n")
 
 
 # ------------------------------------------------------------------ pooled metrics with intervals
@@ -254,12 +261,22 @@ def worst_table(df: pd.DataFrame, configs: pd.DataFrame, qc: pd.DataFrame, k: in
     return pd.DataFrame(rows)
 
 
+def restrict_to_nov(pooled: pd.DataFrame, configs: pd.DataFrame) -> pd.DataFrame:
+    """Rows of the pooled run whose test configuration is on the nov2026 rig: the v2-only run's test set."""
+    nov = set(configs.loc[configs["rig"] == "nov2026", "config_key"])
+    return pooled[pooled["config_key"].isin(nov)]
+
+
 def v2_vs_pooled(pooled: pd.DataFrame, v2only: pd.DataFrame, configs: pd.DataFrame, n_boot: int, seed: int) -> tuple:
     """S-LOMO YOLO folds, energy: training on v1+v2 against training on `rig == nov2026` rows only, scored on
     the same test configurations (the nov2026 ones: the v2-only run cannot test on v1 rows). Returns
     (table, n, note on the paired AUTO comparison)."""
-    nov = set(configs.loc[configs["rig"] == "nov2026", "config_key"])
-    p = pooled[pooled["config_key"].isin(nov)]
+    p = restrict_to_nov(pooled, configs)
+    got = set(zip(p.loc[p["candidate"] == "AUTO", "fold"], p.loc[p["candidate"] == "AUTO", "config_key"]))
+    want = set(zip(v2only.loc[v2only["candidate"] == "AUTO", "fold"], v2only.loc[v2only["candidate"] == "AUTO", "config_key"]))
+    if got != want:
+        raise ValueError(f"pooled and v2-only runs do not score the same (fold, configuration) pairs: "
+                         f"{len(got - want)} only in pooled, {len(want - got)} only in v2-only")
     a = pooled_table(p, "S-LOMO", n_boot, seed).set_index("candidate")
     b = pooled_table(v2only, "S-LOMO", n_boot, seed).set_index("candidate")
     rows = []

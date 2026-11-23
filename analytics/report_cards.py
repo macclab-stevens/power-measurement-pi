@@ -34,6 +34,13 @@ def _head(title: str, a, what: str) -> list:
             "Full results: `results.md`.\n"]
 
 
+def _floors(a) -> str:
+    """Noise floors of the three Mode A targets (power has none)."""
+    f = lambda t: f"{rt.pct(a.noise[t])} %" if a.noise[t] == a.noise[t] else "not defined"
+    return (f"noise floors (median repeat CV, configurations with at least 2 cells): energy {f('energy_mJ')}, "
+            f"latency {f('latency_ms')}, mean power {f('mean_P_W')}")
+
+
 def _list(title: str, items) -> list:
     return [f"## {title}\n", *[f"- {x}" for x in items], "\n"]
 
@@ -49,7 +56,7 @@ def _worst(df: pd.DataFrame, by: str, k: int = 3) -> pd.DataFrame:
 
 
 def mode_a_card(a) -> str:
-    cap = lambda target, extra="": rt.caption(split="S-LOMO", target=target, prov=rt.version_text(a.configs, a.ma[("S-LOMO", target)].df["config_key"].unique()),
+    cap = lambda target, extra="": rt.caption(floor=rt.floor_text(a.noise["energy_mJ"], "energy_mJ"), split="S-LOMO", target=target, prov=rt.version_text(a.configs, a.ma[("S-LOMO", target)].df["config_key"].unique()),
                                               run_ids=a.ma[("S-LOMO", target)].run_id, extra=extra)
     L = _head("Model card: Mode A (a priori per-image predictor)", a,
               "Predicts energy per image (mJ), latency per image (ms) and mean power (W) of an image-inference configuration from the model "
@@ -77,7 +84,7 @@ def mode_a_card(a) -> str:
             rows.append({"target": t, "predictor": rt.SHORT[cand], "n": int(r["n"]), "MdAPE % [95 % CI]": rt.pct_ci(r["mdape"], r["mdape_lo"], r["mdape_hi"]),
                          "bias % [95 % CI]": rt.pct_ci(r["bias_pct"], r["bias_pct_lo"], r["bias_pct_hi"]), "coverage90": r["coverage90"],
                          "run_id": a.ma[("S-LOMO", t)].run_id})
-    L += ["## Headline metrics\n", rt.caption(split="S-LOMO", target="energy_mJ, latency_ms, mean_P_W",
+    L += ["## Headline metrics\n", rt.caption(floor=_floors(a), split="S-LOMO", target="energy_mJ, latency_ms, mean_P_W",
                                              prov=rt.version_text(c, a.ma[("S-LOMO", "energy_mJ")].df["config_key"].unique()),
                                              run_ids=[a.ma[("S-LOMO", t)].run_id for t in ri_targets()],
                                              extra="Pooled over test configurations; intervals are cluster bootstrap over base models."),
@@ -100,7 +107,7 @@ def mode_a_card(a) -> str:
     fits = [{"target": t, "candidate": f.get("candidate"), "params": json.dumps(f.get("params"), sort_keys=True),
              "AUTO chose (folds)": json.dumps(f.get("auto_counts"), sort_keys=True), "sha256": f.get("sha256"),
              "run_id": f.get("run_id")} for t, f in a.extras["fits"].items()]
-    L += ["## Hashes and runs\n", rt.caption(split="all data", target="energy_mJ, latency_ms, mean_P_W", prov=f"n = {len(fits)} final models trained on {len(c)} configurations",
+    L += ["## Hashes and runs\n", rt.caption(floor=None, split="all data", target="energy_mJ, latency_ms, mean_P_W", prov=f"n = {len(fits)} final models trained on {len(c)} configurations",
                                            run_ids=[f["run_id"] for f in fits], extra="Final models are refitted on every configuration, grid chosen by leave-one-model-out; "
                                                                                     "binaries are not committed (rebuilt by `cli.py mode-a-extras`)."),
           ew.md_table(pd.DataFrame(fits)) + "\n",
@@ -138,16 +145,16 @@ def mode_l_card(a) -> str:
           "and cycle rates. L3: all counter rates (IPC, cache and branch miss rates, backend stall share, LLC misses, context switches, page faults), "
           "sysfs and settings. L4: L3 plus the PMIC features. All features use data available at the window's end.\n"]
     sh = tl.show_ladder(raw)[["rung", "n", "whole-cell MdAPE % [95 % CI]", "whole-cell bias % [95 % CI]", "1 s block APE %", "10 s block APE %"]]
-    L += ["## Headline metrics\n", rt.caption(split="leave one YOLO base model out", target="whole-cell energy", prov=report_l._prov(a), run_ids=ml["run_id"],
+    L += ["## Headline metrics\n", rt.caption(floor=report_l._floor(a), split="leave one YOLO base model out", target="whole-cell energy", prov=report_l._prov(a), run_ids=ml["run_id"],
                                              extra="Interval: cluster bootstrap over the 5 held-out base models."), ew.md_table(sh) + "\n",
           report_l.overhead_text(a) + "\n"]
     L += ["## Coverage\n", "Mode L produces point predictions only: no prediction intervals, so there is no coverage figure. The stated uncertainty is the "
           "bootstrap interval of the metric above.\n"]
     ph = tl.phase_table(lo)
-    L += ["## Worst subgroups\n", rt.caption(split="leave one YOLO base model out", target="whole-cell energy", prov=report_l._prov(a), run_ids=ml["run_id"],
+    L += ["## Worst subgroups\n", rt.caption(floor=report_l._floor(a), split="leave one YOLO base model out", target="whole-cell energy", prov=report_l._prov(a), run_ids=ml["run_id"],
                                              extra="Per held-out base model, median whole-cell APE of the rung with the lowest overall MdAPE among the non-exploratory rungs."),
           ew.md_table(_worst_folds(lo, raw)) + "\n",
-          rt.caption(split="leave one YOLO base model out", target="phase energy", prov=report_l._prov(a), run_ids=ml["run_id"], extra="Median APE per phase."),
+          rt.caption(floor=report_l._floor(a), split="leave one YOLO base model out", target="phase energy", prov=report_l._prov(a), run_ids=ml["run_id"], extra="Median APE per phase."),
           ew.md_table(ph) + "\n"]
     L += _list("Limitations", [*LIMITS_COMMON, *report_l.LIMITS,
                                "No Mode L model file is frozen yet: the final rung is refitted on all data when the lockbox is frozen."])
