@@ -81,6 +81,36 @@ def cmd_qc(args) -> int:
     return 0
 
 
+def cmd_tables(args) -> int:
+    import data
+    import derive
+    import pandas as pd
+    import runlog
+    import static
+    import tables
+    qc_path = REPORTS / "qc_cells.csv"
+    if not qc_path.is_file():
+        print(f"error: {qc_path} is missing; run `uv run python cli.py qc` first", file=sys.stderr)
+        return 1
+    cat = data.catalogue()
+    der = derive.derive_all(cat)
+    t = tables.mode_a_table(cat, der, pd.read_csv(qc_path), static.static_table(cat))
+    REPORTS.mkdir(exist_ok=True)
+    out = REPORTS / "mode_a_configs.csv"
+    t.to_csv(out, index=False)
+    nf = tables.noise_floor(t)
+    print(f"{len(t)} configurations from {int(t['n_cells'].sum())} cells -> {out}")
+    print("configurations per base model:")
+    print(t.groupby("base_model").size().to_string())
+    src = cat.set_index("cell_id")["source"]
+    by_src = t["cell_ids"].map(lambda ids: "+".join(sorted({src[i] for i in ids.split(";")})))
+    print("configurations per source:")
+    print(by_src.value_counts().to_string())
+    print(f"noise floor (median energy_cv, n_cells >= 2): {nf:.5f}")
+    runlog.append({"command": "tables", "n_configs": len(t), "noise_floor": nf})
+    return 0
+
+
 def add_derive_args(p) -> None:
     p.add_argument("--force", action="store_true", help="ignore the cache and recompute")
 
@@ -92,6 +122,8 @@ COMMANDS = {
                "difference", cmd_derive, add_derive_args),
     "qc": ("apply data-quality rules Q1-Q6 to every cell; write reports/qc_cells.csv and reports/qc.md",
            cmd_qc, None),
+    "tables": ("write reports/mode_a_configs.csv (one row per Mode A configuration; needs reports/"
+               "qc_cells.csv from `qc`)", cmd_tables, None),
 }
 
 
