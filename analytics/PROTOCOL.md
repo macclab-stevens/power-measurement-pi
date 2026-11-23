@@ -104,3 +104,12 @@ under-voltage bits were current in any cell (all non-zero words are the 0x50000 
   was informed by a scored fold. Also: Mode L folds are the 5 YOLO models with counter cells
   (yolov8n has none: its v2 cells are the counters-off `ref` family).
 
+- 2026-11-23, lockbox freeze (Task 16b, before any lockbox cell exists): every model the lockbox is scored with
+  is fitted on all training data once and pickled under `derived/models/` with its sha256 in `runs.jsonl`:
+  Mode A primary = the AUTO-final candidate per target (`mode-a-extras`), secondary = B3 (all targets) and M3
+  (energy) (`final-mode-a-secondary`); Mode L = all eight rungs (`final-mode-l`; grid by leave-one-YOLO-model-out,
+  refit on every QC-primary counter cell). Pre-declared secondary Mode L rungs: L0, L1, L3-trees, L4-trees (the
+  rest are reported too). `lockbox-predict` writes `reports/lockbox_predictions.csv` (committed before any
+  lockbox cell is measured; intervals from the candidate's master-seed S-LOMO residual quantiles, applicability
+  flag from the S-LOMO novelty threshold); `lockbox-score` loads the frozen pickles (sha256-checked) and that file,
+  fits nothing, and writes `reports/lockbox.md`. The lockbox is scored once; any later change is exploratory.

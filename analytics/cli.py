@@ -6,6 +6,7 @@ Later tasks add a subcommand by writing one `cmd_<name>(args)` function (plus an
 import argparse
 import sys
 
+import cli_lockbox
 import cli_report
 import settings
 
@@ -400,6 +401,7 @@ COMMANDS = {
 
 
 COMMANDS.update(cli_report.COMMANDS)
+COMMANDS.update(cli_lockbox.COMMANDS)
 
 
 def build_parser() -> argparse.ArgumentParser:

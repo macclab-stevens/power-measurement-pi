@@ -81,3 +81,11 @@ def real_data():
     if not (root / "v2" / "cells").is_dir():
         pytest.skip("real dataset not present")
     return root
+
+
+@pytest.fixture(scope="session")
+def lockbox_env(tmp_path_factory):
+    """Synthetic frozen Mode A / Mode L models, S-LOMO runs and static CSVs (built once per session; the
+    ANALYTICS_DATA of the tests that use it is set by the tests themselves)."""
+    import synth_lockbox
+    return synth_lockbox.build(tmp_path_factory.mktemp("lockbox_env"))
