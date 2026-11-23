@@ -88,14 +88,14 @@ Mode L produces point predictions only: no prediction intervals, so there is no 
 - Counter data is YOLO-only until the lockbox adds non-YOLO cells; Mode L folds are the five YOLO models with counter cells (yolov8n has none: its v2 cells are the counters-off `ref` family).
 - Perf runs during deployment too, so its overhead is inside both the training data and any later use.
 - One Raspberry Pi 5 and one Monsoon rig; nothing here transfers to other boards or meters.
-- The eight rungs are frozen (`final-mode-l`): each was fitted once on 161 cells (198,619 windows) of YOLO v8/11 models; non-YOLO models are an extrapolation the lockbox tests. A refit after the lockbox is measured is refused.
+- The eight rungs are frozen (`final-mode-l`): each was fitted once on 161 cells (198,619 windows) of YOLO v8/11 models; non-YOLO models are an extrapolation the lockbox tests. A refit is refused from `lockbox-predict` onward (once `lockbox_predictions.csv` or `lockbox_frozen_models.json` exists), and always once lockbox cells exist.
 
 
 ## Hashes and runs
 
 Pickles are not committed. Each is identified by the sha256 recorded in `runs.jsonl` (command `mode-a-extras`, `final-mode-a-secondary` or `final-mode-l`); `lockbox-predict` and `lockbox-score` refuse a pickle whose hash differs, and the fit commands refuse to run once `lockbox_predictions.csv` or `lockbox_frozen_models.json` exists. The `file` column compares the pickle on the machine that built this card with the recorded hash.
 
-*Split: all training data. Target: frozen Mode A models. n = 7 frozen Mode A models. run_id: `2543bfac27da45c8bfaf5c92fbd1e31e`, `a730e59128f34439a920bd73dfe2b696`, `14fe0b4726384159b316722b224172c3`, `b4a2507e14b64bb883685408481acc74`, `329a9d1abd9543e68044a4449ad811f5`, `9130b293320c4c9899231458cc1135d9`, `953612c6e9c44922839f9b62cc2bb400`.* Mode L rungs are fitted on every QC-primary counter cell of the YOLO base models. Roles: `primary` is the AUTO-final candidate of the target (`mode-a-extras`), `secondary` the pre-declared extras (`final-mode-a-secondary`). 
+*Split: all training data. Target: frozen Mode A models. n = 7 frozen Mode A models. run_id: `2543bfac27da45c8bfaf5c92fbd1e31e`, `a730e59128f34439a920bd73dfe2b696`, `14fe0b4726384159b316722b224172c3`, `b4a2507e14b64bb883685408481acc74`, `329a9d1abd9543e68044a4449ad811f5`, `9130b293320c4c9899231458cc1135d9`, `953612c6e9c44922839f9b62cc2bb400`.* `mode-a-extras` and `final-mode-a-secondary`: trained on all 58 Mode A configurations, grid chosen by leave-one-model-out. Roles: `primary` is the AUTO-final candidate of the target (`mode-a-extras`), `secondary` the pre-declared extras (`final-mode-a-secondary`). 
 
 | target | candidate | role | params | sha256 | run_id | command | trained on | AUTO chose (folds) | S-LOMO run | file |
 |---|---|---|---|---|---|---|---|---|---|---|
