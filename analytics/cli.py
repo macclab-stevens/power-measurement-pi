@@ -134,8 +134,74 @@ def cmd_splits(args) -> int:
     return 0
 
 
+def _mode_a_inputs():
+    """(configuration table, model descriptor) for Mode A, or None if the table is missing."""
+    import data
+    import pandas as pd
+    import static
+    src = REPORTS / "mode_a_configs.csv"
+    if not src.is_file():
+        print(f"error: {src} is missing; run `uv run python cli.py tables` first", file=sys.stderr)
+        return None
+    return pd.read_csv(src), static.model_descriptor(static.static_table(data.catalogue()))
+
+
+def cmd_mode_a(args) -> int:
+    import tempfile
+    import time
+    import uuid
+    import evaluate
+    import mode_a
+    import runlog
+    import splits
+    inputs = _mode_a_inputs()
+    if inputs is None:
+        return 1
+    t, desc = inputs
+    seed = args.seed if args.seed is not None else settings.seed()
+    sp = splits.make_splits(t, seed)
+    names = [args.split] if args.split else list(sp)
+    unknown = [n for n in names if n not in sp]
+    if unknown:
+        print(f"error: unknown split {unknown}; expected one of {list(sp)}", file=sys.stderr)
+        return 1
+    targets = [args.target] if args.target else list(mode_a.CANDIDATES_BY_TARGET)
+    table_sha = runlog.file_hash(REPORTS / "mode_a_configs.csv")
+    out = settings.derived_dir() / "mode_a"
+    out.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as tmp:   # hash of the folds actually used (RANDOM depends on seed)
+        used = splits.write_splits({n: sp[n] for n in names}, tmp)
+    for name in names:
+        committed = settings.HERE / "splits" / f"{name}.csv"
+        for target in targets:
+            t0 = time.perf_counter()
+            res = mode_a.run_split(t, sp[name], target, seed, desc, n_jobs=args.n_jobs)
+            wall = time.perf_counter() - t0
+            per = {c: {**evaluate.metrics(g["y_true"], g["y_pred"]),
+                       "coverage90": evaluate.coverage(g["y_true"], g["lo90"], g["hi90"])}
+                   for c, g in res.groupby("candidate", sort=False)}
+            run_id = uuid.uuid4().hex
+            res.to_parquet(out / f"{run_id}.parquet", index=False)
+            runlog.append({"run_id": run_id, "command": "mode-a", "split": name, "target": target, "seed": seed,
+                           "split_sha256": used[f"{name}.csv"],
+                           "split_file_sha256": runlog.file_hash(committed) if committed.is_file() else None,
+                           "table_sha256": table_sha, "n_jobs": args.n_jobs, "metrics": per,
+                           "wall_s": round(wall, 1)})
+            auto = per["AUTO"]
+            print(f"{name} {target}: {len(sp[name])} folds, AUTO MdAPE {auto['mdape']:.4f}, "
+                  f"coverage {auto['coverage90']:.2f}, {wall:.0f} s -> {out / (run_id + '.parquet')}")
+    return 0
+
+
 def add_derive_args(p) -> None:
     p.add_argument("--force", action="store_true", help="ignore the cache and recompute")
+
+
+def add_mode_a_args(p) -> None:
+    p.add_argument("--split", help="one of S-LOMO S-LSO S-LVO S-LCO RANDOM (default: all)")
+    p.add_argument("--target", choices=["energy_mJ", "latency_ms", "mean_P_W"], help="default: all three")
+    p.add_argument("--seed", type=int, help="default: the config.toml seed")
+    p.add_argument("--n-jobs", type=int, default=2, help="outer folds in parallel (default 2)")
 
 
 # name -> (help, handler, optional function adding arguments to the subparser)
@@ -149,6 +215,8 @@ COMMANDS = {
                "qc_cells.csv from `qc`)", cmd_tables, None),
     "splits": ("write analytics/splits/<split>.csv from reports/mode_a_configs.csv; print sha256 per file",
                cmd_splits, None),
+    "mode-a": ("nested Mode A evaluation per split and target -> derived/mode_a/<run_id>.parquet and runs.jsonl",
+               cmd_mode_a, add_mode_a_args),
 }
 
 
