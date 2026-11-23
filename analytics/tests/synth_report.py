@@ -106,8 +106,11 @@ def make_inputs(root, seeds=(MASTER, MASTER + 1, MASTER + 2)) -> ri.Paths:
                        for i, h in enumerate(splits.YOLO) for k in (2, 3, 4, 5)])
     rid = uuid.uuid4().hex
     lc.to_parquet(p.extras_dir / f"{rid}.parquet", index=False)
-    _log(p.runs_log, {"run_id": rid, "command": "mode-a-extras", "part": "learning_curve", "seed": MASTER, "target": "energy_mJ",
-                      "candidate": "M1Ridge", "params": {"alpha": 1.0}})
+    slomo_id = next(json.loads(ln)["run_id"] for ln in p.runs_log.read_text().splitlines()
+                    if '"split": "S-LOMO"' in ln and '"target": "energy_mJ"' in ln and f'"seed": {MASTER}' in ln)
+    _log(p.runs_log, {"run_id": rid, "command": "learning-curve", "part": "learning_curve", "seed": MASTER, "target": "energy_mJ",
+                      "candidate": "M1Ridge", "params_by_heldout": {h: {"alpha": 10.0 ** (i - 2)} for i, h in enumerate(splits.YOLO)},
+                      "params_source_run_id": slomo_id, "max_subsets": 10})
     nov_cfg = configs[configs["rig"] == "nov2026"]
     for training in ("pooled", "v2only"):
         t = configs if training == "pooled" else nov_cfg

@@ -130,9 +130,10 @@ def load_extras(paths: Paths, recs: list, seed: int) -> dict:
         if not hits:
             raise ReportInputError(f"no final-model fit for target {target} with seed {seed}; run `{cmd} --seed {seed}`")
         fits[target] = hits[-1]
-    rec = latest(recs, paths.extras_dir, command="mode-a-extras", part="learning_curve", seed=seed)
+    rec = latest(recs, paths.extras_dir, command="learning-curve", part="learning_curve", seed=seed)
     if rec is None:
-        raise ReportInputError(f"no learning-curve output with seed {seed}; run `{cmd} --seed {seed}`")
+        raise ReportInputError(f"no learning-curve output with seed {seed} (the one logged by `mode-a-extras` used final-fit hyperparameters "
+                               f"that saw the held-out model and is not accepted); run `uv run python cli.py learning-curve --seed {seed}`")
     out = {"fits": fits, "learning_curve": ref_of(rec, paths.extras_dir)}
     for training in ("pooled", "v2only"):
         r = latest(recs, paths.extras_dir, command="mode-a-extras", part="v2_vs_pooled", training=training, seed=seed)

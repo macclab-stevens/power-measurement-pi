@@ -245,11 +245,14 @@ def section_learning(a: Analysis) -> list:
     lc = a.extras["learning_curve"]
     rec = lc.rec
     name = figs.learning_curve(lc.df, a.paths.fig_dir)
+    params = "; ".join(f"{h}: " + ", ".join(f"{k}={v:g}" for k, v in p.items()) for h, p in sorted((rec.get("params_by_heldout") or {}).items()))
     return ["## 6. Learning curve\n",
             rt.caption(floor=nf_energy(a), split="S-LOMO YOLO folds", target="energy_mJ", prov=f"n = {len(lc.df)} fits",
-                       run_ids=lc.run_id, extra=f"Candidate {rt.SHORT.get(rec.get('candidate'), rec.get('candidate'))} with the final-fit "
-                                                f"hyperparameters (no inner search); seed {rec.get('seed')}; at most 10 training subsets per k, all other "
-                                                f"configurations (non-YOLO) always in training."),
+                       run_ids=[lc.run_id, rec.get("params_source_run_id")],
+                       extra=f"Candidate {rt.SHORT.get(rec.get('candidate'), rec.get('candidate'))}, no inner search; each held-out model is fitted with "
+                             f"the hyperparameters its own S-LOMO outer fold chose (second run id; these never saw the held-out model): {params}; "
+                             f"seed {rec.get('seed')}; at most {rec.get('max_subsets', 10)} training subsets per k, all other "
+                             f"configurations (non-YOLO) always in training."),
             md(rt.learning_table(lc.df)), figs.fig_link(a.paths, name, "MdAPE against number of training YOLO models")]
 
 

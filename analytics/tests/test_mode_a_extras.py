@@ -2,6 +2,7 @@
 import json
 import os
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -44,7 +45,8 @@ def extras_run(tmp_path_factory):
             res = mode_a.run_split(t, [f for f in splits.make_splits(t, MASTER)["S-LOMO"]], target, MASTER, desc, grids=SMALL_GRIDS)
             res.to_parquet(paths.mode_a_dir / f"{target}.parquet")
             runlog.append({"run_id": target, "command": "mode-a", "split": "S-LOMO", "target": target, "seed": MASTER}, paths.runs_log)
-        out = ex.run(t, desc, MASTER, paths, grids=SMALL_GRIDS, max_subsets=3)
+        out = ex.run(t, desc, MASTER, paths, grids=SMALL_GRIDS)
+        out["lc"] = ex.run_learning_curve(t, desc, MASTER, paths, max_subsets=3)
         yield t, paths, out
     finally:
         os.environ.pop("ANALYTICS_DATA", None)
@@ -61,13 +63,70 @@ def test_final_fits_are_logged_with_sha256_and_the_auto_choice(extras_run):
     assert out["fits"]["energy_mJ"]["candidate"] == fits["energy_mJ"]["candidate"]
 
 
-def test_learning_curve_uses_the_energy_fit_and_is_saved(extras_run):
+def test_extras_run_no_longer_runs_the_learning_curve(extras_run):
     t, paths, out = extras_run
-    lc = pd.read_parquet(paths.extras_dir / f"{out['learning_curve']}.parquet")
+    assert "learning_curve" not in out and not [r for r in ri.read_records(paths.runs_log)
+                                                if r.get("command") == "mode-a-extras" and r.get("part") == "learning_curve"]
+
+
+def slomo_df(**alpha):
+    """S-LOMO frame whose M1Ridge rows carry a different alpha in every fold (and AUTO rows another candidate)."""
+    rows = [{"fold": f, "candidate": "M1Ridge", "params": json.dumps({"alpha": a})} for f, a in alpha.items()]
+    rows += [{"fold": f, "candidate": "AUTO", "params": json.dumps({"candidate": "M2Trees", "params": {}})} for f in alpha]
+    return pd.DataFrame(rows)
+
+
+def test_slomo_params_are_the_candidates_params_of_each_outer_fold():
+    got = ex.slomo_params(slomo_df(yolo11n=0.01, yolov8m=100.0), "M1Ridge")
+    assert got == {"yolo11n": {"alpha": 0.01}, "yolov8m": {"alpha": 100.0}}
+    with pytest.raises(ValueError, match="M2Trees"):
+        ex.slomo_params(slomo_df(yolo11n=0.01), "M2Trees")
+
+
+def test_learning_curve_uses_each_held_out_models_own_outer_fold_hyperparameters(extras_run):
+    t, paths, out = extras_run
+    recs = ri.read_records(paths.runs_log)
+    lc_rec = ri.latest_record(recs, command="learning-curve", part="learning_curve")
+    slomo = ri.latest_record(recs, command="mode-a", split="S-LOMO", target="energy_mJ")
+    assert lc_rec["params_source_run_id"] == slomo["run_id"] == "energy_mJ" and lc_rec["candidate"] == "M1Ridge"
+    df = pd.read_parquet(paths.mode_a_dir / "energy_mJ.parquet")
+    want = {f: json.loads(g["params"].iloc[0]) for f, g in df[df["candidate"] == "M1Ridge"].groupby("fold")}
+    assert {h: want[h] for h in splits.YOLO} == lc_rec["params_by_heldout"]
+    lc = pd.read_parquet(paths.extras_dir / f"{out['lc']['run_id']}.parquet")
     assert set(lc["k"]) == {2, 3, 4, 5} and set(lc["heldout"]) == set(splits.YOLO)
-    rec = [r for r in ri.read_records(paths.runs_log) if r.get("part") == "learning_curve"][0]
-    fit = [r for r in ri.read_records(paths.runs_log) if r.get("part") == "fit_final" and r["target"] == "energy_mJ"][0]
-    assert rec["candidate"] == fit["candidate"] and rec["params"] == fit["params"]
+
+
+def test_learning_curve_fits_each_held_out_model_with_its_own_alpha_and_not_the_final_fit_alpha():
+    from test_mode_a import make_dataset
+    t, desc = make_dataset([*splits.YOLO], clocks=(1500, 2400), threads=(4,))
+    t["rig"] = "nov2026"
+    own = {h: {"alpha": 1e-2 if i % 2 else 1e4} for i, h in enumerate(splits.YOLO)}
+    lc = ex.learning_curve_per_fold(t, "energy_mJ", MASTER, "M1Ridge", own, desc, max_subsets=2)
+    import mode_a_models as mm
+    h = splits.YOLO[0]
+    others = [m for m in splits.YOLO if m != h]
+    row = lc[(lc["heldout"] == h) & (lc["k"] == 5)].iloc[0]
+    train, test = t[t["base_model"].isin(others)], t[t["base_model"] == h]
+    for alpha, equal in ((own[h]["alpha"], True), (own[splits.YOLO[1]]["alpha"], False)):
+        yhat = mm.CANDIDATES["M1Ridge"]().fit(train, "energy_mJ", {"alpha": alpha}).predict(test)
+        m = float(np.median(np.abs(yhat - test["energy_mJ"].to_numpy(float)) / test["energy_mJ"].to_numpy(float)))
+        assert (abs(row["mdape"] - m) < 1e-12) == equal
+    with pytest.raises(ValueError, match="params"):
+        ex.learning_curve_per_fold(t, "energy_mJ", MASTER, "M1Ridge", {h: own[h]}, desc)
+
+
+def test_a_learning_curve_line_of_the_old_extras_command_is_not_accepted(extras_run):
+    t, paths, out = extras_run
+    recs = [r for r in ri.read_records(paths.runs_log) if r.get("command") != "learning-curve"]
+    old = {**ri.latest_record(ri.read_records(paths.runs_log), command="learning-curve"), "command": "mode-a-extras"}
+    with pytest.raises(ri.ReportInputError, match="learning-curve"):
+        ri.load_extras(paths, [*recs, old], MASTER)
+
+
+def test_learning_curve_command_is_registered_and_needs_no_final_fit():
+    import cli
+    args = cli.build_parser().parse_args(["learning-curve", "--seed", "7", "--max-subsets", "4"])
+    assert args.seed == 7 and args.max_subsets == 4
 
 
 def test_v2_only_run_trains_and_tests_on_nov2026_rows_only_over_yolo_folds(extras_run):

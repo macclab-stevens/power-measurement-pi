@@ -1,5 +1,6 @@
 """Results report and model cards on synthetic run outputs: headings, provenance of every table, exploratory
 labels, claim logic and clear failures for missing inputs. Nothing here touches analytics/reports/."""
+import json
 import re
 import time
 import shutil
@@ -158,6 +159,16 @@ def test_a_missing_frozen_model_is_named_in_the_card(tmp_path):
     assert "not frozen: L4-trees" in files["model_card_mode_l.md"]
 
 
+def test_learning_curve_section_names_the_per_fold_hyperparameters_and_their_source_run(built, analysis):
+    text = built[1]["results.md"].split("## 6. Learning curve")[1].split("## 7.")[0]
+    rec = analysis.extras["learning_curve"].rec
+    assert rec["params_source_run_id"] in text and "outer fold" in text.replace("outer-fold", "outer fold")
+    for h, p in rec["params_by_heldout"].items():
+        assert h in text and f"alpha={p['alpha']:g}" in text
+    assert "final-fit hyperparameters" not in text
+    assert analysis.extras["learning_curve"].rec["command"] == "learning-curve"
+
+
 def test_seed_spread_lists_the_seeds_present(tmp_path):
     paths = make_inputs(tmp_path, seeds=(MASTER,))
     a = report.analyse(paths, seed=MASTER, n_boot=N_BOOT, family=family_map(), cell_config=cell_config_map())
@@ -192,7 +203,7 @@ def test_missing_mode_l_and_extras_name_their_commands(tmp_path):
     paths = make_inputs(tmp_path / "b")
     shutil.rmtree(paths.extras_dir)
     paths.extras_dir.mkdir()
-    with pytest.raises(ri.ReportInputError, match=r"cli\.py mode-a-extras"):
+    with pytest.raises(ri.ReportInputError, match=r"cli\.py learning-curve"):
         report.analyse(paths, seed=MASTER, n_boot=N_BOOT)
 
 
