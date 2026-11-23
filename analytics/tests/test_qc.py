@@ -247,8 +247,9 @@ def test_run_qc_collapses_hashed_labels(tmp_path, monkeypatch):
     assert "bench:*" in md and "## Excluded cells" in md and "none." in md
 
 
-def test_config_has_initial_bounds():
-    assert settings.cfg()["qc"] == BOUNDS
+def test_config_has_protocol_bounds():
+    # protocol amendment: Q1 flag bound raised from 0.01 to 0.03; all other bounds unchanged
+    assert settings.cfg()["qc"] == {**BOUNDS, "q1_ctx_frac_flag": 0.03}
 
 
 def test_real_cells(real_data):
