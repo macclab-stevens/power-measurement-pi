@@ -111,6 +111,29 @@ def cmd_tables(args) -> int:
     return 0
 
 
+def cmd_splits(args) -> int:
+    import pandas as pd
+    import runlog
+    import splits
+    src = REPORTS / "mode_a_configs.csv"
+    if not src.is_file():
+        print(f"error: {src} is missing; run `uv run python cli.py tables` first", file=sys.stderr)
+        return 1
+    t = pd.read_csv(src)
+    seed = settings.seed()
+    sp = splits.make_splits(t, seed)
+    outdir = settings.HERE / "splits"
+    hashes = splits.write_splits(sp, outdir)
+    for name, folds in sp.items():
+        print(f"{name}: {len(folds)} folds -> {outdir / (name + '.csv')}")
+        for f in folds:
+            print(f"  {f.fold} [{f.similarity_class}] train {len(f.train_keys)} test {len(f.test_keys)}")
+    for name, h in hashes.items():
+        print(f"sha256 {h}  {name}")
+    runlog.append({"command": "splits", "seed": seed, "n_configs": len(t), "sha256": hashes})
+    return 0
+
+
 def add_derive_args(p) -> None:
     p.add_argument("--force", action="store_true", help="ignore the cache and recompute")
 
@@ -124,6 +147,8 @@ COMMANDS = {
            cmd_qc, None),
     "tables": ("write reports/mode_a_configs.csv (one row per Mode A configuration; needs reports/"
                "qc_cells.csv from `qc`)", cmd_tables, None),
+    "splits": ("write analytics/splits/<split>.csv from reports/mode_a_configs.csv; print sha256 per file",
+               cmd_splits, None),
 }
 
 
