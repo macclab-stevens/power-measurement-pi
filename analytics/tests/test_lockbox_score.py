@@ -2,6 +2,7 @@
 import dataclasses
 import json
 import shutil
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
@@ -60,7 +61,8 @@ def env(lockbox_env, tmp_path, monkeypatch):
     paths = dataclasses.replace(lockbox_env.paths, runs_log=log, out_dir=tmp_path / "out")
     lb.run_predict(paths, CONFIGS, lockbox_env.static_dir, MASTER, t=lockbox_env.t, desc_train=lockbox_env.desc, idle=idle())
     cat, der, qc_t, qc_l, w = inputs()
-    return paths, dict(cat=cat, der=der, qc_train=qc_t, qc_l=qc_l, w=w), lockbox_env
+    later = datetime.now(timezone.utc) + timedelta(days=1)          # the lockbox is measured after the predictions
+    return paths, dict(cat=cat, der=der, qc_train=qc_t, qc_l=qc_l, w=w, starts={c: later for c in qc_l["cell_id"]}), lockbox_env
 
 
 def score(env):
@@ -186,7 +188,7 @@ def test_report_and_outputs_record_hashes_and_the_scored_once_statement(env):
         if r.get("command") in ("final-mode-l", "mode-a-extras") and r.get("part") == "fit_final":
             assert r["sha256"] in text
     rec = [r for r in ri.read_records(paths.runs_log) if r.get("command") == "lockbox-score"][-1]
-    assert rec["predictions_sha256"] == sha and rec["run_id"] == out["run_id"] and rec["predictions_found_in_runlog"]
+    assert rec["predictions_sha256"] == sha and rec["run_id"] == out["run_id"] and rec["predict_run_id"] == out["rec"]["predict_run_id"]
     import settings
     for part in ("truth", "mode_a_scores", "calculator", "mode_l_cells", "probe"):
         assert (settings.derived_dir() / "lockbox" / f"{out['run_id']}_{part}.parquet").is_file()
@@ -208,7 +210,7 @@ def _rewrite(paths, edit):
 
 def test_score_refuses_a_changed_mode_l_pickle(env):
     _rewrite(env[0], lambda r: r.update(sha256="a" * 64) if r.get("command") == "final-mode-l" and r["rung"] == "L3-trees" else None)
-    with pytest.raises(lb.LockboxError, match="changed after it was frozen"):
+    with pytest.raises(lb.LockboxError, match="refitted after the predictions"):
         score(env)
 
 
@@ -217,6 +219,10 @@ def test_score_refuses_predictions_written_with_other_models(env):
     pred = pd.read_csv(paths.out_dir / lb.PREDICTIONS_CSV)
     pred.loc[pred["candidate"] == "B3LogLinear", "model_sha256"] = "c" * 64
     pred.to_csv(paths.out_dir / lb.PREDICTIONS_CSV, index=False)
+    sha = lb.runlog.file_hash(paths.out_dir / lb.PREDICTIONS_CSV)
+    _rewrite(paths, lambda r: r.update(predictions_sha256=sha) if r.get("command") == "lockbox-predict" else None)
+    man = paths.out_dir / lb.MANIFEST
+    man.write_text(json.dumps({**json.loads(man.read_text()), "predictions_sha256": sha}))     # a consistent forgery of the file
     with pytest.raises(lb.LockboxError, match="was written with"):
         score(env)
 
@@ -254,3 +260,98 @@ def test_bad_config_specs_are_rejected():
         with pytest.raises(lb.LockboxError, match="bad --config"):
             lb.parse_config(bad)
     assert lb.parse_config("yolo11n-seg:640") == ("yolo11n-seg", 640)
+
+
+# ------------------------------------------------------------------ freeze verification
+
+def test_score_refuses_when_a_rung_is_refitted_after_predicting(env, tmp_path, monkeypatch):
+    paths, _, e = env
+    monkeypatch.setenv("ANALYTICS_DATA", str(tmp_path / "other_data"))        # the frozen pickles stay untouched
+    w, cat = make_windows(models=("yolov8n", "yolov8s", "yolov8m"), seed=99)
+    qc = pd.DataFrame({"cell_id": cat["cell_id"], "primary": True})
+    _, info = mode_l.fit_final(w, cat.assign(source="v2"), qc, "L2", MASTER, mlm.first_point(mlm.default_rungs()))
+    frozen = {r["rung"]: r for r in ri.read_records(paths.runs_log) if r.get("command") == "final-mode-l"}["L2"]
+    assert info["sha256"] != frozen["sha256"]
+    lb.runlog.append({"command": "final-mode-l", "part": "fit_final", "seed": MASTER, "rung": "L2", **info}, paths.runs_log)
+    monkeypatch.setenv("ANALYTICS_DATA", str(e.data))
+    with pytest.raises(lb.LockboxError, match="rung L2 was refitted after the predictions"):
+        score(env)
+
+
+def test_score_refuses_a_mode_l_pickle_that_no_longer_matches_its_line(env, tmp_path):
+    paths, _, _ = env
+    victim = [r for r in ri.read_records(paths.runs_log) if r.get("command") == "final-mode-l" and r["rung"] == "L3-trees"][-1]
+    bad = tmp_path / "mode_l_L3-trees.pkl"
+    bad.write_bytes(lb.frozen_path(victim).read_bytes() + b"\0")
+    _rewrite(paths, lambda r: r.update(path=str(bad)) if r.get("run_id") == victim["run_id"] else None)
+    with pytest.raises(lb.LockboxError, match="changed after it was frozen"):
+        score(env)
+
+
+def test_score_refuses_predictions_that_are_not_in_the_runlog(env):
+    paths = env[0]
+    recs = [x for x in paths.runs_log.read_text().splitlines() if '"lockbox-predict"' not in x]
+    paths.runs_log.write_text("\n".join(recs) + "\n")
+    with pytest.raises(lb.LockboxError, match="no `lockbox-predict` line"):
+        score(env)
+
+
+def test_score_refuses_predictions_written_after_the_cells_started(env):
+    paths, kw, _ = env
+    early = datetime.now(timezone.utc) - timedelta(days=1)
+    with pytest.raises(lb.LockboxError, match="after the earliest lockbox cell started"):
+        ls.run_score(paths, MASTER, **{**kw, "starts": {**kw["starts"], "mbv3_r1": early}})
+
+
+def test_score_refuses_a_missing_or_disagreeing_manifest(env):
+    paths = env[0]
+    man = paths.out_dir / lb.MANIFEST
+    good = man.read_text()
+    man.write_text(json.dumps({**json.loads(good), "mode_l": {}}))
+    with pytest.raises(lb.LockboxError, match="disagrees with the `lockbox-predict` runlog line"):
+        score(env)
+    man.unlink()
+    with pytest.raises(lb.LockboxError, match=lb.MANIFEST):
+        score(env)
+
+
+def test_probe_carries_the_frozen_primary_energy_run_id(env):
+    out = score(env)
+    rec = [r for r in ri.read_records(env[0].runs_log) if r.get("command") == "mode-a-extras" and r["target"] == "energy_mJ"][-1]
+    assert set(out["probe"]["mode_a_run_id"]) == {rec["run_id"]}
+
+
+def test_design_check_also_covers_input_quant_and_variant(env):
+    paths, kw, _ = env
+    for col, val in (("input_source", "camera"), ("quant", "int8"), ("variant", "yolo12n_pruned")):
+        cat = kw["cat"].copy()
+        cat.loc[cat["cell_id"] == "mbv3_r0", col] = val
+        with pytest.raises(ValueError, match=f"mbv3_r0.*{col}"):
+            ls.run_score(paths, MASTER, **{**kw, "cat": cat})
+
+
+def test_novelty_note_is_in_the_report(env):
+    assert "320 px configuration uses its 640 px architecture descriptor" in score(env)["report"].read_text()
+
+
+def test_cell_starts_take_the_earlier_of_run_meta_and_the_index(tmp_path, monkeypatch):
+    from conftest import make_cell
+    import data
+    monkeypatch.setenv("ANALYTICS_DATA", str(tmp_path))
+    t0 = datetime(2026, 12, 1, 12, 0, 0, tzinfo=timezone.utc)
+    make_cell(tmp_path, "lockbox", "a_r00", meta={"t0_real_ns": int(t0.timestamp() * 1e9)}, index={"started": "2026-12-01T05:00:00"})
+    make_cell(tmp_path, "lockbox", "b_r00", meta={"t0_real_ns": int(t0.timestamp() * 1e9)})
+    cat = data.catalogue()
+    st = ls.cell_starts(cat[cat["source"] == "lockbox"])
+    assert st["b_r00"] == t0
+    assert st["a_r00"] == datetime.fromisoformat("2026-12-01T05:00:00").astimezone(timezone.utc) < t0
+
+
+@pytest.mark.parametrize("argv", [["final-mode-l"], ["final-mode-a-secondary"], ["mode-a-extras"]])
+def test_final_commands_refuse_once_lockbox_cells_exist(argv, tmp_path, monkeypatch, capsys):
+    (tmp_path / "lockbox" / "cells" / "x_r00").mkdir(parents=True)
+    monkeypatch.setenv("ANALYTICS_DATA", str(tmp_path))
+    assert cli.main(argv) == 1
+    err = capsys.readouterr().err
+    assert "lockbox cells already exist" in err and argv[0] in err
+    assert not (tmp_path / "derived" / "models").exists()

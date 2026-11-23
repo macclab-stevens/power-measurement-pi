@@ -4,7 +4,9 @@ Truth comes from the lockbox cells only (QC, derive, windows). Mode A prediction
 committed lockbox_predictions.csv (its sha256 is recorded); Mode L uses the frozen window-model pickles
 (sha256-checked against runs.jsonl). The calculator takes the frozen Mode A AUTO-final predictions, the
 measured serve duration and request count, and the idle power of the TRAINING cells."""
+import json
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -30,10 +32,16 @@ TARGET_COL = {"energy_mJ": "energy_mJ", "latency_ms": "latency_ms", "mean_P_W": 
 
 
 def check_design(cat_l: pd.DataFrame) -> None:
-    """Every lockbox cell is fp32, batch 1, 4 threads, 2400 MHz pinned, fan full, nov2026, image task, with no
-    serve sweep, soak or concurrency (the default serve phase of every cell is not a sweep). Raises ValueError."""
+    """Every lockbox cell is fp32 (quant fp32, variant = base model), batch 1, 4 threads, 2400 MHz pinned, fan
+    full, nov2026, image task, repeat input, with no serve sweep, soak or concurrency (the default serve phase
+    of every cell is not a sweep). Raises ValueError."""
     for _, r in cat_l.iterrows():
         bad = [f"{k}={r[k]!r}" for k, v in DESIGN.items() if r[k] != v]
+        for k, v in (("input_source", "repeat"), ("quant", "fp32")):
+            if r[k] != v:
+                bad.append(f"{k}={r[k]!r}")
+        if r["variant"] != r["base_model"]:
+            bad.append(f"variant={r['variant']!r} (base_model {r['base_model']!r})")
         for k in ("serve_fps", "soak_minutes"):
             if not pd.isna(r[k]):
                 bad.append(f"{k}={r[k]!r}")
@@ -211,6 +219,8 @@ def render(*, truth, mode_a, summary_a, calc, calc_summary, l_cells, l_summary, 
            "## Provenance\n",
            f"- predictions file `{prov['predictions_csv']}` sha256 `{prov['predictions_sha256']}` "
            f"(written by `lockbox-predict` run `{prov.get('predict_run_id')}`)",
+           f"- frozen-models manifest `analytics/reports/{lb.MANIFEST}` (checked against the runlog line); predictions "
+           f"written {prov['predict_ts']}, earliest lockbox cell started {prov['first_start']}",
            f"- scoring run `{prov['run_id']}`; earlier scoring runs: {prov['n_earlier']}",
            f"- lockbox cells {prov['n_cells']} ({prov['n_primary']} QC-primary): {', '.join(prov['cell_ids'])}",
            "- frozen Mode A models (candidate / target: sha256, runlog run):"]
@@ -219,7 +229,9 @@ def render(*, truth, mode_a, summary_a, calc, calc_summary, l_cells, l_summary, 
     out += [f"  - {k}: `{v[0]}` ({v[1]})" for k, v in prov["mode_l_models"].items()]
     out += ["", "## Measured configurations\n", md(truth[["base_model", "imgsz", "n_cells", "cell_ids", *TARGET_COL]])]
     out += ["## Mode A: pooled\n", "`new models` are those with novelty above 0 (outside the 9 training models); "
-            "resnet18 and mbv3 are training models, so their Mode A rows are in-sample.\n", md(summary_a),
+            "resnet18 and mbv3 are training models, so their Mode A rows are in-sample. Novelty is per base model: a "
+            "model's 320 px configuration uses its 640 px architecture descriptor (as in S-LOMO), so its novelty "
+            "equals that of its 640 px configuration.\n", md(summary_a),
             "## Mode A: per configuration\n",
             md(mode_a[["model", "imgsz", "target", "role", "candidate", "pred", "lo90", "hi90", "truth", "ape", "inside",
                        "flagged", "novelty"]])]
@@ -259,11 +271,77 @@ def require_lockbox(cat: pd.DataFrame) -> pd.DataFrame:
     return cat_l
 
 
+def cell_starts(cat_l: pd.DataFrame) -> dict:
+    """{cell_id: start time (UTC)} of the lockbox cells: the earlier of run_meta's `t0_real_ns` (Pi clock) and the
+    dataset index `started` (naive, read in this machine's time zone). LockboxError if a cell has neither."""
+    idx = data._load_indexes(settings.data_root()).get("lockbox")
+    out = {}
+    for _, r in cat_l.iterrows():
+        cands = []
+        try:
+            t0 = data.read_meta(r["path"]).get("t0_real_ns")
+            if t0:
+                cands.append(datetime.fromtimestamp(int(t0) / 1e9, timezone.utc))
+        except (OSError, ValueError):
+            pass
+        if idx is not None and r["cell_id"] in idx.index and pd.notna(idx.loc[r["cell_id"]].get("started")):
+            cands.append(datetime.fromisoformat(str(idx.loc[r["cell_id"], "started"])).astimezone(timezone.utc))
+        if not cands:
+            raise lb.LockboxError(f"cannot tell when lockbox cell {r['cell_id']} started (no t0_real_ns in run_meta.json, no `started` in the index)")
+        out[r["cell_id"]] = min(cands)
+    return out
+
+
+def check_freeze(recs: list, pred_sha: str, pred_path: Path, starts: dict, seed: int) -> dict:
+    """The `lockbox-predict` runlog line of this predictions file, after three checks: such a line exists, the
+    committed frozen-models manifest agrees with it and with the predictions file, and it was written before the
+    earliest lockbox cell started. Returns the line."""
+    rec = ri.latest_record(recs, command="lockbox-predict", predictions_sha256=pred_sha)
+    if rec is None:
+        raise lb.LockboxError(f"no `lockbox-predict` line in runs.jsonl has predictions sha256 {pred_sha}; {pred_path.name} is not "
+                              f"the file that was written (and recorded) by `lockbox-predict`")
+    first = min(starts.values())
+    written = datetime.fromisoformat(rec["ts"])
+    if written > first:
+        raise lb.LockboxError(f"the predictions were written at {rec['ts']}, after the earliest lockbox cell started "
+                              f"({first.isoformat(timespec='seconds')}); they are not pre-registered")
+    man = pred_path.with_name(lb.MANIFEST)
+    if not man.is_file():
+        raise lb.LockboxError(f"{man} is missing; `lockbox-predict` writes it next to the predictions and it is committed with them")
+    m = json.loads(man.read_text())
+    if m.get("predictions_sha256") != pred_sha or m.get("mode_l") != rec.get("mode_l_frozen"):
+        raise lb.LockboxError(f"{man.name} disagrees with the `lockbox-predict` runlog line {rec['run_id']} (predictions sha256 or "
+                              f"frozen Mode L models)")
+    return rec
+
+
+def frozen_mode_l(recs: list, predict_rec: dict, seed: int) -> tuple:
+    """({rung: unpickled model}, {rung: (sha256, run_id)}) of the Mode L models recorded by `lockbox-predict`. Each
+    must still be the latest `final-mode-l` fit of its rung and its pickle must hash to the recorded sha256."""
+    frozen, latest = predict_rec["mode_l_frozen"], lb.mode_l_refs(recs, seed)
+    models, ids = {}, {}
+    for name in mlm.default_rungs():
+        want = frozen.get(name)
+        if want is None:
+            raise lb.LockboxError(f"the `lockbox-predict` run {predict_rec['run_id']} recorded no frozen Mode L model for rung {name}")
+        if latest[name]["sha256"] != want["sha256"]:
+            raise lb.LockboxError(f"rung {name} was refitted after the predictions were written: the latest `final-mode-l` run "
+                                  f"{latest[name]['run_id']} has sha256 {latest[name]['sha256']}, frozen was {want['sha256']} "
+                                  f"(run {want['run_id']})")
+        rec = next((r for r in recs if r.get("run_id") == want["run_id"] and r.get("command") == "final-mode-l"), None)
+        if rec is None or rec["sha256"] != want["sha256"]:
+            raise lb.LockboxError(f"the frozen `final-mode-l` run {want['run_id']} of rung {name} is not in runs.jsonl")
+        models[name], ids[name] = lb.load_frozen(rec), (rec["sha256"], rec["run_id"])
+    return models, ids
+
+
 def run_score(paths: ri.Paths, seed: int, *, cat: pd.DataFrame, der: pd.DataFrame, qc_train: pd.DataFrame,
-              qc_l: pd.DataFrame, w: pd.DataFrame) -> dict:
+              qc_l: pd.DataFrame, w: pd.DataFrame, starts: dict) -> dict:
     """Score everything once and write lockbox.md, the parquets under derived/lockbox/ and one runlog line.
-    Fits nothing: Mode A predictions come from the committed predictions CSV (its model sha256 must equal the
-    frozen pickles' runlog lines, and each pickle is checked), Mode L from the frozen rung pickles."""
+    Fits nothing: Mode A predictions come from the committed predictions CSV and Mode L from the frozen rung
+    pickles. Refuses unless the predictions file is the one `lockbox-predict` recorded, was written before the
+    earliest of `starts` ({cell_id: start}), every Mode A model still has the sha256 the CSV was written with
+    and every Mode L rung is still the frozen one (`check_freeze`, `frozen_mode_l`)."""
     cat_l = require_lockbox(cat)
     cat_t = cat[cat["source"] != "lockbox"]
     check_design(cat_l)
@@ -273,21 +351,16 @@ def run_score(paths: ri.Paths, seed: int, *, cat: pd.DataFrame, der: pd.DataFram
         raise lb.LockboxError(f"{pred_path} is missing; it must be written and committed before the lockbox is measured "
                               f"(`uv run python cli.py lockbox-predict ...`)")
     pred, pred_sha = pd.read_csv(pred_path), runlog.file_hash(pred_path)
-    ma_models = {}
-    for target, cand, _, rec in lb.mode_a_refs(recs, seed):
+    predict_rec = check_freeze(recs, pred_sha, pred_path, starts, seed)
+    ma_models, refs = {}, lb.mode_a_refs(recs, seed)
+    for target, cand, _, rec in refs:
         lb.load_frozen(rec)                                           # sha256 check against runs.jsonl
         want = set(pred.loc[(pred["candidate"] == cand) & (pred["target"] == target), "model_sha256"])
         if want != {rec["sha256"]}:
             raise lb.LockboxError(f"{pred_path.name} was written with {cand}/{target} sha256 {sorted(want)}, but the "
                                   f"frozen model of runs.jsonl is {rec['sha256']}")
         ma_models[f"{cand} / {target}"] = (rec["sha256"], rec["run_id"])
-    l_models, l_ids = {}, {}
-    for name in mlm.default_rungs():
-        rec = ri.latest_record(recs, command="final-mode-l", part="fit_final", rung=name, seed=seed)
-        if rec is None:
-            raise lb.LockboxError(f"no frozen Mode L model for rung {name} with seed {seed}; run "
-                                  f"`uv run python cli.py final-mode-l --seed {seed}`")
-        l_models[name], l_ids[name] = lb.load_frozen(rec), (rec["sha256"], rec["run_id"])
+    l_models, l_ids = frozen_mode_l(recs, predict_rec, seed)
     run_id = uuid.uuid4().hex
     w = w[w["cell_id"].isin(qc_l.loc[qc_l["primary"].astype(bool), "cell_id"])] if len(w) else w
     truth = truth_table(cat_l, der, qc_l)
@@ -298,9 +371,8 @@ def run_score(paths: ri.Paths, seed: int, *, cat: pd.DataFrame, der: pd.DataFram
                 .reset_index() if len(calc) else pd.DataFrame())
     l_cells = mode_l_cells(w, cat_l, l_models) if len(w) else pd.DataFrame(columns=["cell_id", "rung", "model", "ape"])
     l_sum = summarise_mode_l(l_cells) if len(l_cells) else pd.DataFrame()
-    energy_ids = {c: r[1] for c, r in ma_models.items()}
-    probe = (probe_scores(l_cells, der, cat_l, pred, next((v for k, v in energy_ids.items() if k.endswith("/ energy_mJ")), None))
-             if len(l_cells) else pd.DataFrame())
+    energy_run_id = next(rec["run_id"] for t, _, role, rec in refs if t == "energy_mJ" and role == "primary")
+    probe = probe_scores(l_cells, der, cat_l, pred, energy_run_id) if len(l_cells) else pd.DataFrame()
     out_dir = settings.derived_dir() / "lockbox"
     out_dir.mkdir(parents=True, exist_ok=True)
     for name, df in (("truth", truth), ("mode_a_scores", scores), ("mode_a_summary", sum_a), ("calculator", calc),
@@ -308,9 +380,9 @@ def run_score(paths: ri.Paths, seed: int, *, cat: pd.DataFrame, der: pd.DataFram
         df.to_parquet(out_dir / f"{run_id}_{name}.parquet", index=False)
     prim = qc_l["primary"].astype(bool)
     earlier = sum(1 for r in recs if r.get("command") == "lockbox-score")
-    predict_rec = ri.latest_record(recs, command="lockbox-predict", predictions_sha256=pred_sha) or {}
     prov = {"predictions_csv": f"analytics/reports/{lb.PREDICTIONS_CSV}", "predictions_sha256": pred_sha,
-            "predict_run_id": predict_rec.get("run_id"), "run_id": run_id, "n_earlier": earlier,
+            "predict_run_id": predict_rec["run_id"], "predict_ts": predict_rec["ts"],
+            "first_start": min(starts.values()).isoformat(timespec="seconds"), "run_id": run_id, "n_earlier": earlier,
             "n_cells": len(cat_l), "n_primary": int(prim.sum()), "cell_ids": sorted(cat_l["cell_id"]),
             "mode_a_models": ma_models, "mode_l_models": l_ids}
     text = render(truth=truth, mode_a=scores, summary_a=sum_a, calc=calc, calc_summary=calc_sum, l_cells=l_cells,
@@ -318,7 +390,8 @@ def run_score(paths: ri.Paths, seed: int, *, cat: pd.DataFrame, der: pd.DataFram
     md_path = Path(paths.out_dir) / "lockbox.md"
     md_path.write_text(text)
     rec = runlog.append({"run_id": run_id, "command": "lockbox-score", "seed": seed, "predictions_sha256": pred_sha,
-                         "predictions_found_in_runlog": bool(predict_rec), "n_cells": len(cat_l), "n_primary": int(prim.sum()),
+                         "predict_run_id": predict_rec["run_id"], "predict_ts": predict_rec["ts"],
+                         "n_cells": len(cat_l), "n_primary": int(prim.sum()),
                          "n_earlier_scorings": earlier, "mode_a_models": ma_models, "mode_l_models": l_ids,
                          "mode_a_mdape": {f"{r.candidate}/{r.target}/{r.group}": r.mdape for r in sum_a.itertuples()},
                          "mode_l_median_ape": ({f"{r.family}/{r.rung}": r.median_ape for r in l_sum.itertuples()}

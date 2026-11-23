@@ -8,6 +8,7 @@ The lockbox (spec 9) is a few brand-new models measured AFTER every model is fro
   * predicts energy, latency and power with every frozen candidate, with a 90 % interval from that
     candidate's S-LOMO held-out log residuals and an applicability flag from the S-LOMO novelty threshold.
 Nothing here fits anything. Scoring is in `lockbox_score`."""
+import json
 import pickle
 from pathlib import Path
 
@@ -18,6 +19,7 @@ import deploy
 import mode_a
 import mode_a_extras
 import mode_a_models as mm
+import mode_l_models as mlm
 import report_inputs as ri
 import runlog
 import static
@@ -32,9 +34,11 @@ SERVE_REQUESTS = 10
 SERVE_GAP_S = 0.2
 PREDICTIONS_CSV = "lockbox_predictions.csv"
 SERVE_CSV = "lockbox_serve_predictions.csv"
+MANIFEST = "lockbox_frozen_models.json"
 FINAL_CMD = "uv run python cli.py mode-a-extras"
 SECONDARY_CMD = "uv run python cli.py final-mode-a-secondary"
 LOMO_CMD = "uv run python cli.py mode-l"
+FINAL_L_CMD = "uv run python cli.py final-mode-l"
 
 
 class LockboxError(RuntimeError):
@@ -115,6 +119,48 @@ def mode_a_refs(recs: list, seed: int) -> list:
     return out
 
 
+def mode_l_refs(recs: list, seed: int) -> dict:
+    """{rung: latest `final-mode-l` runlog record of `seed`} for all eight rungs; a missing rung raises
+    LockboxError naming the command."""
+    out = {}
+    for name in mlm.default_rungs():
+        rec = ri.latest_record(recs, command="final-mode-l", part="fit_final", rung=name, seed=seed)
+        if rec is None:
+            raise LockboxError(f"no frozen Mode L model for rung {name} with seed {seed}; run `{FINAL_L_CMD} --seed {seed}`")
+        out[name] = rec
+    return out
+
+
+def check_sha(rec: dict) -> str:
+    """The pickle's sha256 if it equals the runlog line's, else LockboxError (the file is not unpickled)."""
+    p = frozen_path(rec)
+    if not p.is_file():
+        raise LockboxError(f"frozen model {p} is missing")
+    got = runlog.file_hash(p)
+    if got != rec["sha256"]:
+        raise LockboxError(f"frozen model {p} has sha256 {got}, but runs.jsonl run {rec.get('run_id')} recorded "
+                           f"{rec['sha256']}; it was changed after it was frozen")
+    return got
+
+
+def mode_l_frozen(l_refs: dict) -> dict:
+    return {r: {"sha256": rec["sha256"], "run_id": rec["run_id"]} for r, rec in l_refs.items()}
+
+
+def manifest(seed: int, pred_sha: str, refs: list, l_refs: dict) -> dict:
+    """Content of reports/lockbox_frozen_models.json: every frozen model with its sha256 and the predictions CSV's."""
+    return {"seed": seed, "predictions_csv": PREDICTIONS_CSV, "predictions_sha256": pred_sha,
+            "mode_a": {f"{c}/{t}": {"role": role, "sha256": r["sha256"], "run_id": r["run_id"]} for t, c, role, r in refs},
+            "mode_l": mode_l_frozen(l_refs)}
+
+
+def refuse_if_lockbox_cells(what: str) -> None:
+    """`what` fits or freezes a model; it must not run once lockbox cells exist under ANALYTICS_DATA."""
+    if lockbox_cells_exist():
+        raise LockboxError(f"lockbox cells already exist; `{what}` would not be a pre-lockbox freeze and is refused "
+                           f"(models are frozen before the lockbox is measured)")
+
+
 # ------------------------------------------------------------------ intervals, novelty, threshold
 
 def interval_quantiles(slomo: pd.DataFrame, candidate: str) -> tuple:
@@ -164,7 +210,9 @@ def predict_table(feats: pd.DataFrame, shas: dict, refs: list, slomo: dict, desc
     nov = novelty_by_model(descriptor(desc_train, feats), feats["base_model"], train_models)
     rows = []
     for target, cand, role, rec in refs:
-        model = (models or {}).get((target, cand)) or load_frozen(rec)
+        model = (models or {}).get((target, cand))
+        if model is None:
+            model = load_frozen(rec)
         pred = np.asarray(model.predict(feats), float)
         q5, q95 = interval_quantiles(slomo[target], cand)
         thr = threshold_from_slomo(slomo[target])
@@ -219,9 +267,10 @@ def lockbox_cells_exist() -> bool:
 
 def run_predict(paths: ri.Paths, configs: list, static_dir, seed: int, *, t: pd.DataFrame, desc_train: pd.DataFrame,
                 idle: pd.DataFrame, force: bool = False) -> dict:
-    """Write reports/lockbox_predictions.csv (and the documentation-only serve prediction) and one runlog
-    line. `t` is the training configuration table (its base models are the training models), `desc_train`
-    the descriptor of those models, `idle` the idle table of the training cells. Refuses to run when any
+    """Write reports/lockbox_predictions.csv, reports/lockbox_frozen_models.json (every frozen Mode A and Mode L
+    model with its sha256, plus the predictions' sha256), the documentation-only serve prediction and one runlog
+    line (which also records `mode_l_frozen`). All eight Mode L rungs must be frozen (`final-mode-l`).
+    `t` is the training configuration table (its base models are the training models), `desc_train` the descriptor of those models, `idle` the idle table of the training cells. Refuses to run when any
     lockbox cell already exists (the predictions must precede the data) or when the file exists (unless
     `force`)."""
     out = Path(paths.out_dir) / PREDICTIONS_CSV
@@ -235,6 +284,9 @@ def run_predict(paths: ri.Paths, configs: list, static_dir, seed: int, *, t: pd.
         raise LockboxError("duplicate --config")
     recs = ri.read_records(paths.runs_log)
     refs = mode_a_refs(recs, seed)
+    l_refs = mode_l_refs(recs, seed)
+    for rec in l_refs.values():
+        check_sha(rec)
     slomo = slomo_runs(paths, recs, seed)
     feats, shas = feature_rows(pairs, static_dir)
     pred = predict_table(feats, shas, refs, {k: v.df for k, v in slomo.items()}, desc_train, set(t["base_model"]))
@@ -243,8 +295,12 @@ def run_predict(paths: ri.Paths, configs: list, static_dir, seed: int, *, t: pd.
     pred.to_csv(out, index=False)
     serve_out = out.with_name(SERVE_CSV)
     serve.to_csv(serve_out, index=False)
+    pred_sha = runlog.file_hash(out)
+    man_out = out.with_name(MANIFEST)
+    man_out.write_text(json.dumps(manifest(seed, pred_sha, refs, l_refs), indent=2, sort_keys=True) + "\n")
     rec = runlog.append({"command": "lockbox-predict", "seed": seed, "configs": configs, "n_rows": len(pred),
-                         "predictions_csv": str(out), "predictions_sha256": runlog.file_hash(out),
+                         "predictions_csv": str(out), "predictions_sha256": pred_sha,
+                         "mode_l_frozen": mode_l_frozen(l_refs), "manifest_sha256": runlog.file_hash(man_out),
                          "serve_csv_sha256": runlog.file_hash(serve_out),
                          "frozen": {f"{c}/{tg}": r["sha256"] for tg, c, _, r in refs},
                          "frozen_run_ids": {f"{c}/{tg}": r["run_id"] for tg, c, _, r in refs},
@@ -252,4 +308,4 @@ def run_predict(paths: ri.Paths, configs: list, static_dir, seed: int, *, t: pd.
                          "static_csv_sha256": {f"{m}:{s}": h for (m, s), h in shas.items()},
                          "n_flagged_primary": int(pred[pred["role"] == "primary"].groupby("config_key")["flagged"].any().sum())},
                         paths.runs_log)
-    return {"pred": pred, "serve": serve, "path": out, "rec": rec}
+    return {"pred": pred, "serve": serve, "path": out, "manifest": man_out, "rec": rec}

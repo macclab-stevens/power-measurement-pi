@@ -217,3 +217,37 @@ def test_mode_l_fit_final_ignores_lockbox_cells_and_picks_the_grid_by_inner_lomo
     assert info["params"] in mlm.default_rungs()["L2"].grid
     with pytest.raises(ValueError, match="unknown rung"):
         mode_l.fit_final(w, cat, qc, "L9", 1)
+
+
+# ------------------------------------------------------------------ frozen-models manifest
+
+def test_manifest_lists_every_frozen_model_and_the_predictions_sha(env):
+    paths, _ = env
+    out = predict(env)
+    man = json.loads(out["manifest"].read_text())
+    assert out["manifest"] == paths.out_dir / lb.MANIFEST
+    assert man["predictions_sha256"] == lb.runlog.file_hash(out["path"]) == out["rec"]["predictions_sha256"]
+    assert set(man["mode_l"]) == set(mlm.default_rungs()) and len(man["mode_a"]) == 7
+    recs = ri.read_records(paths.runs_log)
+    for name, v in man["mode_l"].items():
+        rec = ri.latest_record(recs, command="final-mode-l", part="fit_final", rung=name, seed=MASTER)
+        assert v == {"sha256": rec["sha256"], "run_id": rec["run_id"]}
+    assert out["rec"]["mode_l_frozen"] == man["mode_l"] and out["rec"]["manifest_sha256"] == lb.runlog.file_hash(out["manifest"])
+    assert man["mode_a"]["M1Ridge/energy_mJ"]["role"] == "primary" and man["mode_a"]["M3Factored/energy_mJ"]["role"] == "secondary"
+
+
+def test_predict_refuses_when_a_mode_l_rung_is_not_frozen_and_writes_nothing(env):
+    paths, _ = env
+    recs = [x for x in paths.runs_log.read_text().splitlines() if '"rung": "L4-trees"' not in x]
+    paths.runs_log.write_text("\n".join(recs) + "\n")
+    with pytest.raises(lb.LockboxError, match="L4-trees.*final-mode-l"):
+        predict(env)
+    assert not list(paths.out_dir.glob("lockbox_*")) if paths.out_dir.exists() else True
+
+
+def test_predict_refuses_a_changed_mode_l_pickle(env, tmp_path):
+    paths, _ = env
+    victim = ri.latest_record(ri.read_records(paths.runs_log), command="final-mode-l", part="fit_final", rung="L0")
+    with pytest.raises(lb.LockboxError, match="changed after it was frozen"):
+        lb.check_sha({**victim, "sha256": "d" * 64})
+    assert lb.check_sha(victim) == victim["sha256"]

@@ -1,6 +1,7 @@
 """Results report and model cards on synthetic run outputs: headings, provenance of every table, exploratory
 labels, claim logic and clear failures for missing inputs. Nothing here touches analytics/reports/."""
 import re
+import time
 import shutil
 import warnings
 
@@ -17,8 +18,12 @@ from synth_report import MASTER, family_map, make_configs, make_inputs, overhead
 N_BOOT = 15
 
 
+BUILD_START = {}      # time.time() at the start of `built`, before report.build: anything in the repo newer than this is a leak
+
+
 @pytest.fixture(scope="module")
 def built(tmp_path_factory):
+    BUILD_START["t0"] = time.time()
     root = tmp_path_factory.mktemp("report")
     paths = make_inputs(root)
     with warnings.catch_warnings():
@@ -363,9 +368,11 @@ def test_mode_l_ladder_rows_follow_the_protocol_order_with_exploratory_label(ana
 def test_no_output_is_written_outside_the_given_paths(built, tmp_path):
     paths, _ = built
     repo_reports = report.settings.HERE / "reports"
-    made = (paths.out_dir / "results.md").stat().st_mtime       # the committed report may exist: it must be older
-    assert not (repo_reports / "results.md").exists() or (repo_reports / "results.md").stat().st_mtime < made
-    assert all(f.stat().st_mtime < made for f in (repo_reports / "fig").glob("report_*.png"))
+    t0 = BUILD_START["t0"]
+    guarded = [repo_reports / "results.md", repo_reports / "model_card_mode_a.md", repo_reports / "model_card_mode_l.md",
+               *(repo_reports / "fig").glob("report_*.png")]
+    leaked = [f.name for f in guarded if f.exists() and f.stat().st_mtime >= t0]
+    assert not leaked, f"report.build/write touched the repo reports: {leaked}"
     assert (paths.out_dir / "results.md").is_file()
 
 

@@ -6,6 +6,12 @@ import settings
 
 
 def cmd_mode_a_extras(args) -> int:
+    import lockbox
+    try:
+        lockbox.refuse_if_lockbox_cells("mode-a-extras")
+    except lockbox.LockboxError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     import data
     import pandas as pd
     import report_inputs as ri

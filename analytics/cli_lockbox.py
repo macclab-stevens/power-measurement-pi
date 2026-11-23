@@ -15,6 +15,16 @@ def _seed(args) -> int:
     return args.seed if args.seed is not None else settings.seed()
 
 
+def _guard(what: str) -> int | None:
+    """1 (after printing why) when lockbox cells exist: nothing may be fitted or frozen from then on."""
+    import lockbox
+    try:
+        lockbox.refuse_if_lockbox_cells(what)
+    except lockbox.LockboxError as exc:
+        return _fail(exc)
+    return None
+
+
 def _training_catalogue():
     import data
     cat = data.catalogue()
@@ -22,6 +32,8 @@ def _training_catalogue():
 
 
 def cmd_final_mode_l(args) -> int:
+    if (bad := _guard("final-mode-l")) is not None:
+        return bad
     import pandas as pd
     import report_inputs as ri
     import mode_l
@@ -48,6 +60,8 @@ def cmd_final_mode_l(args) -> int:
 
 
 def cmd_final_mode_a_secondary(args) -> int:
+    if (bad := _guard("final-mode-a-secondary")) is not None:
+        return bad
     import pandas as pd
     import report_inputs as ri
     import static
@@ -114,7 +128,7 @@ def cmd_lockbox_score(args) -> int:
         der = derive.derive_all(cat, cache=True)
         qc_l = qc.run_qc(cat_l, der)
         out = ls.run_score(paths, _seed(args), cat=cat, der=der, qc_train=pd.read_csv(paths.qc_csv), qc_l=qc_l,
-                           w=ls.lockbox_windows(cat_l, qc_l))
+                           w=ls.lockbox_windows(cat_l, qc_l), starts=ls.cell_starts(cat_l))
     except (lockbox.LockboxError, ri.ReportInputError, ValueError) as exc:
         return _fail(exc)
     print(out["summary_a"].to_string(index=False))
