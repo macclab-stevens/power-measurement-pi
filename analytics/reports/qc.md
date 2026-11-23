@@ -4,7 +4,7 @@
 
 ## Bounds
 
-- `q1_ctx_frac_flag` = 0.01
+- `q1_ctx_frac_flag` = 0.03
 - `q2_max_residual_ms` = 1.0
 - `q3_slip_frac_flag` = 0.01
 - `q5_pv_rel_flag` = 0.02
@@ -17,7 +17,7 @@ Q1flag, Q3flag, Q5flag only annotate. Q2 and Q6 exclude (`include` False). Q4 ke
 
 |  | v1 | v2 | all |
 |---|---|---|---|
-| Q1flag | 92 | 136 | 228 |
+| Q1flag | 0 | 0 | 0 |
 | Q2 | 0 | 0 | 0 |
 | Q3flag | 5 | 24 | 29 |
 | Q4 | 0 | 0 | 0 |
