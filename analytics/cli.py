@@ -224,6 +224,54 @@ def cmd_deploy_validate(args) -> int:
     return 0
 
 
+def _energy_check(df, cat) -> str:
+    """Kept-window energy vs the trace energy over the same span, for the first QC-free v2 counter cell."""
+    import json
+    from pathlib import Path
+    import numpy as np
+    import data
+    cid = "yolo11n_480_t4_2400_r00"
+    cid = cid if cid in set(df["cell_id"]) else df["cell_id"].iloc[0]
+    cell = Path(cat.loc[cat["cell_id"] == cid, "path"].iloc[0])
+    w = df[df["cell_id"] == cid]
+    tr = data.read_trace(cell, ["t_pi_ns", "P_W"])
+    dt = 1.0 / json.loads((cell / "alignment.json").read_text())["slip_rate_hz"]
+    t = tr["t_pi_ns"].to_numpy()
+    m = (t > w["t_start_ns"].iloc[0]) & (t <= w["t_end_ns"].iloc[-1])
+    trace_e = float(np.nansum(tr["P_W"].to_numpy(dtype=float)[m]) * dt * 1000)
+    kept = float(w["E_mJ"].sum())
+    return f"{cid}: window E sum {kept:.1f} mJ, trace E {trace_e:.1f} mJ, rel diff {abs(kept - trace_e) / trace_e:.3e}"
+
+
+def cmd_windows(args) -> int:
+    import time
+    import data
+    import runlog
+    import windows
+    t0 = time.perf_counter()
+    cat = data.catalogue()
+    w = windows.build_windows(cat, force=args.force)
+    p = windows.build_pmic_windows(cat, force=args.force)
+    wall = time.perf_counter() - t0
+    rss_mb = windows._peak_rss_mb()
+    a = w.attrs
+    print(f"windows: {len(w)} rows from {w['cell_id'].nunique()} cells -> "
+          f"{settings.derived_dir() / windows.WINDOWS_CACHE}")
+    print(f"pmic windows: {len(p)} rows from {p['cell_id'].nunique()} cells -> "
+          f"{settings.derived_dir() / windows.PMIC_CACHE}")
+    print(f"dropped (cover_frac < {windows.MIN_COVER}): {a.get('dropped')} of {a.get('n_intervals')} intervals")
+    print(f"guarded windows (zero denominator): {a.get('guards')}; by feature {a.get('guards_by_feature')}")
+    print(f"windows with NaN counters (process not running): {a.get('ctr_nan')}")
+    print(f"PMIC pairs per cell (pairs: n windows-cells): {a.get('pmic_pairs')}; pmic {p.attrs.get('pmic_pairs')}")
+    print(f"wall time {wall:.1f} s, peak RSS {rss_mb:.0f} MB")
+    print(_energy_check(w, cat))
+    print(w.groupby("phase").size().sort_values(ascending=False).head(10).to_string())
+    runlog.append({"command": "windows", "n_windows": len(w), "n_pmic_windows": len(p),
+                   "dropped": a.get("dropped"), "guards": a.get("guards"), "wall_s": round(wall, 1),
+                   "peak_rss_mb": round(rss_mb)})
+    return 0
+
+
 def add_derive_args(p) -> None:
     p.add_argument("--force", action="store_true", help="ignore the cache and recompute")
 
@@ -250,6 +298,8 @@ COMMANDS = {
                cmd_mode_a, add_mode_a_args),
     "deploy-validate": ("validate the deployment calculator on serve, ondemand, fan and soak cells using the "
                         "latest S-LOMO Mode A runs -> reports/deploy_validation.csv", cmd_deploy_validate, None),
+    "windows": ("build derived/windows.parquet (100 ms counter windows) and derived/pmic_windows.parquet "
+                "(5 s PMIC windows); print drop, guard and memory figures", cmd_windows, add_derive_args),
 }
 
 
