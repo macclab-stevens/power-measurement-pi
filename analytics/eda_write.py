@@ -81,6 +81,57 @@ def share_pivot(sh: pd.DataFrame, order, extra=False) -> pd.DataFrame:
     return p.reset_index()
 
 
+# ------------------------------------------------------------------ data-driven sentences
+
+def fmt_icc(v: float) -> str:
+    """ICC with 5 decimals; a value that would round to 1.00000 is written '> 0.99999'; NaN is 'n/a'."""
+    if v is None or np.isnan(v):
+        return "n/a"
+    return "> 0.99999" if v >= 0.999995 else f"{v:.5f}"
+
+
+def icc_sentence(icc: float, span: float) -> str:
+    """Why the ICC is what it is, from its value and the energy range of the configurations behind it."""
+    rng = f" because the configurations span a {span:.0f}-fold energy range" if np.isfinite(span) and span >= 1.5 else ""
+    if np.isfinite(icc) and icc >= 0.9:
+        return f"The ICC is near 1{rng}; it says repeats separate configurations, while the CV above is the measure of repeat noise.\n"
+    return (f"The ICC is {fmt_icc(icc)}{rng}; repeats separate configurations only partly, and the CV above is the measure "
+            "of repeat noise.\n")
+
+
+def energy_span(multi: pd.DataFrame) -> float:
+    """max / min of the configuration mean energy per image over the configurations behind the ICC."""
+    e = pd.to_numeric(multi["energy_mJ"], errors="coerce") if len(multi) and "energy_mJ" in multi else pd.Series(dtype=float)
+    e = e[e > 0]
+    return float(e.max() / e.min()) if len(e) else float("nan")
+
+
+def bound_sentence(st: pd.DataFrame) -> str:
+    """Names the free fits that sit on a parameter bound; empty when none does."""
+    hit = st[(st["fit"] == "free") & st["converged"] & st["at_bound"]] if len(st) else st
+    if not len(hit):
+        return ""
+    names = ", ".join(f"{r.series} ({eda.VERSION.get(r.rig, r.rig)} rig)" for r in hit.itertuples())
+    return f"The free fit sits on a parameter bound (alpha or P_static limit) for {names}, so its parameters are not interpretable."
+
+
+def idle_alpha_sentence(st: pd.DataFrame, fw_alpha_min: float) -> str:
+    """How the free idle fits' alpha compare with the forward-power fits' smallest alpha."""
+    idl = st[(st["kind"] == "idle power") & (st["fit"] == "free") & st["converged"]]
+    if not len(idl):
+        return ""
+    lo, hi = idl["alpha"].min(), idl["alpha"].max()
+    rel = "below" if hi < fw_alpha_min else "above" if lo > fw_alpha_min else "overlapping"
+    return f"Free idle fits: alpha {lo:.2f}-{hi:.2f}, {rel} the forward-power alpha minimum of {fw_alpha_min:.2f}."
+
+
+def threads_sentence(model: str, imgsz, pct_vs_4t: float, energy_mJ: float, latency_ms: float) -> str:
+    """1-thread energy against 4 threads, whichever sign it has."""
+    how = ("the same energy per image as" if abs(pct_vs_4t) < 0.05 else
+           f"{abs(pct_vs_4t):.1f} % {'less' if pct_vs_4t < 0 else 'more'} energy per image than")
+    return f"{model} at {imgsz} px: 1 thread uses {how} 4 threads ({energy_mJ:.0f} mJ; latency {latency_ms:.0f} ms).\n"
+
+
 # ------------------------------------------------------------------ figures
 
 def fig_cv(multi, figdir):
@@ -191,10 +242,10 @@ def write_eda_config(cat, der, qc, cfgs, report_dir) -> str:
           "ICC(1,1) from a one-way random-effects ANOVA over configurations with >= 2 cells: "
           "`ICC = (MSB - MSW) / (MSB + (n0 - 1) MSW)` with `n0 = (N - sum n_i^2 / N) / (k - 1)` (unbalanced groups), "
           "k configurations, N cells, MSB and MSW the between- and within-configuration mean squares. "
-          f"On energy per image ({ir['k']} configurations, {ir['n_cells']} cells): ICC = {ir['icc']:.4f} "
+          f"On energy per image ({ir['k']} configurations, {ir['n_cells']} cells): ICC = {fmt_icc(ir['icc'])} "
           f"(between SD {np.sqrt(max(ir['var_between'], 0)):.0f} mJ, within SD {np.sqrt(ir['var_within']):.1f} mJ). "
-          f"On log energy: ICC = {il['icc']:.4f} (1 - ICC = {1 - il['icc']:.1e}; on raw energy {1 - ir['icc']:.1e}). The ICC is near 1 because the configurations span a 50-fold energy "
-          "range; it says repeats separate configurations, while the CV above is the measure of repeat noise.\n",
+          f"On log energy: ICC = {fmt_icc(il['icc'])} (1 - ICC = {1 - il['icc']:.1e}; on raw energy {1 - ir['icc']:.1e}). "
+          + icc_sentence(il["icc"], energy_span(rp["multi"])),
           "![CV of energy per image per configuration](fig/eda_cv_hist.png)\n"]
     fig_cv(rp["multi"], figdir)
 
@@ -218,9 +269,9 @@ def write_eda_config(cat, der, qc, cfgs, report_dir) -> str:
         fw, fr = st[(st["kind"] == "forward power") & (st["fit"] == "free")], st[(st["kind"] == "forward power") & (st["fit"] != "free")]
         L.append(f"Forward power, free fits: P_static < 0 in {int((fw['P_static'] < 0).sum())} of {len(fw)} series, alpha "
                  f"{fw['alpha'].min():.2f}-{fw['alpha'].max():.2f}; restricted fits: P_static = 0 in {int((fr['P_static'] < 1e-6).sum())}, "
-                 f"alpha {fr['alpha'].min():.2f}-{fr['alpha'].max():.2f}, worst residual {fr['max_abs_resid'].max():.3f} W. "
-                 "Idle power rises more slowly than that (see `alpha` of the idle rows); the free idle fit on the v2 rig "
-                 "sits on the alpha bound, so its parameters are not interpretable.\n" if len(fw) else "")
+                 f"alpha {fr['alpha'].min():.2f}-{fr['alpha'].max():.2f}, worst residual {fr['max_abs_resid'].max():.3f} W."
+                 + "".join(" " + x for x in (idle_alpha_sentence(st, fw["alpha"].min()), bound_sentence(st)) if x) + "\n"
+                 if len(fw) else "")
         fig_scaling(series, st, figdir)
         L.append("![Power against clock](fig/eda_clock_power.png)\n")
     else:
@@ -258,8 +309,7 @@ def write_eda_config(cat, der, qc, cfgs, report_dir) -> str:
                   md_table(pivot(g, "threads", "imgsz", "pct_vs_4t", "{:+.1f}"))]
         t1 = grid[(grid["threads"] == 1) & (grid["imgsz"] == grid["imgsz"].min())]
         for r in t1.itertuples():
-            L.append(f"{r.base_model} at {r.imgsz} px: 1 thread uses {-r.pct_vs_4t:.1f} % less energy per image than 4 "
-                     f"threads ({r.energy_mJ:.0f} mJ; latency {r.latency_ms:.0f} ms).\n")
+            L.append(threads_sentence(r.base_model, r.imgsz, r.pct_vs_4t, r.energy_mJ, r.latency_ms))
         fig_threads(grid, figdir)
         L.append("![Energy against image size by thread count](fig/eda_threads_imgsz.png)\n")
     L += ["### 4.2 Batch\n", f"Per-image energy, {', '.join(sorted(be['base_model'].unique()))} at 640 px, 4 threads, 2400 MHz, fp32, dataset "

@@ -18,7 +18,7 @@ Configurations pool cells across the v2 families that share a command line (for 
 
 **Noise floor** (median energy CV over those 58 configurations, the figure used in every error table): **0.57 %**.
 
-ICC(1,1) from a one-way random-effects ANOVA over configurations with >= 2 cells: `ICC = (MSB - MSW) / (MSB + (n0 - 1) MSW)` with `n0 = (N - sum n_i^2 / N) / (k - 1)` (unbalanced groups), k configurations, N cells, MSB and MSW the between- and within-configuration mean squares. On energy per image (58 configurations, 226 cells): ICC = 1.0000 (between SD 6180 mJ, within SD 39.6 mJ). On log energy: ICC = 1.0000 (1 - ICC = 4.9e-05; on raw energy 4.1e-05). The ICC is near 1 because the configurations span a 50-fold energy range; it says repeats separate configurations, while the CV above is the measure of repeat noise.
+ICC(1,1) from a one-way random-effects ANOVA over configurations with >= 2 cells: `ICC = (MSB - MSW) / (MSB + (n0 - 1) MSW)` with `n0 = (N - sum n_i^2 / N) / (k - 1)` (unbalanced groups), k configurations, N cells, MSB and MSW the between- and within-configuration mean squares. On energy per image (58 configurations, 226 cells): ICC = 0.99996 (between SD 6180 mJ, within SD 39.6 mJ). On log energy: ICC = 0.99995 (1 - ICC = 4.9e-05; on raw energy 4.1e-05). The ICC is near 1 because the configurations span a 174-fold energy range; it says repeats separate configurations, while the CV above is the measure of repeat noise.
 
 ![CV of energy per image per configuration](fig/eda_cv_hist.png)
 
@@ -57,7 +57,7 @@ ICC(1,1) from a one-way random-effects ANOVA over configurations with >= 2 cells
 
 curve_fit did not converge for: none (all fits converged).
 
-Forward power, free fits: P_static < 0 in 10 of 11 series, alpha 0.54-1.05; restricted fits: P_static = 0 in 10, alpha 1.01-1.26, worst residual 0.088 W. Idle power rises more slowly than that (see `alpha` of the idle rows); the free idle fit on the v2 rig sits on the alpha bound, so its parameters are not interpretable.
+Forward power, free fits: P_static < 0 in 10 of 11 series, alpha 0.54-1.05; restricted fits: P_static = 0 in 10, alpha 1.01-1.26, worst residual 0.088 W. Free idle fits: alpha 0.05-0.84, overlapping the forward-power alpha minimum of 0.54. The free fit sits on a parameter bound (alpha or P_static limit) for idle (v2 rig), so its parameters are not interpretable.
 
 ![Power against clock](fig/eda_clock_power.png)
 

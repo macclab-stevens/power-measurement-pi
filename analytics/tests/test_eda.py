@@ -269,3 +269,58 @@ def test_plotstyle_save(tmp_path):
     p = plotstyle.save(fig, "x", tmp_path)
     assert p == tmp_path / "x.png" and p.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
     assert plotstyle.DPI == 150
+
+
+# ------------------------------------------------------------------ data-driven narrative (Task CU item 7)
+
+def test_fmt_icc_never_rounds_up_to_one():
+    f = eda_write.fmt_icc
+    assert f(0.99996) == "0.99996" and f(0.999951) == "0.99995" and f(0.5) == "0.50000"
+    assert f(0.9999999) == "> 0.99999" and f(1.0) == "> 0.99999"
+    assert f(float("nan")) == "n/a" and "1.0000" not in f(0.99996)
+
+
+def test_icc_sentence_uses_the_computed_span_and_value():
+    near = eda_write.icc_sentence(0.99996, 37.4)
+    assert "37-fold" in near and "50-fold" not in near and "near 1" in near
+    low = eda_write.icc_sentence(0.4, 3.0)
+    assert "near 1" not in low and "0.40000" in low and "3-fold" in low
+    assert "-fold" not in eda_write.icc_sentence(0.99, float("nan"))
+    multi = pd.DataFrame({"energy_mJ": [100.0, 450.0, 1200.0]})
+    assert eda_write.energy_span(multi) == pytest.approx(12.0)
+    assert np.isnan(eda_write.energy_span(multi.iloc[0:0]))
+
+
+def _st(rows):
+    cols = ["series", "kind", "rig", "fit", "alpha", "converged", "at_bound"]
+    return pd.DataFrame(rows, columns=cols)
+
+
+def test_alpha_bound_sentence_only_when_a_free_fit_is_at_bound():
+    none = _st([("yolo11n", "forward power", "nov2026", "free", 0.8, True, False),
+                ("idle", "idle power", "nov2026", "free", 0.5, True, False),
+                ("yolo11n", "forward power", "nov2026", "P_static in [0, min P]", 1.1, True, True)])  # restricted: by design
+    assert eda_write.bound_sentence(none) == ""
+    hit = _st([("idle", "idle power", "oct2026", "free", 0.05, True, True)])
+    s = eda_write.bound_sentence(hit)
+    assert "idle (v1 rig)" in s and "not interpretable" in s
+    assert eda_write.bound_sentence(_st([])) == ""
+    both = _st([("idle", "idle power", "nov2026", "free", 0.3, True, False),
+                ("yolo11n", "forward power", "nov2026", "free", 0.7, True, False)])
+    assert "below" in eda_write.idle_alpha_sentence(both, 0.7) and "0.30-0.30" in eda_write.idle_alpha_sentence(both, 0.7)
+    assert "above" in eda_write.idle_alpha_sentence(both, 0.1)
+
+
+def test_threads_sentence_handles_both_signs():
+    less = eda_write.threads_sentence("yolo11n", 320, -14.1, 814.0, 113.0)
+    assert "14.1 % less energy" in less and "-14.1" not in less
+    more = eda_write.threads_sentence("yolo11s", 320, 6.3, 900.0, 140.0)
+    assert "6.3 % more energy" in more and "less" not in more
+    assert "the same energy" in eda_write.threads_sentence("m", 320, 0.0, 1.0, 1.0)
+
+
+def test_report_has_no_hard_coded_claims(synthetic, tmp_path):
+    cat, der, qc, cfgs = synthetic
+    md = eda.write_eda_config(cat, der, qc, cfgs, tmp_path / "rep")
+    assert "50-fold" not in md and "sits on the alpha bound" not in md
+    assert "ICC = 1.0000" not in md
