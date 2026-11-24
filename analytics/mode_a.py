@@ -3,8 +3,11 @@
 Leakage rule: everything that is fitted, selected or thresholded for an outer fold sees only that
 fold's training rows. `run_split` hands each outer fold a training frame and a test frame; the search
 (`_Search`) is built from the training frame alone, so test rows cannot reach a fit, a grid choice,
-an interval quantile or the applicability threshold. Inner folds are `splits.inner_folds` on the
-training frame (leave-one-base-model-out; leave-one-config-out with fewer than 3 models).
+an interval quantile or the applicability threshold. Inner folds mimic the outer split
+(`splits.inner_folds_for`, R2): leave-one-base-model-out for S-LOMO, leave-one-size-class / variant / clock out for
+S-LSO / S-LVO / S-LCO, random 5-fold for RANDOM and when the training frame has fewer than 3 such groups. The
+applicability threshold always comes from leave-one-base-model-out inner folds (novelty is a per-model notion).
+Prediction-interval quantiles weight every inner fold equally.
 
 Per outer fold and target (R2): for each candidate the grid point with the lowest inner BALANCED error
 is chosen (ties: first grid point). The balanced error is the mean over inner folds of the fold's median
@@ -96,12 +99,14 @@ def _check_table(t: pd.DataFrame) -> None:
 class _Search:
     """Inner-fold model selection over one training frame (the only data it can see)."""
 
-    def __init__(self, train_t: pd.DataFrame, desc: pd.DataFrame, grids: dict, seed: int | None = None):
+    def __init__(self, train_t: pd.DataFrame, desc: pd.DataFrame, grids: dict, seed: int | None = None,
+                 folds: list | None = None):
+        """`folds`: inner folds as (train_keys, val_keys); default leave-one-base-model-out."""
         _check_table(train_t)
         self.desc, self.grids, self.seed = desc, grids, seed
         by = train_t.set_index("config_key", drop=False)
         self.folds = [(by.loc[tr].reset_index(drop=True), by.loc[va].reset_index(drop=True))
-                      for tr, va in splits.inner_folds(train_t)]
+                      for tr, va in (splits.inner_folds(train_t) if folds is None else folds)]
         self.cache: dict = {}
 
     def truth(self, target: str) -> list:
@@ -114,6 +119,15 @@ class _Search:
             self.cache[key] = [np.asarray(_make(name, self.desc, self.seed).fit(tr, target, params).predict(va), float)
                                for tr, va in self.folds]
         return self.cache[key]
+
+    def preds_of(self, name: str, params: dict, target: str) -> list:
+        """Inner predictions per fold of a chosen candidate with its `select` params (a factored candidate's
+        energy predictions are the product of its parts')."""
+        if name in FACTORED and target == "energy_mJ":
+            parts = [self.inner_pred(params[k]["name"], params[k]["params"], tgt) if name == "M3Factored"
+                     else self.inner_pred(name, params[k], tgt) for k, tgt in PARTS.items()]
+            return [lat * pw for lat, pw in zip(*parts)]
+        return self.inner_pred(name, params, target)
 
     def _best(self, names, target: str):
         """(name, params, inner preds, balanced error) of the best grid point among `names`."""
@@ -149,17 +163,40 @@ class _Search:
                 "mdape": _mdape(_pooled(y), _pooled(preds))}
 
 
-def _interval(yhat: np.ndarray, resid: np.ndarray):
+def wquantile(values, weights, qs) -> np.ndarray:
+    """Weighted quantiles by linear interpolation of the weighted plotting positions
+    p_i = (cumulative weight up to and including i - w_i / 2) / total weight over the sorted values
+    (clamped to the extreme values outside [p_first, p_last]); equal weights give the positions (i + 1/2) / n."""
+    v, w = np.asarray(values, float), np.asarray(weights, float)
+    order = np.argsort(v, kind="stable")
+    v, w = v[order], w[order]
+    pos = (np.cumsum(w) - w / 2) / w.sum()
+    return np.interp(np.atleast_1d(np.asarray(qs, float)), pos, v)
+
+
+def _interval(yhat: np.ndarray, resid: np.ndarray, weights: np.ndarray | None = None):
     if resid.size < 2:
         nan = np.full(len(yhat), np.nan)
         return nan, nan.copy()
-    q5, q95 = np.quantile(resid, [0.05, 0.95])
+    w = np.ones(resid.size) if weights is None else weights
+    q5, q95 = wquantile(resid, w, [0.05, 0.95])
     return yhat * np.exp(q5), yhat * np.exp(q95)
 
 
-def _residuals(y_parts, p_parts) -> np.ndarray:
-    r = np.log(_pooled(y_parts)) - np.log(_pooled(p_parts))
-    return r[np.isfinite(r)]
+def _residuals(y_parts, p_parts) -> tuple:
+    """(finite log residuals log y - log p over the inner folds, weights): a fold's residuals each weigh
+    1 / (the number of its finite residuals), so every inner fold counts equally in the interval quantiles."""
+    res, wts = [], []
+    for y, p in zip(y_parts, p_parts):
+        with np.errstate(all="ignore"):
+            r = np.log(np.asarray(y, float)) - np.log(np.asarray(p, float))
+        r = r[np.isfinite(r)]
+        if r.size:
+            res.append(r)
+            wts.append(np.full(r.size, 1.0 / r.size))
+    if not res:
+        return np.empty(0), np.empty(0)
+    return np.concatenate(res), np.concatenate(wts)
 
 
 def _threshold(novelties, mdapes) -> float:
@@ -173,18 +210,24 @@ def _model_novelty(desc, model: str, train_models) -> float:
     return 0.0 if model in tm else mm.novelty_distance(desc, model, tm)
 
 
-def _run_fold(train_t, test_t, fold_info: tuple, target: str, seed: int, desc, grids: dict) -> pd.DataFrame:
-    """One outer fold from its training and test frames (the search never sees `test_t`)."""
+def _run_fold(train_t, test_t, fold_info: tuple, target: str, seed: int, desc, grids: dict,
+              index: int = 0) -> pd.DataFrame:
+    """One outer fold from its training and test frames (the search never sees `test_t`). `index` is the
+    position of the fold in its split (it seeds the random inner folds)."""
     split, fold, cls = fold_info
-    search = _Search(train_t, desc, grids, seed)
+    inner, scheme = splits.inner_folds_for(train_t, split, seed, index)
+    search = _Search(train_t, desc, grids, seed, inner)
     names = CANDIDATES_BY_TARGET[target]
     sel = {n: search.select(n, target) for n in names}
     auto = min(AUTO_AMONG[target], key=lambda n: sel[n]["score"])   # min keeps the first on ties
     truth = search.truth(target)
-    # applicability threshold from the inner folds (AUTO's chosen point)
+    # applicability threshold: novelty is a per-model notion, so always from leave-one-base-model-out inner
+    # folds (AUTO's chosen point; the selection folds themselves when they already are those)
+    lomo = search if scheme == "leave-one-model-out" else _Search(train_t, desc, grids, seed)
+    lomo_preds = sel[auto]["preds"] if lomo is search else lomo.preds_of(auto, sel[auto]["params"], target)
     novs = [max(_model_novelty(desc, m, tr["base_model"]) for m in set(va["base_model"]))
-            for tr, va in search.folds]
-    mdapes = [_mdape(y, p) for y, p in zip(truth, sel[auto]["preds"])]
+            for tr, va in lomo.folds]
+    mdapes = [_mdape(y, p) for y, p in zip(lomo.truth(target), lomo_preds)]
     threshold = _threshold(novs, mdapes)
     train_models = sorted(set(train_t["base_model"]))
     nov = {m: _model_novelty(desc, m, train_models) for m in sorted(set(test_t["base_model"]))}
@@ -195,8 +238,8 @@ def _run_fold(train_t, test_t, fold_info: tuple, target: str, seed: int, desc, g
 
     def block(label, name, params):
         s, yhat = sel[name], final[name]
-        resid = _residuals(truth, s["preds"])
-        lo, hi = _interval(yhat, resid)
+        resid, wts = _residuals(truth, s["preds"])
+        lo, hi = _interval(yhat, resid, wts)
         shown = params if label == name else {"candidate": name, "params": params}
         return pd.DataFrame({
             "split": split, "fold": fold, "similarity_class": cls, "config_key": test_t["config_key"].to_numpy(),
@@ -228,25 +271,36 @@ def run_split(t: pd.DataFrame, folds: list, target: str, seed: int, desc: pd.Dat
             raise ValueError(f"fold {f.split}/{f.fold}: keys not in the table: {sorted(missing)[:3]}")
         jobs.append((by.loc[list(f.train_keys)].reset_index(drop=True), by.loc[list(f.test_keys)].reset_index(drop=True),
                      (f.split, f.fold, f.similarity_class)))
-    res = Parallel(n_jobs=n_jobs)(delayed(_run_fold)(tr, te, info, target, seed, desc, grids)
-                                  for tr, te, info in jobs)
+    res = Parallel(n_jobs=n_jobs)(delayed(_run_fold)(tr, te, info, target, seed, desc, grids, i)
+                                  for i, (tr, te, info) in enumerate(jobs))
     return pd.concat(res, ignore_index=True) if res else pd.DataFrame(columns=OUT_COLS)
 
 
-def fit_final(t: pd.DataFrame, candidate: str, target: str, seed: int, desc: pd.DataFrame, grids: dict | None = None):
-    """Grid chosen by leave-one-model-out over all of `t`, refit on every row, pickled under
-    derived/models/. Returns (model, {"path", "sha256", "params"}). `seed` is the random_state of every
-    HistGradientBoostingRegressor (selection and final fit)."""
+REGIMES = ("new-model", "seen-model")
+
+
+def fit_final(t: pd.DataFrame, candidate: str, target: str, seed: int, desc: pd.DataFrame, grids: dict | None = None,
+              regime: str = "new-model"):
+    """Grid chosen over all of `t` by the balanced inner error, refit on every row, pickled under
+    derived/models/mode_a_{target}_{candidate}_{regime}.pkl. `regime` "new-model" selects with leave-one-base-
+    model-out inner folds (the model to predict is new), "seen-model" with random 5-fold folds over the
+    configurations (its base model is in training). Returns (model, {"path", "sha256", "params", "regime"}).
+    `seed` is the random_state of every HistGradientBoostingRegressor (selection and final fit) and seeds the
+    random inner folds."""
+    if regime not in REGIMES:
+        raise ValueError(f"unknown regime {regime!r}; expected one of {REGIMES}")
     grids = grids if grids is not None else mm.GRIDS
     if candidate not in mm.CANDIDATES:
         raise ValueError(f"unknown candidate {candidate!r}")
-    params = _Search(t, desc, grids, seed).select(candidate, target)["params"]
+    folds = splits.random_inner_folds(t, seed) if regime == "seen-model" else None
+    params = _Search(t, desc, grids, seed, folds).select(candidate, target)["params"]
     model = _make(candidate, desc, seed).fit(t.reset_index(drop=True), target, params)
     out = settings.derived_dir() / "models"
     out.mkdir(parents=True, exist_ok=True)
-    path = out / f"mode_a_{target}_{candidate}.pkl"
+    path = out / f"mode_a_{target}_{candidate}_{regime}.pkl"
     path.write_bytes(pickle.dumps(model))
-    return model, {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "params": params}
+    return model, {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "params": params,
+                   "regime": regime}
 
 
 def learning_curve(t: pd.DataFrame, target: str, seed: int, candidate: str, params: dict | None,

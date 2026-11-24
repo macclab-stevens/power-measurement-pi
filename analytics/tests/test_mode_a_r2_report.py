@@ -34,3 +34,13 @@ def test_build_contains_the_tables_for_both_revisions():
     assert "AUTO's choice per outer fold (R2): M4Physics x3" in md
     assert "| a | " in md and "## AUTO MdAPE (%) by split and target" in md and "| RANDOM | energy_mJ | - |" in md
     assert "| 7 |" in md
+
+
+def test_split_rows_lists_auto_and_m4_per_split_and_revision():
+    key = ("RANDOM", "energy_mJ")
+    r1 = frame(0.3, cands=("B3LogLinear", "AUTO"))      # R1 has no M4Physics
+    rows = rep.split_rows({key: r1}, {key: frame(0.1)}, {key: frame(0.2)})
+    assert {(r[0], r[1], r[2]) for r in rows} == {
+        ("RANDOM", "AUTO", "R2"), ("RANDOM", "AUTO", "R2 before inner-fold fix"), ("RANDOM", "AUTO", "R1"),
+        ("RANDOM", "M4Physics", "R2"), ("RANDOM", "M4Physics", "R2 before inner-fold fix")}
+    assert all(len(r) == 8 for r in rows)

@@ -286,7 +286,7 @@ def test_fit_final_pickles_and_hashes(tmp_path, monkeypatch):
     monkeypatch.setenv("ANALYTICS_DATA", str(tmp_path))
     t, desc = make_dataset(MODELS[:5])
     model, info = mode_a.fit_final(t, "M1Ridge", "energy_mJ", 1, desc, grids=SMALL_GRIDS)
-    path = tmp_path / "derived" / "models" / "mode_a_energy_mJ_M1Ridge.pkl"
+    path = tmp_path / "derived" / "models" / "mode_a_energy_mJ_M1Ridge_new-model.pkl"
     assert info["path"] == str(path) and path.is_file()
     assert info["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
     assert info["params"] in SMALL_GRIDS["M1Ridge"]
@@ -435,3 +435,70 @@ def test_m4_energy_params_are_the_parts_chosen_on_their_own_targets(synth_result
     p = json.loads(res.loc[res["candidate"] == "M4Physics", "params"].iloc[0])
     assert set(p) == {"latency", "power"} and p["latency"]["beta"] in (0.5, 0.75, 1.0)
     assert p["power"]["alpha"] in (0.01, 0.1, 1, 10, 100)
+
+
+# ---- R2: interval weights, threshold folds, regimes ---------------------------------------------------
+def test_wquantile_equal_weights_known_positions_and_weighting():
+    v = np.array([3.0, 1.0, 2.0, 4.0])
+    np.testing.assert_allclose(mode_a.wquantile(v, np.ones(4), [0.375, 0.5, 0.625]), [2.0, 2.5, 3.0])
+    np.testing.assert_allclose(mode_a.wquantile(v, np.ones(4), [0.0, 1.0]), [1.0, 4.0])   # clamped
+    # a heavy weight on the largest value pulls the median to it
+    assert mode_a.wquantile(v, np.array([1.0, 1.0, 1.0, 10.0]), 0.5)[0] > 3.5
+    # scaling all weights changes nothing
+    np.testing.assert_allclose(mode_a.wquantile(v, np.full(4, 7.0), 0.3), mode_a.wquantile(v, np.ones(4), 0.3))
+
+
+def test_residuals_weight_every_inner_fold_equally():
+    y = [np.ones(3), np.ones(1), np.array([1.0, 1.0])]
+    p = [np.exp([0.1, 0.2, 0.3]), np.array([np.nan]), np.exp([-0.5, -0.4])]
+    r, w = mode_a._residuals(y, p)
+    np.testing.assert_allclose(r, [-0.1, -0.2, -0.3, 0.5, 0.4])      # the NaN fold contributes nothing
+    np.testing.assert_allclose(w, [1 / 3] * 3 + [1 / 2] * 2)
+    assert w[:3].sum() == pytest.approx(w[3:].sum())
+    # the 2-residual fold weighs as much as the 3-residual one, so the weighted median is above the plain one
+    assert mode_a.wquantile(r, w, 0.5)[0] > mode_a.wquantile(r, np.ones(5), 0.5)[0] + 0.1
+
+
+def _as_split(folds, name):
+    return [splits.Fold(name, f.fold, f.similarity_class, f.train_keys, f.test_keys) for f in folds]
+
+
+def test_threshold_uses_leave_one_model_out_inner_folds_whatever_the_split():
+    t, desc = make_dataset(MODELS[:5])
+    fold = _as_split(lomo(t)[:1], "RANDOM")
+    res = mode_a.run_split(t, fold, "energy_mJ", 3, desc, grids=SMALL_GRIDS)
+    auto = res[res["candidate"] == "AUTO"]
+    spec = json.loads(auto["params"].iloc[0])
+    train = t[t["config_key"].isin(fold[0].train_keys)].reset_index(drop=True)
+    s = mode_a._Search(train, desc, SMALL_GRIDS, 3)          # leave-one-model-out
+    preds = s.preds_of(spec["candidate"], spec["params"], "energy_mJ") if spec["candidate"] in mode_a.FACTORED \
+        else s.inner_pred(spec["candidate"], spec["params"], "energy_mJ")
+    novs = [max(mode_a._model_novelty(desc, m, tr["base_model"]) for m in set(va["base_model"])) for tr, va in s.folds]
+    want = mode_a._threshold(novs, [mode_a._mdape(y, p) for y, p in zip(s.truth("energy_mJ"), preds)])
+    assert set(auto["threshold"]) == {want}
+
+
+def test_random_split_selects_on_random_inner_folds_and_is_deterministic_across_n_jobs():
+    t, desc = make_dataset(MODELS[:5])
+    folds = _as_split(lomo(t)[:3], "RANDOM")
+    a = mode_a.run_split(t, folds, "energy_mJ", 1, desc, n_jobs=1, grids=SMALL_GRIDS)
+    b = mode_a.run_split(t, folds, "energy_mJ", 1, desc, n_jobs=2, grids=SMALL_GRIDS)
+    pd.testing.assert_frame_equal(a, b, check_exact=True)
+    # random 5-fold inner folds: every training row is validated once, so n_resid is the training size
+    for f, g in a.groupby("fold"):
+        assert set(g["n_resid"]) == {len(t[t["base_model"] != f])}
+
+
+def test_fit_final_regimes_name_the_pickle_and_select_on_their_own_inner_folds(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANALYTICS_DATA", str(tmp_path))
+    t, desc = make_dataset(MODELS[:5])
+    _, new = mode_a.fit_final(t, "M1Ridge", "energy_mJ", 1, desc, grids=SMALL_GRIDS)
+    _, seen = mode_a.fit_final(t, "M1Ridge", "energy_mJ", 1, desc, SMALL_GRIDS, regime="seen-model")
+    assert new["regime"] == "new-model" and seen["regime"] == "seen-model"
+    assert new["path"].endswith("mode_a_energy_mJ_M1Ridge_new-model.pkl")
+    assert seen["path"].endswith("mode_a_energy_mJ_M1Ridge_seen-model.pkl") and new["path"] != seen["path"]
+    with pytest.raises(ValueError, match="regime"):
+        mode_a.fit_final(t, "M1Ridge", "energy_mJ", 1, desc, SMALL_GRIDS, regime="other")
+    # the seen-model choice is the one a random-5-fold search makes
+    folds = splits.random_inner_folds(t, 1)
+    assert seen["params"] == mode_a._Search(t, desc, SMALL_GRIDS, 1, folds).select("M1Ridge", "energy_mJ")["params"]

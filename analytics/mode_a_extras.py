@@ -66,7 +66,7 @@ def run(t: pd.DataFrame, desc: pd.DataFrame, seed: int, paths: ri.Paths, *, n_jo
         _, info = mode_a.fit_final(t, cand, target, seed, desc, grids)
         fits[target] = (cand, info)
         rec = runlog.append({"command": "mode-a-extras", "part": "fit_final", "seed": seed, "target": target, "candidate": cand,
-                             "params": info["params"], "path": info["path"], "sha256": info["sha256"], "auto_counts": counts,
+                             "params": info["params"], "regime": info["regime"], "path": info["path"], "sha256": info["sha256"], "auto_counts": counts,
                              "source_run_id": ref.run_id, "n_configs": len(t)}, paths.runs_log)
         summary["fits"][target] = rec
     summary["v2_vs_pooled"] = {}
@@ -163,5 +163,5 @@ def run_secondary(t: pd.DataFrame, desc: pd.DataFrame, seed: int, paths: ri.Path
             _, info = mode_a.fit_final(t, cand, target, seed, desc, grids)
             out[(target, cand)] = runlog.append(
                 {"command": "final-mode-a-secondary", "part": "fit_final", "seed": seed, "target": target, "candidate": cand,
-                 "params": info["params"], "path": info["path"], "sha256": info["sha256"], "n_configs": len(t)}, paths.runs_log)
+                 "params": info["params"], "regime": info["regime"], "path": info["path"], "sha256": info["sha256"], "n_configs": len(t)}, paths.runs_log)
     return out

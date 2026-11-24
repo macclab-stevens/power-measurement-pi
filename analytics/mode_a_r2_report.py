@@ -56,10 +56,25 @@ def _table(header: list, rows: list) -> list:
            ["| " + " | ".join(r) + " |" for r in rows]
 
 
-def build(r1: dict, r2: dict, seeds: dict | None = None) -> str:
+def split_rows(r1: dict, r2: dict, r2_prev: dict | None, target: str = "energy_mJ") -> list:
+    """Rows [split, candidate, revision, MdAPE, MAPE, MaxAPE, cov90, width] of AUTO and M4Physics per split."""
+    rows = []
+    for split in ri.SPLITS:
+        for cand in ("AUTO", "M4Physics"):
+            for label, d in (("R2", r2), ("R2 before inner-fold fix", r2_prev or {}), ("R1", r1)):
+                df = d.get((split, target))
+                if df is None or cand not in set(df["candidate"]):
+                    continue
+                r = candidate_stats(df).loc[cand]
+                rows.append([split, cand, label, _pct(r["mdape"]), _pct(r["mape"]), _pct(r["maxape"], 0),
+                             _num(r["coverage90"]), _num(r["width"])])
+    return rows
+
+
+def build(r1: dict, r2: dict, seeds: dict | None = None, r2_prev: dict | None = None) -> str:
     """Markdown from prediction frames keyed by (split, target) for R1 and R2 (a missing key is skipped);
-    `seeds` maps seed -> R2 S-LOMO energy frame."""
-    L = ["# Mode A, R2 against R1 (selection by the model-balanced inner error; R2 features; M4Physics)\n",
+    `seeds` maps seed -> R2 S-LOMO energy frame; `r2_prev` the R2 runs before the inner-fold fix."""
+    L = ["# Mode A, R2 against R1 (balanced selection on inner folds that mimic the outer split; R2 features; M4Physics)\n",
          "Exploratory R2 revision; the lockbox has been seen, so nothing here is a pre-registered result. Percent "
          "columns are percent. MdAPE is the median, MAPE the mean, MaxAPE the maximum and P90 the 90th percentile of "
          "|pred - y| / y; R2log is 1 - SSE/SST of log y on log pred; width is the median hi90 / lo90 of the 90 % "
@@ -92,6 +107,10 @@ def build(r1: dict, r2: dict, seeds: dict | None = None) -> str:
             m = evaluate.metrics(df[df["candidate"] == "AUTO"]["y_true"], df[df["candidate"] == "AUTO"]["y_pred"])
             rows.append([str(sd), _pct(m["mdape"]), _pct(m["mape"]), _pct(m["maxape"], 0)])
         L += _table(["seed", "MdAPE", "MAPE", "MaxAPE"], rows) + [""]
+    rows = split_rows(r1, r2, r2_prev)
+    if rows:
+        L += ["## Energy per image: AUTO and M4Physics on every split\n"]
+        L += _table(["split", "candidate", "revision", "MdAPE", "MAPE", "MaxAPE", "cov90", "width"], rows) + [""]
     L += ["## AUTO MdAPE (%) by split and target, R1 and R2\n"]
     rows = []
     for (split, target) in sorted(set(r1) | set(r2)):
@@ -107,19 +126,21 @@ def build(r1: dict, r2: dict, seeds: dict | None = None) -> str:
 
 
 def _runs(paths, recs, sha_now: str, seed: int) -> tuple:
-    r1, r2 = {}, {}
+    """(R1, R2, R2 before the inner-fold fix): per (split, target) the latest run of a different table, the
+    latest of this table and the one before it."""
+    r1, r2, prev = {}, {}, {}
     for split in ri.SPLITS:
         for target in ri.TARGETS:
-            for out, cmp in ((r2, lambda s: s == sha_now), (r1, lambda s: s != sha_now)):
-                best = None
-                for r in recs:
-                    if r.get("command") == "mode-a" and r.get("split") == split and r.get("target") == target \
-                            and r.get("seed") == seed and cmp(r.get("table_sha256")) \
-                            and (paths.mode_a_dir / f"{r['run_id']}.parquet").is_file():
-                        best = r
-                if best is not None:
-                    out[(split, target)] = ri.ref_of(best, paths.mode_a_dir).df
-    return r1, r2
+            hits = [r for r in recs if r.get("command") == "mode-a" and r.get("split") == split
+                    and r.get("target") == target and r.get("seed") == seed
+                    and (paths.mode_a_dir / f"{r['run_id']}.parquet").is_file()]
+            now = [r for r in hits if r.get("table_sha256") == sha_now]
+            old = [r for r in hits if r.get("table_sha256") != sha_now]
+            for out, rec in ((r2, now[-1] if now else None), (prev, now[-2] if len(now) > 1 else None),
+                             (r1, old[-1] if old else None)):
+                if rec is not None:
+                    out[(split, target)] = ri.ref_of(rec, paths.mode_a_dir).df
+    return r1, r2, prev
 
 
 def main() -> int:
@@ -127,14 +148,10 @@ def main() -> int:
     recs = ri.read_records(paths.runs_log)
     sha = runlog.file_hash(paths.configs_csv)
     seed = settings.seed()
-    r1, r2 = _runs(paths, recs, sha, seed)
-    seeds = {}
-    for sd in ri.SEED_SPREAD:
-        rec = ri.latest(recs, paths.mode_a_dir, command="mode-a", split="S-LOMO", target="energy_mJ", seed=sd, table_sha256=sha)
-        if rec is not None:
-            seeds[sd] = ri.ref_of(rec, paths.mode_a_dir).df
+    r1, r2, prev = _runs(paths, recs, sha, seed)
+    seeds = {}   # the extra seeds gave identical results and predate the inner-fold fix: not shown
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(build(r1, r2, seeds))
+    OUT.write_text(build(r1, r2, seeds, prev))
     print(f"wrote {OUT}: R1 runs {len(r1)}, R2 runs {len(r2)}, seeds {sorted(seeds)}")
     return 0
 

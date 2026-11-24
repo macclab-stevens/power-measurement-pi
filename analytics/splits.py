@@ -5,6 +5,7 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from sklearn.model_selection import KFold
 
@@ -128,3 +129,61 @@ def inner_folds(train_t: pd.DataFrame) -> list:
             if tr:
                 out.append((tr, [k]))
     return out
+
+
+# ---- inner folds that mimic the outer split ----------------------------------------------------------
+N_INNER_RANDOM = 5
+MIN_INNER_GROUPS = 3
+
+
+def random_inner_folds(train_t: pd.DataFrame, seed: int, index: int = 0) -> list:
+    """Random 5-fold over the configurations of `train_t` as (train_keys, val_keys), deterministic in
+    (`seed`, `index`) through numpy.random.default_rng([seed, index]) over the sorted keys; leave-one-config-out
+    with fewer than 5 configurations."""
+    keys = sorted(train_t["config_key"].astype(str))
+    if len(keys) < N_INNER_RANDOM:
+        return [([x for x in keys if x != k], [k]) for k in keys if len(keys) > 1]
+    perm = np.random.default_rng([int(seed), int(index)]).permutation(len(keys))
+    out = []
+    for chunk in np.array_split(perm, N_INNER_RANDOM):
+        va = sorted(keys[j] for j in chunk)
+        out.append(([k for k in keys if k not in set(va)], va))
+    return out
+
+
+def _inner_groups(train_t: pd.DataFrame, split: str) -> pd.Series | None:
+    """Group label of every row that the outer `split` could hold out (NaN: never held out), or None for a
+    split without a grouping (RANDOM) or an unknown one. Same columns as the outer folds: S-LOMO base_model,
+    S-LSO the model-size class n/s/m of `SIZE_PAIRS` (other models stay in training), S-LVO the variant of the
+    non-fp32 rows, S-LCO the pinned clock."""
+    if split == "S-LSO":
+        size = {m: s for s, pair in SIZE_PAIRS.items() for m in pair}
+        return train_t["base_model"].map(size)
+    if split == "S-LVO":
+        return train_t["variant"].where(train_t["precision"] != "fp32")
+    if split == "S-LCO":
+        return train_t["cpu_mhz"].astype(int)
+    if split == "RANDOM":
+        return None
+    raise ValueError(f"no inner grouping for split {split!r}")
+
+
+def inner_folds_for(train_t: pd.DataFrame, split: str, seed: int, index: int = 0) -> tuple:
+    """(inner folds, scheme) for the outer fold `index` of `split`, from the training table only: leave-one-
+    model-out for S-LOMO and any other name (`inner_folds`); for the others leave-one-group-out on the grouping the outer split holds out (see `_inner_groups`), random 5-fold for RANDOM and
+    when the training table has fewer than 3 such groups (leave-one-config-out below 5 configurations)."""
+    if split not in ("S-LSO", "S-LVO", "S-LCO", "RANDOM"):   # S-LOMO and any other name: as before
+        return inner_folds(train_t), "leave-one-model-out"
+    g = _inner_groups(train_t, split)
+    if g is not None:
+        labels = sorted(set(g.dropna().astype(str)))
+        if len(labels) >= MIN_INNER_GROUPS:
+            keys = train_t["config_key"].astype(str)
+            out = []
+            for lab in labels:
+                hit = (g.astype(str) == lab) & g.notna()
+                tr, va = sorted(keys[~hit]), sorted(keys[hit])
+                if tr and va:
+                    out.append((tr, va))
+            return out, "leave-one-group-out"
+    return random_inner_folds(train_t, seed, index), "random-5-fold"
