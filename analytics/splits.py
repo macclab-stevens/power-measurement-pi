@@ -131,9 +131,9 @@ def inner_folds(train_t: pd.DataFrame) -> list:
     return out
 
 
-# ---- inner folds that mimic the outer split ----------------------------------------------------------
+# ---- inner folds that match the kind of generalisation being tested ---------------------------------------
 N_INNER_RANDOM = 5
-MIN_INNER_GROUPS = 3
+REGIMES = ("new-model", "seen-model")
 
 
 def random_inner_folds(train_t: pd.DataFrame, seed: int, index: int = 0) -> list:
@@ -151,45 +151,21 @@ def random_inner_folds(train_t: pd.DataFrame, seed: int, index: int = 0) -> list
     return out
 
 
-def _inner_groups(train_t: pd.DataFrame, split: str) -> pd.Series | None:
-    """Group label of every row that the outer `split` could hold out (NaN: never held out), or None for a
-    split without a grouping (RANDOM) or an unknown one. Same columns as the outer folds: S-LOMO base_model,
-    S-LSO the model-size class n/s/m of `SIZE_PAIRS` (other models stay in training), S-LVO the variant of the
-    non-fp32 rows, S-LCO the pinned clock."""
-    if split == "S-LSO":
-        size = {m: s for s, pair in SIZE_PAIRS.items() for m in pair}
-        return train_t["base_model"].map(size)
-    if split == "S-LVO":
-        return train_t["variant"].where(train_t["precision"] != "fp32")
-    if split == "S-LCO":
-        return train_t["cpu_mhz"].astype(int)
-    if split == "RANDOM":
-        return None
-    raise ValueError(f"no inner grouping for split {split!r}")
+def regime_of(train_t: pd.DataFrame, test_t: pd.DataFrame) -> str:
+    """"seen-model" when every test base model is in the training frame, else "new-model". Decided from the
+    data, not from the split name."""
+    return "seen-model" if set(test_t["base_model"]) <= set(train_t["base_model"]) else "new-model"
 
 
-def inner_folds_for(train_t: pd.DataFrame, split: str, seed: int, index: int = 0) -> tuple:
-    """(inner folds, scheme) for the outer fold `index` of `split`, from the training table only.
-
-    S-LOMO and any unknown split name: leave-one-base-model-out (`inner_folds`). RANDOM: random 5-fold
-    (`random_inner_folds`), always. S-LSO / S-LVO / S-LCO: leave-one-group-out on the grouping the outer split
-    holds out (see `_inner_groups`), scheme "leave-one-group-out". When the training table has fewer than 3 such
-    groups no leave-group-out rehearsal is possible (e.g. S-LSO: holding out one of the three size classes leaves
-    two; S-LCO: holding out a clock leaves two), and the fallback is leave-one-base-model-out, the closest
-    extrapolation rehearsal that remains (scheme "leave-one-model-out"), not random folds, whose residuals would
-    be interpolation-sized and make the selection and the intervals optimistic."""
-    if split == "RANDOM":
-        return random_inner_folds(train_t, seed, index), "random-5-fold"
-    if split in ("S-LSO", "S-LVO", "S-LCO"):
-        g = _inner_groups(train_t, split)
-        labels = sorted(set(g.dropna().astype(str)))
-        if len(labels) >= MIN_INNER_GROUPS:
-            keys = train_t["config_key"].astype(str)
-            out = []
-            for lab in labels:
-                hit = (g.astype(str) == lab) & g.notna()
-                tr, va = sorted(keys[~hit]), sorted(keys[hit])
-                if tr and va:
-                    out.append((tr, va))
-            return out, "leave-one-group-out"
-    return inner_folds(train_t), "leave-one-model-out"
+def inner_folds_for(train_t: pd.DataFrame, regime: str, seed: int, index: int = 0) -> list:
+    """Inner folds (train_keys, val_keys) for model selection, from the training table only. The inner rehearsal
+    must match the kind of generalisation being tested: a "new-model" regime (a test base model is absent from
+    training) is extrapolation over models, rehearsed by leave-one-base-model-out (`inner_folds`); a "seen-model"
+    regime (every test base model is in training; a seen model at a new variant, clock or configuration) is
+    interpolation over configurations, rehearsed by random 5-fold over configurations (`random_inner_folds`,
+    seeded by `seed` and the outer fold `index`)."""
+    if regime == "new-model":
+        return inner_folds(train_t)
+    if regime == "seen-model":
+        return random_inner_folds(train_t, seed, index)
+    raise ValueError(f"unknown regime {regime!r}; expected one of {REGIMES}")

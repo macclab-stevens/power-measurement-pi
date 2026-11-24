@@ -160,12 +160,7 @@ def test_real_table_fold_counts():
     assert [f.fold for f in sp["S-LCO"]] == ["1500", "2000", "2400", "1500+2000->2400"]
 
 
-# ---- R2: inner folds that mimic the outer split ---------------------------------------------------
-def _train_of(t, split, fold):
-    f = next(x for x in splits.make_splits(t, 1)[split] if x.fold == fold)
-    return t[t["config_key"].isin(f.train_keys)].reset_index(drop=True)
-
-
+# ---- R2: inner folds matched to the regime ---------------------------------------------------------------
 def _check_partition(train_t, inner):
     ok = sorted(train_t["config_key"])
     assert sorted(k for _, va in inner for k in va) == ok            # every key validates exactly once
@@ -173,59 +168,38 @@ def _check_partition(train_t, inner):
         assert tr and va and not set(tr) & set(va) and set(tr) | set(va) == set(ok)
 
 
-def test_inner_s_lomo_is_the_leave_one_model_out_of_before():
+def _fold_frames(t, split, fold):
+    f = next(x for x in splits.make_splits(t, 1)[split] if x.fold == fold)
+    return t[t["config_key"].isin(f.train_keys)].reset_index(drop=True), t[t["config_key"].isin(f.test_keys)]
+
+
+def test_regime_is_decided_from_the_data_not_the_split_name():
     t = _table()
-    train_t = _train_of(t, "S-LOMO", "yolo11n")
-    inner, scheme = splits.inner_folds_for(train_t, "S-LOMO", 1)
-    assert scheme == "leave-one-model-out" and inner == splits.inner_folds(train_t)
-    assert splits.inner_folds_for(train_t, "S-SOMETHING", 1)[0] == splits.inner_folds(train_t)
+    for split, fold, want in (("S-LOMO", "yolo11n", "new-model"), ("S-LSO", "n", "new-model"),
+                              ("S-LVO", "yolo11n_fp16", "seen-model"), ("S-LCO", "2400", "seen-model"),
+                              ("S-LCO", "1500+2000->2400", "seen-model")):
+        train, test = _fold_frames(t, split, fold)
+        assert splits.regime_of(train, test) == want, (split, fold)
+    train, test = _fold_frames(t, "S-LOMO", "yolo11n")
+    assert splits.regime_of(train, train.iloc[:3]) == "seen-model"      # any frame whose models are all in training
+    assert splits.regime_of(train, pd.concat([train.iloc[:2], test])) == "new-model"   # one absent model is enough
 
 
-def test_inner_s_lco_leaves_one_clock_out_when_three_clocks_remain_else_random():
+def test_new_model_regime_is_leave_one_base_model_out_and_seen_model_is_random_five_fold():
     t = _table()
-    inner, scheme = splits.inner_folds_for(t, "S-LCO", 1)   # all three clocks present
-    assert scheme == "leave-one-group-out" and len(inner) == 3
-    bk = _by_key(t)
-    for tr, va in inner:
-        assert len({bk.loc[k, "cpu_mhz"] for k in va}) == 1
-        assert bk.loc[va[0], "cpu_mhz"] not in {bk.loc[k, "cpu_mhz"] for k in tr}
-    _check_partition(t, inner)
-    two = _train_of(t, "S-LCO", "2400")                          # 1500 and 2000 left: fewer than 3 groups
-    inner2, scheme2 = splits.inner_folds_for(two, "S-LCO", 1)
-    assert scheme2 == "leave-one-model-out" and inner2 == splits.inner_folds(two)   # no group rehearsal left
-    _check_partition(two, inner2)
+    train, _ = _fold_frames(t, "S-LOMO", "yolo11n")
+    assert splits.inner_folds_for(train, "new-model", 1) == splits.inner_folds(train)
+    inner = splits.inner_folds_for(train, "seen-model", 7, 2)
+    assert len(inner) == 5
+    _check_partition(train, inner)
+    with pytest.raises(ValueError, match="regime"):
+        splits.inner_folds_for(train, "S-LOMO", 1)
 
 
-def test_inner_s_lvo_holds_out_non_fp32_variants_only():
+def test_inner_random_is_deterministic_in_seed_and_index_order_independent_and_loco_when_tiny():
     t = _table()
-    inner, scheme = splits.inner_folds_for(t, "S-LVO", 1)    # yolo11n_int8s, yolo11s_int8s, yolo11n_fp16
-    assert scheme == "leave-one-group-out" and len(inner) == 3
-    bk = _by_key(t)
-    assert all(bk.loc[k, "precision"] != "fp32" for _, va in inner for k in va)
-    held = [{bk.loc[k, "variant"] for k in va} for _, va in inner]
-    assert all(len(h) == 1 for h in held) and {next(iter(h)) for h in held} == {"yolo11n_int8s", "yolo11s_int8s", "yolo11n_fp16"}
-    two = _train_of(_table(), "S-LVO", "yolo11n_fp16")       # only one non-fp32 variant is left
-    assert splits.inner_folds_for(two, "S-LVO", 1) == (splits.inner_folds(two), "leave-one-model-out")
-
-
-def test_inner_s_lso_groups_are_the_size_classes_and_other_models_stay_in_training():
-    t = _table()
-    inner, scheme = splits.inner_folds_for(t, "S-LSO", 1)    # n, s, m present
-    assert scheme == "leave-one-group-out" and len(inner) == 3
-    bk = _by_key(t)
-    held = {bk.loc[k, "base_model"] for _, va in inner for k in va}
-    assert held == {m for pair in splits.SIZE_PAIRS.values() for m in pair}
-    two = _train_of(t, "S-LSO", "n")                          # only s and m left
-    assert splits.inner_folds_for(two, "S-LSO", 1) == (splits.inner_folds(two), "leave-one-model-out")
-
-
-def test_inner_random_is_five_fold_deterministic_in_seed_and_index_and_loco_when_tiny():
-    t = _table()
-    a, sa = splits.inner_folds_for(t, "RANDOM", 7, 2)
-    assert sa == "random-5-fold" and len(a) == 5
-    _check_partition(t, a)
-    assert a == splits.inner_folds_for(t.sample(frac=1, random_state=0), "RANDOM", 7, 2)[0]   # order-independent
-    assert a != splits.inner_folds_for(t, "RANDOM", 7, 3)[0] and a != splits.inner_folds_for(t, "RANDOM", 8, 2)[0]
-    tiny = t.iloc[:4]
-    inner, _ = splits.inner_folds_for(tiny, "RANDOM", 7)
+    a = splits.inner_folds_for(t, "seen-model", 7, 2)
+    assert a == splits.inner_folds_for(t.sample(frac=1, random_state=0), "seen-model", 7, 2)
+    assert a != splits.inner_folds_for(t, "seen-model", 7, 3) and a != splits.inner_folds_for(t, "seen-model", 8, 2)
+    inner = splits.inner_folds_for(t.iloc[:4], "seen-model", 7)
     assert len(inner) == 4 and all(len(va) == 1 and len(tr) == 3 for tr, va in inner)

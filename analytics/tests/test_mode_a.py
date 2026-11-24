@@ -459,34 +459,52 @@ def test_residuals_weight_every_inner_fold_equally():
     assert mode_a.wquantile(r, w, 0.5)[0] > mode_a.wquantile(r, np.ones(5), 0.5)[0] + 0.1
 
 
-def _as_split(folds, name):
-    return [splits.Fold(name, f.fold, f.similarity_class, f.train_keys, f.test_keys) for f in folds]
+def _seen_fold(t):
+    """Every 4th configuration held out: all base models stay in training (seen-model regime)."""
+    keys = sorted(t["config_key"])
+    te = keys[::4]
+    return splits.Fold("S-LCO", "k0", "seen", [k for k in keys if k not in set(te)], te)
 
 
-def test_threshold_uses_leave_one_model_out_inner_folds_whatever_the_split():
+def test_regime_decides_the_inner_folds_and_the_threshold_always_uses_leave_one_model_out(monkeypatch):
     t, desc = make_dataset(MODELS[:5])
-    fold = _as_split(lomo(t)[:1], "RANDOM")
-    res = mode_a.run_split(t, fold, "energy_mJ", 3, desc, grids=SMALL_GRIDS)
+    seen = _seen_fold(t)
+    new = lomo(t)[0]
+    used = []
+    orig = mode_a._Search.__init__
+
+    def spy(self, train_t, desc_, grids, seed=None, folds=None):
+        used.append(None if folds is None else frozenset(map(lambda f: frozenset(f[1]), folds)))
+        orig(self, train_t, desc_, grids, seed, folds)
+
+    monkeypatch.setattr(mode_a._Search, "__init__", spy)
+    train = t[t["config_key"].isin(seen.train_keys)].reset_index(drop=True)
+    res = mode_a.run_split(t, [seen], "energy_mJ", 3, desc, grids=SMALL_GRIDS)
+    want_random = frozenset(frozenset(va) for _, va in splits.random_inner_folds(train, 3, 0))
+    lomo_sets = lambda tr: frozenset(frozenset(va) for _, va in splits.inner_folds(tr))   # noqa: E731
+    assert used[0] == want_random and used[1] is None              # selection on random folds, threshold on LOMO
     auto = res[res["candidate"] == "AUTO"]
     spec = json.loads(auto["params"].iloc[0])
-    train = t[t["config_key"].isin(fold[0].train_keys)].reset_index(drop=True)
-    s = mode_a._Search(train, desc, SMALL_GRIDS, 3)          # leave-one-model-out
-    preds = s.preds_of(spec["candidate"], spec["params"], "energy_mJ") if spec["candidate"] in mode_a.FACTORED \
-        else s.inner_pred(spec["candidate"], spec["params"], "energy_mJ")
+    monkeypatch.undo()
+    s = mode_a._Search(train, desc, SMALL_GRIDS, 3)                # leave-one-model-out
+    preds = s.preds_of(spec["candidate"], spec["params"], "energy_mJ")
     novs = [max(mode_a._model_novelty(desc, m, tr["base_model"]) for m in set(va["base_model"])) for tr, va in s.folds]
     want = mode_a._threshold(novs, [mode_a._mdape(y, p) for y, p in zip(s.truth("energy_mJ"), preds)])
     assert set(auto["threshold"]) == {want}
+    used.clear()
+    monkeypatch.setattr(mode_a._Search, "__init__", spy)
+    mode_a.run_split(t, [new], "energy_mJ", 3, desc, grids=SMALL_GRIDS)
+    train_new = t[t["config_key"].isin(new.train_keys)].reset_index(drop=True)
+    assert used == [lomo_sets(train_new)]                          # new model: leave-one-model-out, one search only
 
 
-def test_random_split_selects_on_random_inner_folds_and_is_deterministic_across_n_jobs():
+def test_seen_model_fold_is_deterministic_across_n_jobs_and_n_resid_counts_training_rows():
     t, desc = make_dataset(MODELS[:5])
-    folds = _as_split(lomo(t)[:3], "RANDOM")
+    folds = [_seen_fold(t)]
     a = mode_a.run_split(t, folds, "energy_mJ", 1, desc, n_jobs=1, grids=SMALL_GRIDS)
     b = mode_a.run_split(t, folds, "energy_mJ", 1, desc, n_jobs=2, grids=SMALL_GRIDS)
     pd.testing.assert_frame_equal(a, b, check_exact=True)
-    # random 5-fold inner folds: every training row is validated once, so n_resid is the training size
-    for f, g in a.groupby("fold"):
-        assert set(g["n_resid"]) == {len(t[t["base_model"] != f])}
+    assert set(a["n_resid"]) == {len(folds[0].train_keys)}         # every training row validated once
 
 
 def test_fit_final_regimes_name_the_pickle_and_select_on_their_own_inner_folds(tmp_path, monkeypatch):

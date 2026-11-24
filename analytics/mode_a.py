@@ -3,16 +3,17 @@
 Leakage rule: everything that is fitted, selected or thresholded for an outer fold sees only that
 fold's training rows. `run_split` hands each outer fold a training frame and a test frame; the search
 (`_Search`) is built from the training frame alone, so test rows cannot reach a fit, a grid choice,
-an interval quantile or the applicability threshold. Inner folds mimic the outer split
-(`splits.inner_folds_for`, R2): leave-one-base-model-out for S-LOMO, leave-one-size-class / variant / clock out for
-S-LSO / S-LVO / S-LCO (leave-one-base-model-out when fewer than 3 such groups remain: no leave-group-out
-rehearsal is possible, as is always the case on the real table), random 5-fold for RANDOM. The
+an interval quantile or the applicability threshold. Inner folds match the kind of
+generalisation the outer fold tests (`splits.inner_folds_for`, R2), decided from the data: when some test base
+model is absent from the training frame (new-model regime: extrapolation over models) they are leave-one-base-
+model-out; when every test base model is in the training frame (seen-model regime: a seen model at a new variant,
+clock or configuration is interpolation over configurations) they are random 5-fold over configurations. The
 applicability threshold always comes from leave-one-base-model-out inner folds (novelty is a per-model notion).
 Prediction-interval quantiles weight every inner fold equally.
 
 Per outer fold and target (R2): for each candidate the grid point with the lowest inner BALANCED error
 is chosen (ties: first grid point). The balanced error is the mean over inner folds of the fold's median
-|log(pred / y)|; the inner folds hold out one base model each, so every held-out base model counts once
+|log(pred / y)|; with leave-one-base-model-out folds every held-out base model counts once
 whatever its number of rows (the R1 rule pooled all inner rows, which let the many-row YOLO models decide).
 A non-finite fold error makes the point +inf (never selected). M3's latency and power parts are chosen the
 same way among the M1 and M2 grid points on `latency_ms` and `mean_P_W`; M4's parts among its own grid
@@ -216,15 +217,15 @@ def _run_fold(train_t, test_t, fold_info: tuple, target: str, seed: int, desc, g
     """One outer fold from its training and test frames (the search never sees `test_t`). `index` is the
     position of the fold in its split (it seeds the random inner folds)."""
     split, fold, cls = fold_info
-    inner, scheme = splits.inner_folds_for(train_t, split, seed, index)
-    search = _Search(train_t, desc, grids, seed, inner)
+    regime = splits.regime_of(train_t, test_t)
+    search = _Search(train_t, desc, grids, seed, splits.inner_folds_for(train_t, regime, seed, index))
     names = CANDIDATES_BY_TARGET[target]
     sel = {n: search.select(n, target) for n in names}
     auto = min(AUTO_AMONG[target], key=lambda n: sel[n]["score"])   # min keeps the first on ties
     truth = search.truth(target)
     # applicability threshold: novelty is a per-model notion, so always from leave-one-base-model-out inner
     # folds (AUTO's chosen point; the selection folds themselves when they already are those)
-    lomo = search if scheme == "leave-one-model-out" else _Search(train_t, desc, grids, seed)
+    lomo = search if regime == "new-model" else _Search(train_t, desc, grids, seed)
     lomo_preds = sel[auto]["preds"] if lomo is search else lomo.preds_of(auto, sel[auto]["params"], target)
     novs = [max(_model_novelty(desc, m, tr["base_model"]) for m in set(va["base_model"]))
             for tr, va in lomo.folds]
@@ -277,7 +278,7 @@ def run_split(t: pd.DataFrame, folds: list, target: str, seed: int, desc: pd.Dat
     return pd.concat(res, ignore_index=True) if res else pd.DataFrame(columns=OUT_COLS)
 
 
-REGIMES = ("new-model", "seen-model")
+REGIMES = splits.REGIMES
 
 
 def fit_final(t: pd.DataFrame, candidate: str, target: str, seed: int, desc: pd.DataFrame, grids: dict | None = None,
@@ -293,7 +294,7 @@ def fit_final(t: pd.DataFrame, candidate: str, target: str, seed: int, desc: pd.
     grids = grids if grids is not None else mm.GRIDS
     if candidate not in mm.CANDIDATES:
         raise ValueError(f"unknown candidate {candidate!r}")
-    folds = splits.random_inner_folds(t, seed) if regime == "seen-model" else None
+    folds = splits.inner_folds_for(t, regime, seed)
     params = _Search(t, desc, grids, seed, folds).select(candidate, target)["params"]
     model = _make(candidate, desc, seed).fit(t.reset_index(drop=True), target, params)
     out = settings.derived_dir() / "models"

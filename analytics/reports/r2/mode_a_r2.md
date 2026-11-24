@@ -46,15 +46,15 @@ AUTO's choice per outer fold (R2): M4Physics x7, M3Factored x2. R1: M1Ridge x6, 
 | S-LSO | AUTO | R1 | 19.2 | 18.4 | 41 | 0.80 | 1.99 |
 | S-LSO | M4Physics | R2 | 13.1 | 14.8 | 56 | 0.80 | 1.52 |
 | S-LSO | M4Physics | R2 round 0 (LOMO inner folds) | 13.1 | 14.8 | 56 | 0.82 | 1.53 |
-| S-LVO | AUTO | R2 | 11.4 | 19.7 | 50 | 0.80 | 1.63 |
+| S-LVO | AUTO | R2 | 6.6 | 10.4 | 25 | 0.80 | 1.31 |
 | S-LVO | AUTO | R2 round 0 (LOMO inner folds) | 11.4 | 19.7 | 50 | 0.80 | 1.68 |
 | S-LVO | AUTO | R1 | 9.9 | 11.7 | 28 | 1.00 | 1.82 |
-| S-LVO | M4Physics | R2 | 11.4 | 19.7 | 50 | 0.80 | 1.63 |
+| S-LVO | M4Physics | R2 | 11.4 | 19.7 | 50 | 0.80 | 1.69 |
 | S-LVO | M4Physics | R2 round 0 (LOMO inner folds) | 11.4 | 19.7 | 50 | 0.80 | 1.68 |
-| S-LCO | AUTO | R2 | 15.1 | 18.1 | 61 | 0.52 | 1.30 |
+| S-LCO | AUTO | R2 | 3.8 | 7.3 | 26 | 0.77 | 1.26 |
 | S-LCO | AUTO | R2 round 0 (LOMO inner folds) | 15.1 | 18.1 | 61 | 0.41 | 1.23 |
 | S-LCO | AUTO | R1 | 16.1 | 18.8 | 66 | 0.98 | 6.55 |
-| S-LCO | M4Physics | R2 | 15.1 | 18.1 | 61 | 0.52 | 1.30 |
+| S-LCO | M4Physics | R2 | 15.1 | 18.1 | 61 | 0.48 | 1.30 |
 | S-LCO | M4Physics | R2 round 0 (LOMO inner folds) | 15.1 | 18.1 | 61 | 0.41 | 1.23 |
 | RANDOM | AUTO | R2 | 2.3 | 4.3 | 24 | 0.88 | 1.25 |
 | RANDOM | AUTO | R2 round 0 (LOMO inner folds) | 11.1 | 13.7 | 49 | 0.90 | 1.69 |
@@ -69,15 +69,15 @@ AUTO's choice per outer fold (R2): M4Physics x7, M3Factored x2. R1: M1Ridge x6, 
 | RANDOM | energy_mJ | 5.3 | 2.3 |
 | RANDOM | latency_ms | 6.9 | 3.9 |
 | RANDOM | mean_P_W | 2.5 | 1.6 |
-| S-LCO | energy_mJ | 16.1 | 15.1 |
-| S-LCO | latency_ms | 11.7 | 14.4 |
-| S-LCO | mean_P_W | 7.0 | 2.0 |
+| S-LCO | energy_mJ | 16.1 | 3.8 |
+| S-LCO | latency_ms | 11.7 | 6.0 |
+| S-LCO | mean_P_W | 7.0 | 5.5 |
 | S-LOMO | energy_mJ | 17.5 | 13.5 |
 | S-LOMO | latency_ms | 18.3 | 15.4 |
 | S-LOMO | mean_P_W | 3.6 | 2.2 |
 | S-LSO | energy_mJ | 19.2 | 13.2 |
 | S-LSO | latency_ms | 19.7 | 14.8 |
 | S-LSO | mean_P_W | 3.1 | 2.5 |
-| S-LVO | energy_mJ | 9.9 | 11.4 |
-| S-LVO | latency_ms | 11.4 | 17.7 |
-| S-LVO | mean_P_W | 4.2 | 3.4 |
+| S-LVO | energy_mJ | 9.9 | 6.6 |
+| S-LVO | latency_ms | 11.4 | 4.1 |
+| S-LVO | mean_P_W | 4.2 | 5.5 |
