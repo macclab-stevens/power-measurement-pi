@@ -18,7 +18,8 @@ DT_HZ = 1000.0              # 1 ms samples
 FEATURES = ["counted", "busy", "cycles_rate", "instr_rate", "ipc", "cache_miss_rate", "branch_mpki", "stall_frac",
             "llc_mpki", "ctx_sw_rate", "pf_rate", "busy_l1", "busy_l2", "busy_l3", "cycles_rate_l1",
             "cycles_rate_l2", "cycles_rate_l3", "ipc_l1", "ipc_l2", "ipc_l3", "pct_min", "freq_mhz", "temp_C",
-            "fan_state", "uv_alarm", "sysfs_age_s", "pmic_W", "pmic_age_s", "cpu_key", "fan_mode", "governor"]
+            "fan_state", "uv_alarm", "sysfs_age_s", "pmic_W", "pmic_age_s", "cpu_key", "fan_mode", "governor",
+            "llc_miss_rate", "f_eff_mhz", "vcore_eff", "v2_cycles_rate", "v2_instr_rate"]
 CTR_COLS = ["cycles", "instructions", "cache_references", "cache_misses", "branch_misses",
             "stalled_cycles_backend", "LLC_load_misses", "task_clock", "context_switches", "page_faults"]
 
@@ -254,13 +255,54 @@ def test_not_counted_interval_is_zero_activity(tmp_path):
     df = run(cell).sort_values("w_idx").reset_index(drop=True)
     assert df["counted"].tolist() == [1, 0, 1, 1]
     r = df.iloc[1]
-    for c in ("busy", "cycles_rate", "instr_rate", "ctx_sw_rate", "pf_rate"):
+    for c in ("busy", "cycles_rate", "instr_rate", "ctx_sw_rate", "pf_rate", "llc_miss_rate", "v2_cycles_rate",
+              "v2_instr_rate"):
         assert r[c] == 0.0, c
     for c in ("ipc", "cache_miss_rate", "branch_mpki", "stall_frac", "llc_mpki"):
         assert np.isnan(r[c]), c
+    assert np.isnan(r["f_eff_mhz"]) and np.isnan(r["vcore_eff"])      # not counted and no sysfs: clock unknown, no 0 / 0
     assert df.loc[2, "busy_l1"] == 0.0 and df.loc[2, "cycles_rate_l1"] == 0.0 and np.isnan(df.loc[2, "ipc_l1"])
     assert df.loc[3, "busy_l2"] == 0.0 and df.loc[3, "cycles_rate_l2"] == 0.0
     assert df.loc[0, "busy"] > 0 and df.attrs["not_counted"] == 1 and df.attrs["guards"] == 0
+
+
+def test_cmos_features_busy_zero_fallback_clamp_and_nan():
+    cyc = lambda f_mhz, busy: f_mhz * 1e6 * windows.N_CORES * busy      # noqa: E731
+    df = pd.DataFrame({
+        "busy": [0.5, 0.02, 0.0, 0.5, 0.5, 0.02, 0.0],
+        "cycles_rate": [cyc(2000, 0.5), 5e7, 0.0, cyc(3000, 0.5), cyc(300, 0.5), 5e7, 0.0],
+        "instr_rate": [1e9, 2e7, 0.0, 1e9, 1e9, 2e7, 0.0],
+        "freq_mhz": [2400.0, 1500.0, 1800.0, 2400.0, 2400.0, np.nan, np.nan]})
+    o = windows.cmos_features(df)
+    assert o["f_eff_mhz"].iloc[0] == pytest.approx(2000.0)               # from cycles: 4 cores x busy
+    assert o["f_eff_mhz"].iloc[1] == 1500.0 and o["f_eff_mhz"].iloc[2] == 1800.0     # busy < 0.03: sysfs clock
+    assert o["f_eff_mhz"].iloc[3] == 2400.0 and o["f_eff_mhz"].iloc[4] == 600.0      # clamped to [600, 2400]
+    assert o["vcore_eff"].iloc[0] == pytest.approx(0.8745) and o["vcore_eff"].iloc[3] == pytest.approx(0.9294)
+    assert o["vcore_eff"].iloc[1] == pytest.approx(0.7234)
+    assert o["vcore_eff"].iloc[2] == pytest.approx(0.7234 + (0.8745 - 0.7234) * 300 / 500)   # interpolated at 1800
+    assert o["vcore_eff"].iloc[4] == pytest.approx(0.7234)                   # clamped below the table
+    assert o["v2_cycles_rate"].iloc[0] == pytest.approx(0.8745 ** 2 * cyc(2000, 0.5))
+    assert o["v2_instr_rate"].iloc[0] == pytest.approx(0.8745 ** 2 * 1e9)
+    assert o["v2_cycles_rate"].iloc[2] == 0.0 and o["v2_instr_rate"].iloc[2] == 0.0         # busy = 0: zero rate
+    assert np.isnan(o["f_eff_mhz"].iloc[5]) and np.isnan(o["v2_cycles_rate"].iloc[5])       # clock unknown, rate > 0
+    assert np.isnan(o["f_eff_mhz"].iloc[6]) and o["v2_cycles_rate"].iloc[6] == 0.0          # clock unknown, rate 0
+    assert np.isfinite(o[["f_eff_mhz", "vcore_eff"]].iloc[:5].to_numpy()).all()
+
+
+def test_llc_miss_rate_and_cmos_columns_in_cell_windows(tmp_path):
+    starts = B + np.arange(3) * 100 * MS
+    ctr = counters_frame(starts, starts + 100 * MS)
+    ctr["ctr_LLC_load_misses"] = [1e5, 2e5, 3e5]
+    ctr["ctr_task_clock"] = [0.0, 4e8 * 0.5, 4e8]                         # busy 0, 0.5, 1.0 (task clock is in ns)
+    ctr["ctr_cycles"] = [0.0, 0.5 * 4 * 1.2e9 * 0.1, 4 * 2.0e9 * 0.1]       # 1.2 GHz at busy 0.5, 2.0 GHz at busy 1
+    k = np.arange(1, 301)
+    cell = write_cell(tmp_path, "c0", B + k * MS, np.full(300, 3.0), ctr, sysfs=sysfs_frame([B], [5.0]))
+    df = run(cell).sort_values("w_idx").reset_index(drop=True)
+    assert df["llc_miss_rate"].tolist() == pytest.approx([1e6, 2e6, 3e6])
+    assert df["f_eff_mhz"].iloc[1] == pytest.approx(1200.0)                # from cycles / (4 x busy)
+    assert df["f_eff_mhz"].iloc[0] == pytest.approx(1800.0)                # busy 0: sysfs mean of the cores
+    assert df["f_eff_mhz"].iloc[2] == pytest.approx(2000.0)
+    assert df["v2_cycles_rate"].iloc[0] == 0.0 and df["v2_cycles_rate"].iloc[2] > 0
 
 
 def test_settings_columns(tmp_path):
@@ -465,7 +507,7 @@ def test_build_windows_caches_and_invalidates(tmp_path, monkeypatch):
     df = windows.build_windows(cat)
     assert len(df) == 5 and set(df["cell_id"]) == {"c0"}
     assert df.attrs["dropped"] == 0 and df.attrs["n_cells"] == 1
-    cache = settings.derived_dir() / "windows.parquet"
+    cache = settings.derived_dir() / windows.WINDOWS_CACHE
     assert cache.is_file()
     m0 = cache.stat().st_mtime_ns
     df2 = windows.build_windows(cat)
@@ -474,7 +516,7 @@ def test_build_windows_caches_and_invalidates(tmp_path, monkeypatch):
     assert len(windows.build_windows(cat)) == 5
     assert not list(settings.derived_dir().glob("*.tmp*"))
     pm = windows.build_pmic_windows(cat)
-    assert len(pm) == 1 and (settings.derived_dir() / "pmic_windows.parquet").is_file()
+    assert len(pm) == 1 and (settings.derived_dir() / windows.PMIC_CACHE).is_file()
 
 
 # ------------------------------------------------------------------ real data

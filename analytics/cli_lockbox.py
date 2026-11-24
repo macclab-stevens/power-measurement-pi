@@ -53,7 +53,7 @@ def cmd_final_mode_l(args) -> int:
     if not paths.qc_csv.is_file():
         return _fail(f"{paths.qc_csv} is missing; run `uv run python cli.py qc` first")
     seed = _seed(args)
-    names = args.rung or list(mode_l_models.default_rungs())
+    names = args.rung or list(mode_l_models.R1_RUNGS)
     unknown = [n for n in names if n not in mode_l_models.default_rungs()]
     if unknown:
         return _fail(f"unknown rung {unknown}; expected {list(mode_l_models.default_rungs())}")

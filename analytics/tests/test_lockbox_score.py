@@ -158,7 +158,7 @@ def test_calculator_uses_frozen_predictions_measured_duration_and_training_idle(
 def test_mode_l_scores_frozen_rungs_per_cell_and_reports_non_yolo_separately(env):
     out = score(env)
     c = out["mode_l"]
-    assert set(c["rung"]) == set(mlm.default_rungs()) and NON_PRIMARY not in set(c["cell_id"])
+    assert set(c["rung"]) == set(mlm.R1_RUNGS) and NON_PRIMARY not in set(c["cell_id"])
     rec = ri.latest_record(ri.read_records(env[0].runs_log), command="final-mode-l", part="fit_final", rung="L2")
     model = lb.load_frozen(rec)
     w = env[1]["w"]
@@ -177,7 +177,7 @@ def test_mode_l_scores_frozen_rungs_per_cell_and_reports_non_yolo_separately(env
 def test_probe_pairs_per_configuration_against_frozen_mode_a(env):
     out = score(env)
     pr = out["probe"]
-    assert len(pr) == len(mlm.default_rungs()) * (2 * 1 + 3 * 2 + 3 * 2 + 3 * 2)   # yolo12n 2 primary cells: 2 pairs
+    assert len(pr) == len(mlm.R1_RUNGS) * (2 * 1 + 3 * 2 + 3 * 2 + 3 * 2)   # yolo12n 2 primary cells: 2 pairs
     assert NON_PRIMARY not in set(pr["j"]) | set(pr["k"]) and (pr["j"] != pr["k"]).all()
     pred = pd.read_csv(env[0].out_dir / lb.PREDICTIONS_CSV).query("role == 'primary' and target == 'energy_mJ'")
     a = pred.query("model == 'resnet18'")["pred"].iloc[0]
@@ -280,7 +280,7 @@ def test_score_refuses_when_a_rung_is_refitted_after_predicting(env, tmp_path, m
     monkeypatch.setenv("ANALYTICS_DATA", str(tmp_path / "other_data"))        # the frozen pickles stay untouched
     w, cat = make_windows(models=("yolov8n", "yolov8s", "yolov8m"), seed=99)
     qc = pd.DataFrame({"cell_id": cat["cell_id"], "primary": True})
-    _, info = mode_l.fit_final(w, cat.assign(source="v2"), qc, "L2", MASTER, mlm.first_point(mlm.default_rungs()))
+    _, info = mode_l.fit_final(w, cat.assign(source="v2"), qc, "L2", MASTER, mlm.first_point({k: v for k, v in mlm.default_rungs().items() if k in mlm.R1_RUNGS}))
     frozen = {r["rung"]: r for r in ri.read_records(paths.runs_log) if r.get("command") == "final-mode-l"}["L2"]
     assert info["sha256"] != frozen["sha256"]
     lb.runlog.append({"command": "final-mode-l", "part": "fit_final", "seed": MASTER, "rung": "L2", **info}, paths.runs_log)
