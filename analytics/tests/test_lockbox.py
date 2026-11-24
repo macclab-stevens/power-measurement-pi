@@ -120,7 +120,8 @@ def test_feature_rows_use_the_shared_derived_columns(env):
     assert r["precision"] == "fp32" and r["rig"] == "nov2026" and r["n_quantized_modules"] == 0 and r["is_int8"] == 0 \
         and r["is_fp16"] == 0 and r["cpu_ghz"] == pytest.approx(2.4) and r["log_macs"] == pytest.approx(np.log(r["macs"]))
     again = tables.add_derived_columns(f.drop(columns=["log_macs", "cpu_ghz", "is_int8", "is_fp16", "log_params",
-                                                       "log_weight_bytes", "log_act_bytes"]))
+                                                       "log_weight_bytes", "log_act_bytes", "vcore_V", "v2f",
+                                                       "log_n_calls"]))
     pd.testing.assert_frame_equal(f, again[f.columns])
     assert r["config_key"] == tables.config_key(r) == "yolo12n|yolo12n|fp32|640|1|4|2400|nov2026"
 

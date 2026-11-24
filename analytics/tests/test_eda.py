@@ -185,7 +185,7 @@ def _lm_rows(modes=("prefill", "decode"), e=10.0):
     return out
 
 
-FEATS = {"macs": 1e9, "params": 2e6, "weight_bytes": 8e6, "act_bytes": 5e7, "depth": 10, "n_leaf": 50,
+FEATS = {"macs": 1e9, "params": 2e6, "weight_bytes": 8e6, "act_bytes": 5e7, "depth": 10, "n_leaf": 50, "n_module_calls": 120.0,
          **{f"n_{g}": 1 for g in static.GROUPS}, **{f"frac_macs_{g}": 1 / 6 for g in static.GROUPS}}
 
 

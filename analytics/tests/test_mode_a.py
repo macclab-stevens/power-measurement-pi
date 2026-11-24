@@ -14,6 +14,7 @@ import mode_a
 import mode_a_models as mm
 import settings
 import splits
+import tables
 
 DESC_COLS = ["log_params", "log_macs_per_px", "depth", "frac_macs_conv", "frac_macs_linear",
              "frac_macs_norm", "frac_macs_act", "frac_macs_pool", "frac_macs_other"]
@@ -49,6 +50,9 @@ def make_dataset(models, seed=3, noise=0.01, alien=None, clocks=(1500, 2000, 240
                          "rig": "oct2026", "n_quantized_modules": 0 if prec == "fp32" else 50, "macs": macs,
                          "log_macs": np.log(macs), "log_params": desc[m]["log_params"], "cpu_ghz": mhz / 1000,
                          "is_int8": int(prec == "int8"), "is_fp16": 0, **info,
+                         "act_bytes": float(np.exp(info["log_act_bytes"])), "n_module_calls": float(10 * macs0 ** 0.15),
+                         "log_n_calls": float(np.log(10 * macs0 ** 0.15)),
+                         "v2f": float(tables.vcore_v(mhz) ** 2 * mhz / 1000),
                          "energy_mJ": e, "latency_ms": lat, "mean_P_W": e / lat}
                     r.update({f"frac_macs_{g}": f for g, f in zip(["conv", "linear", "norm", "act", "pool", "other"], fr)})
                     rows.append(r)
@@ -142,7 +146,7 @@ def test_auto_accuracy_and_interval_coverage(synth_result):
 def test_each_config_once_per_fold_and_candidate(synth_result):
     t, desc, res = synth_result
     expect = {"B0Median", "B1MacsProportional", "B2NearestModel", "B3LogLinear", "M1Ridge", "M2Trees",
-              "M3Factored", "AUTO"}
+              "M3Factored", "M4Physics", "AUTO"}
     assert set(res["candidate"]) == expect
     assert not res.duplicated(["fold", "config_key", "candidate"]).any()
     assert len(res) == len(t) * len(expect)
@@ -153,7 +157,7 @@ def test_each_config_once_per_fold_and_candidate(synth_result):
     m3 = json.loads(res.loc[res["candidate"] == "M3Factored", "params"].iloc[0])
     assert set(m3) == {"latency", "power"} and m3["latency"]["name"] in ("M1Ridge", "M2Trees")
     auto = json.loads(res.loc[res["candidate"] == "AUTO", "params"].iloc[0])
-    assert auto["candidate"] in ("M1Ridge", "M2Trees", "M3Factored")
+    assert auto["candidate"] in ("M1Ridge", "M2Trees", "M3Factored", "M4Physics")
 
 
 def test_latency_and_power_targets_have_no_m3():
@@ -334,7 +338,7 @@ def test_real_data_one_slomo_fold_energy(real_data):
     res = mode_a.run_split(t, [fold], "energy_mJ", settings.seed(), desc, n_jobs=1)
     wall = time.perf_counter() - t0
     print(f"real-data S-LOMO yolo11s energy: {wall:.1f} s")   # printed, not asserted: it depends on the machine
-    assert len(res) == len(fold.test_keys) * 8
+    assert len(res) == len(fold.test_keys) * 9
     assert res["y_pred"].notna().all() and (res["y_pred"] > 0).all()
 
 
@@ -359,3 +363,75 @@ def test_cli_mode_a_writes_parquet_and_runlog(tmp_path, monkeypatch):
     assert {"AUTO", "B0Median"} <= set(rec["metrics"]) and rec["wall_s"] >= 0
     df = pd.read_parquet(tmp_path / "derived" / "mode_a" / f"{rec['run_id']}.parquet")
     assert list(df.columns) == mode_a.OUT_COLS and set(df["split"]) == {"S-LOMO"}
+
+
+# ---- R2: balanced inner selection ---------------------------------------------------------------
+def test_balanced_is_mean_over_folds_of_fold_median_abs_log_ratio():
+    y = [np.array([1.0, 1.0, 1.0]), np.array([2.0])]
+    p = [np.array([np.e, 1.0, 1.0]), np.array([2.0 * np.e ** 0.5])]
+    # fold medians: median(1, 0, 0) = 0 ; 0.5 -> mean 0.25
+    assert mode_a._balanced(y, p) == pytest.approx(0.25)
+
+
+def test_balanced_is_inf_for_non_finite_or_non_positive_predictions_and_for_no_folds():
+    y = [np.array([1.0, 2.0]), np.array([3.0])]
+    assert mode_a._balanced(y, [np.array([1.0, np.nan]), np.array([3.0])]) == float("inf")
+    assert mode_a._balanced(y, [np.array([1.0, 2.0]), np.array([-3.0])]) == float("inf")
+    assert mode_a._balanced([], []) == float("inf")
+
+
+class _Stub:
+    """Predicts y x (1 + err[test model]) with the error table taken from its params (a test double)."""
+    def fit(self, train, target, params=None):
+        self.err_ = params["err"]
+        return self
+
+    def predict(self, test):
+        return test["energy_mJ"].to_numpy(float) * np.array([1 + self.err_[m] for m in test["base_model"]])
+
+
+def _unbalanced_table():
+    rows = [{"config_key": f"big|{i}", "base_model": "big", "energy_mJ": 100.0 + i} for i in range(30)]
+    rows += [{"config_key": f"s{j}|{i}", "base_model": f"s{j}", "energy_mJ": 50.0 + i} for j in (1, 2) for i in range(3)]
+    return pd.DataFrame(rows)
+
+
+def test_balanced_selection_picks_a_grid_point_pooled_mdape_would_not(monkeypatch):
+    """One many-row model (30 rows) and two few-row models (3 rows each). Point P is accurate on the big model
+    only (1 % there, 40 % on the small ones); point Q is 5 % everywhere. Pooled MdAPE (30 of 36 rows are the big
+    model) prefers P; the balanced error (each held-out model once) prefers Q."""
+    monkeypatch.setitem(mm.CANDIDATES, "Stub", _Stub)
+    P = {"err": {"big": 0.01, "s1": 0.4, "s2": 0.4}}
+    Q = {"err": {"big": 0.05, "s1": 0.05, "s2": 0.05}}
+    grids = {"Stub": [P, Q]}
+    search = mode_a._Search(_unbalanced_table(), pd.DataFrame(), grids, 1)
+    y = search.truth("energy_mJ")
+    pooled = [mode_a._mdape(mode_a._pooled(y), mode_a._pooled(search.inner_pred("Stub", g, "energy_mJ"))) for g in (P, Q)]
+    assert pooled[0] < pooled[1]                                  # the R1 rule would choose P
+    name, params, preds, score = search._best(["Stub"], "energy_mJ")
+    assert params == Q and score == pytest.approx(np.log(1.05))
+    sel = search.select("Stub", "energy_mJ")
+    assert sel["params"] == Q and sel["score"] == pytest.approx(np.log(1.05))
+    assert sel["mdape"] == pytest.approx(0.05)
+
+
+def test_ties_in_the_balanced_score_keep_the_first_grid_point(monkeypatch):
+    monkeypatch.setitem(mm.CANDIDATES, "Stub", _Stub)
+    A = {"err": {"big": 0.05, "s1": 0.05, "s2": 0.05}, "tag": "first"}
+    B = {"err": {"big": 0.05, "s1": 0.05, "s2": 0.05}, "tag": "second"}
+    search = mode_a._Search(_unbalanced_table(), pd.DataFrame(), {"Stub": [A, B]}, 1)
+    assert search._best(["Stub"], "energy_mJ")[1]["tag"] == "first"
+
+
+def test_m4_is_a_candidate_and_in_auto_for_every_target_and_m3_only_for_energy():
+    for target in ("energy_mJ", "latency_ms", "mean_P_W"):
+        assert "M4Physics" in mode_a.CANDIDATES_BY_TARGET[target] and "M4Physics" in mode_a.AUTO_AMONG[target]
+    assert "M3Factored" in mode_a.AUTO_AMONG["energy_mJ"]
+    assert "M3Factored" not in mode_a.AUTO_AMONG["latency_ms"] + mode_a.AUTO_AMONG["mean_P_W"]
+
+
+def test_m4_energy_params_are_the_parts_chosen_on_their_own_targets(synth_result):
+    t, desc, res = synth_result
+    p = json.loads(res.loc[res["candidate"] == "M4Physics", "params"].iloc[0])
+    assert set(p) == {"latency", "power"} and p["latency"]["beta"] in (0.5, 0.75, 1.0)
+    assert p["power"]["alpha"] in (0.01, 0.1, 1, 10, 100)

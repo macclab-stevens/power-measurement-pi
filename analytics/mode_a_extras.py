@@ -18,7 +18,7 @@ import report_inputs as ri
 import runlog
 import splits
 
-ORDER = ["M1Ridge", "M2Trees", "M3Factored"]
+ORDER = ["M1Ridge", "M2Trees", "M3Factored", "M4Physics"]
 LC_COMMAND = "learning-curve"
 YOLO_RIG = "nov2026"
 

@@ -12,7 +12,7 @@ import qc
 import static
 import tables
 
-FEATS = {"macs": 1e9, "params": 2e6, "weight_bytes": 8e6, "act_bytes": 5e7, "depth": 10, "n_leaf": 50,
+FEATS = {"macs": 1e9, "params": 2e6, "weight_bytes": 8e6, "act_bytes": 5e7, "depth": 10, "n_leaf": 50, "n_module_calls": 120.0,
          **{f"n_{g}": 1 for g in static.GROUPS}, **{f"frac_macs_{g}": 1 / 6 for g in static.GROUPS}}
 
 
@@ -129,3 +129,18 @@ def test_real_data(real_data):
     assert t["config_key"].is_unique
     nf = tables.noise_floor(t)
     assert 0.0001 < nf < 0.03
+
+
+def test_vcore_table_interpolates_and_clamps():
+    np.testing.assert_allclose(tables.vcore_v([1500, 2000, 2400]), [0.7234, 0.8745, 0.9294])
+    assert tables.vcore_v(1750) == pytest.approx((0.7234 + 0.8745) / 2)
+    assert tables.vcore_v(1000) == pytest.approx(0.7234) and tables.vcore_v(3000) == pytest.approx(0.9294)
+
+
+def test_add_derived_columns_adds_r2_columns():
+    t = pd.DataFrame({"macs": [1e9], "params": [1e6], "weight_bytes": [4e6], "act_bytes": [1e7], "cpu_mhz": [2000],
+                      "precision": ["fp32"], "n_module_calls": [100.0]})
+    d = tables.add_derived_columns(t)
+    assert d["vcore_V"].iloc[0] == pytest.approx(0.8745)
+    assert d["v2f"].iloc[0] == pytest.approx(0.8745 ** 2 * 2.0)
+    assert d["log_n_calls"].iloc[0] == pytest.approx(np.log(100.0))

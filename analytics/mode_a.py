@@ -6,11 +6,16 @@ fold's training rows. `run_split` hands each outer fold a training frame and a t
 an interval quantile or the applicability threshold. Inner folds are `splits.inner_folds` on the
 training frame (leave-one-base-model-out; leave-one-config-out with fewer than 3 models).
 
-Per outer fold and target: for each candidate the grid point with the lowest pooled inner MdAPE is
-chosen (ties: first grid point); M3's latency and power parts are chosen the same way among the M1 and
-M2 grid points on `latency_ms` and `mean_P_W`; AUTO is the candidate with the lowest inner MdAPE among
-M1, M2 (and M3 for energy). Inner predictions are cached per outer fold, keyed by candidate, grid
-point (sorted JSON) and target, so M3 reuses the M1/M2 inner predictions on its parts' targets.
+Per outer fold and target (R2): for each candidate the grid point with the lowest inner BALANCED error
+is chosen (ties: first grid point). The balanced error is the mean over inner folds of the fold's median
+|log(pred / y)|; the inner folds hold out one base model each, so every held-out base model counts once
+whatever its number of rows (the R1 rule pooled all inner rows, which let the many-row YOLO models decide).
+A non-finite fold error makes the point +inf (never selected). M3's latency and power parts are chosen the
+same way among the M1 and M2 grid points on `latency_ms` and `mean_P_W`; M4's parts among its own grid
+(beta for latency, alpha for power) on the same targets. AUTO is the candidate with the lowest balanced
+error among `AUTO_AMONG`. The pooled MdAPE (`_mdape`) is kept for the applicability threshold only. Inner
+predictions are cached per outer fold, keyed by candidate, grid point (sorted JSON) and target, so M3 and
+M4 reuse the inner predictions of their parts' targets.
 """
 import hashlib
 import itertools
@@ -31,9 +36,12 @@ APPLICABLE_MDAPE = 0.15
 BASELINES = ["B0Median", "B1MacsProportional", "B2NearestModel", "B3LogLinear"]
 LEARNED = ["M1Ridge", "M2Trees"]
 PARTS = {"latency": "latency_ms", "power": "mean_P_W"}
-CANDIDATES_BY_TARGET = {"energy_mJ": BASELINES + LEARNED + ["M3Factored"],
-                        "latency_ms": BASELINES + LEARNED, "mean_P_W": BASELINES + LEARNED}
-AUTO_AMONG = {"energy_mJ": LEARNED + ["M3Factored"], "latency_ms": LEARNED, "mean_P_W": LEARNED}
+FACTORED = ("M3Factored", "M4Physics")   # energy = latency part x power part
+CANDIDATES_BY_TARGET = {"energy_mJ": BASELINES + LEARNED + ["M3Factored", "M4Physics"],
+                        "latency_ms": BASELINES + LEARNED + ["M4Physics"],
+                        "mean_P_W": BASELINES + LEARNED + ["M4Physics"]}
+AUTO_AMONG = {"energy_mJ": LEARNED + ["M3Factored", "M4Physics"], "latency_ms": LEARNED + ["M4Physics"],
+              "mean_P_W": LEARNED + ["M4Physics"]}
 OUT_COLS = ["split", "fold", "similarity_class", "config_key", "base_model", "candidate", "target", "seed",
             "y_true", "y_pred", "lo90", "hi90", "novelty", "flagged", "threshold", "params", "n_resid"]
 
@@ -44,7 +52,7 @@ def _json(p) -> str:
 
 def _make(name: str, desc: pd.DataFrame, seed: int | None = None):
     """A fresh candidate; `seed` reaches every HistGradientBoostingRegressor (M2, M3's M2 parts)."""
-    cls = mm.CANDIDATES[name]
+    cls = mm.CANDIDATES[name]   # M4Physics is deterministic and takes no seed
     if name == "B2NearestModel":
         return cls(desc)
     return cls(seed) if name in ("M2Trees", "M3Factored") else cls()
@@ -57,6 +65,23 @@ def _mdape(y, p) -> float:
         return float("inf")
     v = float(np.median(np.abs(p - y) / y))
     return v if np.isfinite(v) else float("inf")
+
+
+def _balanced(y_parts, p_parts) -> float:
+    """Model-balanced selection error: the mean over inner folds of the fold's median |log(p / y)|. Each
+    inner fold holds out one base model, so each model counts once whatever its row count. +inf when there
+    is no fold or any fold error is not finite (a prediction <= 0 or NaN): such a point is never selected."""
+    errs = []
+    for y, p in zip(y_parts, p_parts):
+        y, p = np.asarray(y, float), np.asarray(p, float)
+        if y.size == 0:
+            continue
+        with np.errstate(all="ignore"):
+            e = float(np.median(np.abs(np.log(p / y)))) if np.all(p > 0) and np.all(y > 0) else float("nan")
+        if not np.isfinite(e):
+            return float("inf")
+        errs.append(e)
+    return float(np.mean(errs)) if errs else float("inf")
 
 
 def _pooled(parts) -> np.ndarray:
@@ -91,31 +116,37 @@ class _Search:
         return self.cache[key]
 
     def _best(self, names, target: str):
-        """(name, params, inner preds, pooled MdAPE) of the best grid point among `names`."""
-        y = _pooled(self.truth(target))
+        """(name, params, inner preds, balanced error) of the best grid point among `names`."""
+        y = self.truth(target)
         best = None
         for name in names:
-            for params in self.grids[name]:
+            for params in mm.grid_for(self.grids, name, target):
                 preds = self.inner_pred(name, params, target)
-                m = _mdape(y, _pooled(preds))
+                m = _balanced(y, preds)
                 if best is None or m < best[3]:   # strict: ties keep the first grid point
                     best = (name, params, preds, m)
         return best
 
     def select(self, name: str, target: str) -> dict:
-        """Chosen grid point of `name` with its inner predictions per fold and pooled inner MdAPE."""
-        if name != "M3Factored":
+        """Chosen grid point of `name` with its inner predictions per fold, its balanced inner error
+        (`score`, used to select) and its pooled inner MdAPE (`mdape`, informational)."""
+        y = self.truth(target)
+        if name not in FACTORED:
             n, params, preds, m = self._best([name], target)
-            return {"params": params, "preds": preds, "mdape": m}
+            return {"params": params, "preds": preds, "score": m, "mdape": _mdape(_pooled(y), _pooled(preds))}
         if target != "energy_mJ":
-            raise ValueError("M3Factored is only valid for target energy_mJ")
+            if name == "M3Factored":
+                raise ValueError("M3Factored is only valid for target energy_mJ")
+            n, params, preds, m = self._best([name], target)
+            return {"params": params, "preds": preds, "score": m, "mdape": _mdape(_pooled(y), _pooled(preds))}
         chosen, part_preds = {}, []
         for key, tgt in PARTS.items():
-            n, params, preds, _ = self._best(LEARNED, tgt)
-            chosen[key] = {"name": n, "params": params}
+            n, params, preds, _ = self._best(LEARNED if name == "M3Factored" else [name], tgt)
+            chosen[key] = {"name": n, "params": params} if name == "M3Factored" else params
             part_preds.append(preds)
         preds = [lat * pw for lat, pw in zip(*part_preds)]
-        return {"params": chosen, "preds": preds, "mdape": _mdape(_pooled(self.truth(target)), _pooled(preds))}
+        return {"params": chosen, "preds": preds, "score": _balanced(y, preds),
+                "mdape": _mdape(_pooled(y), _pooled(preds))}
 
 
 def _interval(yhat: np.ndarray, resid: np.ndarray):
@@ -148,7 +179,7 @@ def _run_fold(train_t, test_t, fold_info: tuple, target: str, seed: int, desc, g
     search = _Search(train_t, desc, grids, seed)
     names = CANDIDATES_BY_TARGET[target]
     sel = {n: search.select(n, target) for n in names}
-    auto = min(AUTO_AMONG[target], key=lambda n: sel[n]["mdape"])   # min keeps the first on ties
+    auto = min(AUTO_AMONG[target], key=lambda n: sel[n]["score"])   # min keeps the first on ties
     truth = search.truth(target)
     # applicability threshold from the inner folds (AUTO's chosen point)
     novs = [max(_model_novelty(desc, m, tr["base_model"]) for m in set(va["base_model"]))

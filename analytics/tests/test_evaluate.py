@@ -22,7 +22,32 @@ def test_metrics_hand_computed():
     assert m["rmse"] == pytest.approx(math.sqrt((100 + 400 + 0) / 3))
     assert m["bias_pct"] == pytest.approx(0.0)
     assert m["mdale"] == pytest.approx(np.median([abs(math.log(1.1)), abs(math.log(0.9)), 0.0]))
-    assert set(m) == {"n", "mdape", "mape", "mae", "rmse", "bias_pct", "mdale"}
+    assert set(m) == {"n", "mdape", "mape", "mae", "rmse", "bias_pct", "mdale", "maxape", "p90ape", "r2_log"}
+
+
+def test_metrics_maxape_p90_and_r2_log_hand_computed():
+    y = np.array([100.0, 200.0, 400.0, 800.0])
+    yhat = np.array([110.0, 180.0, 400.0, 1600.0])   # APE 0.1, 0.1, 0, 1.0
+    m = evaluate.metrics(y, yhat)
+    assert m["maxape"] == pytest.approx(1.0)
+    assert m["p90ape"] == pytest.approx(np.percentile([0.1, 0.1, 0.0, 1.0], 90))
+    ly, lp = np.log(y), np.log(yhat)
+    assert m["r2_log"] == pytest.approx(1 - np.sum((ly - lp) ** 2) / np.sum((ly - ly.mean()) ** 2))
+    assert evaluate.metrics(y, y)["r2_log"] == pytest.approx(1.0)
+    # the mean predictor in log space has R^2 = 0
+    assert evaluate.metrics(y, np.exp(np.full(4, ly.mean())))["r2_log"] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_metrics_r2_log_nan_for_nonpositive_prediction_or_constant_truth():
+    assert math.isnan(evaluate.metrics([1.0, 2.0], [1.0, -1.0])["r2_log"])
+    assert math.isnan(evaluate.metrics([2.0, 2.0], [1.0, 3.0])["r2_log"])
+    assert math.isnan(evaluate.metrics([], [])["maxape"])
+
+
+def test_interval_width_is_median_hi_over_lo_and_ignores_bad_rows():
+    assert evaluate.interval_width([1.0, 2.0, 1.0], [2.0, 8.0, 4.0]) == pytest.approx(4.0)   # ratios 2, 4, 4
+    assert evaluate.interval_width([1.0, np.nan, 2.0, 0.0], [3.0, 5.0, 8.0, 9.0]) == pytest.approx(np.median([3.0, 4.0]))
+    assert math.isnan(evaluate.interval_width([np.nan], [1.0]))
 
 
 def test_metrics_signed_bias_and_median():
