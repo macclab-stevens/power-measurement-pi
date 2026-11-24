@@ -5,7 +5,8 @@ fold's training rows. `run_split` hands each outer fold a training frame and a t
 (`_Search`) is built from the training frame alone, so test rows cannot reach a fit, a grid choice,
 an interval quantile or the applicability threshold. Inner folds mimic the outer split
 (`splits.inner_folds_for`, R2): leave-one-base-model-out for S-LOMO, leave-one-size-class / variant / clock out for
-S-LSO / S-LVO / S-LCO, random 5-fold for RANDOM and when the training frame has fewer than 3 such groups. The
+S-LSO / S-LVO / S-LCO (leave-one-base-model-out when fewer than 3 such groups remain: no leave-group-out
+rehearsal is possible, as is always the case on the real table), random 5-fold for RANDOM. The
 applicability threshold always comes from leave-one-base-model-out inner folds (novelty is a per-model notion).
 Prediction-interval quantiles weight every inner fold equally.
 

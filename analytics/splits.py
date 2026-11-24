@@ -169,13 +169,19 @@ def _inner_groups(train_t: pd.DataFrame, split: str) -> pd.Series | None:
 
 
 def inner_folds_for(train_t: pd.DataFrame, split: str, seed: int, index: int = 0) -> tuple:
-    """(inner folds, scheme) for the outer fold `index` of `split`, from the training table only: leave-one-
-    model-out for S-LOMO and any other name (`inner_folds`); for the others leave-one-group-out on the grouping the outer split holds out (see `_inner_groups`), random 5-fold for RANDOM and
-    when the training table has fewer than 3 such groups (leave-one-config-out below 5 configurations)."""
-    if split not in ("S-LSO", "S-LVO", "S-LCO", "RANDOM"):   # S-LOMO and any other name: as before
-        return inner_folds(train_t), "leave-one-model-out"
-    g = _inner_groups(train_t, split)
-    if g is not None:
+    """(inner folds, scheme) for the outer fold `index` of `split`, from the training table only.
+
+    S-LOMO and any unknown split name: leave-one-base-model-out (`inner_folds`). RANDOM: random 5-fold
+    (`random_inner_folds`), always. S-LSO / S-LVO / S-LCO: leave-one-group-out on the grouping the outer split
+    holds out (see `_inner_groups`), scheme "leave-one-group-out". When the training table has fewer than 3 such
+    groups no leave-group-out rehearsal is possible (e.g. S-LSO: holding out one of the three size classes leaves
+    two; S-LCO: holding out a clock leaves two), and the fallback is leave-one-base-model-out, the closest
+    extrapolation rehearsal that remains (scheme "leave-one-model-out"), not random folds, whose residuals would
+    be interpolation-sized and make the selection and the intervals optimistic."""
+    if split == "RANDOM":
+        return random_inner_folds(train_t, seed, index), "random-5-fold"
+    if split in ("S-LSO", "S-LVO", "S-LCO"):
+        g = _inner_groups(train_t, split)
         labels = sorted(set(g.dropna().astype(str)))
         if len(labels) >= MIN_INNER_GROUPS:
             keys = train_t["config_key"].astype(str)
@@ -186,4 +192,4 @@ def inner_folds_for(train_t: pd.DataFrame, split: str, seed: int, index: int = 0
                 if tr and va:
                     out.append((tr, va))
             return out, "leave-one-group-out"
-    return random_inner_folds(train_t, seed, index), "random-5-fold"
+    return inner_folds(train_t), "leave-one-model-out"

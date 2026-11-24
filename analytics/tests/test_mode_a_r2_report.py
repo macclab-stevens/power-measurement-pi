@@ -41,6 +41,6 @@ def test_split_rows_lists_auto_and_m4_per_split_and_revision():
     r1 = frame(0.3, cands=("B3LogLinear", "AUTO"))      # R1 has no M4Physics
     rows = rep.split_rows({key: r1}, {key: frame(0.1)}, {key: frame(0.2)})
     assert {(r[0], r[1], r[2]) for r in rows} == {
-        ("RANDOM", "AUTO", "R2"), ("RANDOM", "AUTO", "R2 before inner-fold fix"), ("RANDOM", "AUTO", "R1"),
-        ("RANDOM", "M4Physics", "R2"), ("RANDOM", "M4Physics", "R2 before inner-fold fix")}
+        ("RANDOM", "AUTO", "R2"), ("RANDOM", "AUTO", "R2 round 0 (LOMO inner folds)"), ("RANDOM", "AUTO", "R1"),
+        ("RANDOM", "M4Physics", "R2"), ("RANDOM", "M4Physics", "R2 round 0 (LOMO inner folds)")}
     assert all(len(r) == 8 for r in rows)

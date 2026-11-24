@@ -61,7 +61,7 @@ def split_rows(r1: dict, r2: dict, r2_prev: dict | None, target: str = "energy_m
     rows = []
     for split in ri.SPLITS:
         for cand in ("AUTO", "M4Physics"):
-            for label, d in (("R2", r2), ("R2 before inner-fold fix", r2_prev or {}), ("R1", r1)):
+            for label, d in (("R2", r2), ("R2 round 0 (LOMO inner folds)", r2_prev or {}), ("R1", r1)):
                 df = d.get((split, target))
                 if df is None or cand not in set(df["candidate"]):
                     continue
@@ -73,7 +73,7 @@ def split_rows(r1: dict, r2: dict, r2_prev: dict | None, target: str = "energy_m
 
 def build(r1: dict, r2: dict, seeds: dict | None = None, r2_prev: dict | None = None) -> str:
     """Markdown from prediction frames keyed by (split, target) for R1 and R2 (a missing key is skipped);
-    `seeds` maps seed -> R2 S-LOMO energy frame; `r2_prev` the R2 runs before the inner-fold fix."""
+    `seeds` maps seed -> R2 S-LOMO energy frame; `r2_prev` the R2 round-0 runs."""
     L = ["# Mode A, R2 against R1 (balanced selection on inner folds that mimic the outer split; R2 features; M4Physics)\n",
          "Exploratory R2 revision; the lockbox has been seen, so nothing here is a pre-registered result. Percent "
          "columns are percent. MdAPE is the median, MAPE the mean, MaxAPE the maximum and P90 the 90th percentile of "
@@ -136,7 +136,7 @@ def _runs(paths, recs, sha_now: str, seed: int) -> tuple:
                     and (paths.mode_a_dir / f"{r['run_id']}.parquet").is_file()]
             now = [r for r in hits if r.get("table_sha256") == sha_now]
             old = [r for r in hits if r.get("table_sha256") != sha_now]
-            for out, rec in ((r2, now[-1] if now else None), (prev, now[-2] if len(now) > 1 else None),
+            for out, rec in ((r2, now[-1] if now else None), (prev, now[0] if len(now) > 1 else None),
                              (r1, old[-1] if old else None)):
                 if rec is not None:
                     out[(split, target)] = ri.ref_of(rec, paths.mode_a_dir).df

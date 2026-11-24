@@ -192,7 +192,7 @@ def test_inner_s_lco_leaves_one_clock_out_when_three_clocks_remain_else_random()
     _check_partition(t, inner)
     two = _train_of(t, "S-LCO", "2400")                          # 1500 and 2000 left: fewer than 3 groups
     inner2, scheme2 = splits.inner_folds_for(two, "S-LCO", 1)
-    assert scheme2 == "random-5-fold" and len(inner2) == 5
+    assert scheme2 == "leave-one-model-out" and inner2 == splits.inner_folds(two)   # no group rehearsal left
     _check_partition(two, inner2)
 
 
@@ -205,7 +205,7 @@ def test_inner_s_lvo_holds_out_non_fp32_variants_only():
     held = [{bk.loc[k, "variant"] for k in va} for _, va in inner]
     assert all(len(h) == 1 for h in held) and {next(iter(h)) for h in held} == {"yolo11n_int8s", "yolo11s_int8s", "yolo11n_fp16"}
     two = _train_of(_table(), "S-LVO", "yolo11n_fp16")       # only one non-fp32 variant is left
-    assert splits.inner_folds_for(two, "S-LVO", 1)[1] == "random-5-fold"
+    assert splits.inner_folds_for(two, "S-LVO", 1) == (splits.inner_folds(two), "leave-one-model-out")
 
 
 def test_inner_s_lso_groups_are_the_size_classes_and_other_models_stay_in_training():
@@ -216,7 +216,7 @@ def test_inner_s_lso_groups_are_the_size_classes_and_other_models_stay_in_traini
     held = {bk.loc[k, "base_model"] for _, va in inner for k in va}
     assert held == {m for pair in splits.SIZE_PAIRS.values() for m in pair}
     two = _train_of(t, "S-LSO", "n")                          # only s and m left
-    assert splits.inner_folds_for(two, "S-LSO", 1)[1] == "random-5-fold"
+    assert splits.inner_folds_for(two, "S-LSO", 1) == (splits.inner_folds(two), "leave-one-model-out")
 
 
 def test_inner_random_is_five_fold_deterministic_in_seed_and_index_and_loco_when_tiny():
