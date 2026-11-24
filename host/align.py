@@ -174,6 +174,36 @@ def detect_slips(last_idx, host_ns, rate_hz=None, min_step_ms=1.0, tail_guard_bl
     return out
 
 
+def remove_slip_steps(host_ns, slips) -> np.ndarray:
+    """Block host times with every sample-loss step taken out: `h - sum(step * [h >= slip.t_ns])`.
+
+    After a loss of K samples the (index, host) stream steps K/rate later; with the steps removed
+    it is linear again, so the sample clock can be fitted on it. Returns a new float64 array."""
+    h = np.array(host_ns, dtype=np.float64)
+    out = h.copy()
+    for s_ in slips:
+        out -= float(s_["step_ms"]) * 1e6 * (h >= float(s_["t_ns"]))
+    return out
+
+
+def apply_slip_steps(t_m, slips) -> np.ndarray:
+    """Put the sample-loss steps back into sample times from a clock fitted on the step-free stream
+    (remove_slip_steps): samples after each slip really occurred later by its step.
+
+    t_m is in the step-free domain, so slip j cuts at its own corrected host time,
+    `t_ns_j - sum(step_i, i <= j)` (slips in time order); t_out = t_m + sum(step_j * [t_m >= cut_j]).
+    Returns a new float64 array. The cut is the host time of the block after the loss, so samples
+    within one block plus the USB latency before it (about 10-15 ms) get the step late."""
+    t = np.array(t_m, dtype=np.float64)
+    out = t.copy()
+    cum = 0.0
+    for s_ in sorted(slips, key=lambda x: x["t_ns"]):
+        step = float(s_["step_ms"]) * 1e6
+        cum += step
+        out += step * (t >= float(s_["t_ns"]) - cum)
+    return out
+
+
 def _assign(df: pd.DataFrame, name: str, src: np.ndarray, idx: np.ndarray, valid: np.ndarray):
     """df[name] = src[idx] where valid else NaN, built as one float64 column (no frame copy)."""
     col = np.full(len(df), np.nan, dtype=np.float64)
@@ -248,13 +278,23 @@ def align(recorder_dir, pi_run_dir, out_dir) -> dict:
     sel = (b["host_ns"] >= t_first - PAD_S * 1e9) & (b["host_ns"] <= t_last + PAD_S * 1e9)
     if sel.sum() < 2:
         raise AlignError("recording does not cover this run's time range")
-    clock = fit_sample_clock(last_idx[sel], b["host_ns"][sel])
+    clock_raw = fit_sample_clock(last_idx[sel], b["host_ns"][sel])
+
+    # sample losses (USB / host drops) are permanent index steps, but the clock is linear in the
+    # index: after losing K samples every later sample is stamped K/rate too early, and the
+    # sync-pulse line fit would turn that step into fake drift. Detect the slips first, fit the
+    # clock on the step-free stream, then move samples after each slip later by its step.
+    hs_sel = b["host_ns"][sel]
+    slip_rate_hz = _robust_rate_hz(last_idx[sel].astype(np.float64), hs_sel.astype(np.float64))
+    slips = detect_slips(last_idx[sel], hs_sel, slip_rate_hz)
+    clock = (fit_sample_clock(last_idx[sel], remove_slip_steps(hs_sel, slips))
+             if slips else clock_raw)
 
     samples = open_samples(recorder_dir)
     i0 = max(0, int(np.floor(clock.to_idx(t_first - 1e9))))
     i1 = min(len(samples), int(np.ceil(clock.to_idx(t_last + 1e9))) + 1)
     IV = np.array(samples[i0:i1], dtype=np.float64)
-    t_m = clock.to_ns(np.arange(i0, i1))
+    t_m = apply_slip_steps(clock.to_ns(np.arange(i0, i1)), slips)
     P = IV[:, 0] * IV[:, 1]
     ps = _smooth(P)
 
@@ -312,7 +352,7 @@ def align(recorder_dir, pi_run_dir, out_dir) -> dict:
     fail_reasons = []
     res["raw_dropped_nonzero_blocks_in_run"] = int((b["dropped_raw"][sel] != 0).sum())  # diagnostic
     env = _envelope_max_dev_ms(last_idx[sel].astype(np.float64),
-                               b["host_ns"][sel].astype(np.float64), clock)
+                               b["host_ns"][sel].astype(np.float64), clock_raw)
     res["envelope_max_dev_ms"] = env
     warnings = []
     env_bad = env is not None and env > ENVELOPE_MAX_DEV_MS
@@ -322,11 +362,9 @@ def align(recorder_dir, pi_run_dir, out_dir) -> dict:
     if drift_bad:
         warnings.append("drift > 50 ppm")
     res["drift_warning"] = bool(drift_bad)
-    hs_sel = b["host_ns"][sel]
-    res["slip_rate_hz"] = _robust_rate_hz(last_idx[sel].astype(np.float64),
-                                          hs_sel.astype(np.float64))
-    slips = detect_slips(last_idx[sel], hs_sel, res["slip_rate_hz"])
+    res["slip_rate_hz"] = slip_rate_hz
     res["slips"] = slips
+    res["slip_corrected"] = True   # t_m carries the sample-loss steps (absent in older alignment.json)
     res["slip_samples_total"] = int(sum(s_["samples"] for s_ in slips))
     if slips:
         warnings.append(f"{len(slips)} sample-loss slip(s), {res['slip_samples_total']} samples")

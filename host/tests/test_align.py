@@ -8,8 +8,8 @@ import pytest
 
 from pathlib import Path
 
-from align import (AlignError, _robust_rate_hz, align, attach_pi_logs, detect_slips,
-                   merge_counters, merge_sysfs)
+from align import (AlignError, _robust_rate_hz, align, apply_slip_steps, attach_pi_logs,
+                   detect_slips, merge_counters, merge_sysfs, remove_slip_steps)
 from store import SampleStore
 
 FIELDS = ["t_real_ns", "t_mono_ns", "kind", "name", "depth", "mode", "iter",
@@ -30,7 +30,7 @@ def _train_edges(start_ns):
 
 
 def _build(tmp_path, with_pulses=True, extra_events=(), it="0", nan_in_on=False,
-           train_tags=("start", "end"), slip=False, reset_at=None):
+           train_tags=("start", "end"), slip=False, reset_at=None, bumps=(), slip_k=50):
     rec, pi = tmp_path / "rec", tmp_path / "pi"
     pi.mkdir()
     n = int(20 * 5000)
@@ -59,10 +59,12 @@ def _build(tmp_path, with_pulses=True, extra_events=(), it="0", nan_in_on=False,
     if nan_in_on:
         a = int((2.35e9) / B)
         P[a:a + 15] = np.nan                                  # 3 ms dropout in 300 ms ON slot
+    for t in bumps:                           # +2 W marker steps at known true times (200 ms long)
+        P[(true_ns >= t) & (true_ns < t + 200_000_000)] += 2.0
     P += np.random.default_rng(1).normal(0, 0.05, n)
-    if slip:                                  # 50 samples (10 ms) vanish mid-run, no NaN gap
-        P = np.delete(P, np.s_[50_000:50_050])
-        true_ns = np.delete(true_ns, np.s_[50_000:50_050])
+    if slip:                                  # slip_k samples (50 -> 10 ms) vanish mid-run, no NaN gap
+        P = np.delete(P, np.s_[50_000:50_000 + slip_k])
+        true_ns = np.delete(true_ns, np.s_[50_000:50_000 + slip_k])
         n = len(P)
     s = SampleStore(rec)
     blk, rng = 50, np.random.default_rng(2)
@@ -234,6 +236,44 @@ def test_align_flags_mid_run_index_slip(tmp_path):
     assert res["slip_rate_hz"] == pytest.approx(5000 / (1 + 30e-6), rel=1e-4)
     saved = json.loads((pi / "alignment.json").read_text())
     assert saved["slip_warning"] is True
+
+
+def test_slip_steps_remove_then_apply_roundtrip():
+    slips = [{"t_ns": 30e6, "step_ms": 4.0, "samples": 20},
+             {"t_ns": 60e6, "step_ms": 1.5, "samples": 8}]
+    host = np.arange(0.0, 100e6, 1e6)
+    host = host[~((host >= 26e6) & (host < 30e6)) & ~((host >= 58.5e6) & (host < 60e6))]  # lost
+    lin = remove_slip_steps(host, slips)                 # step-free (linear) stream
+    assert np.array_equal(lin[host < 30e6], host[host < 30e6])
+    mid = (host >= 30e6) & (host < 60e6)
+    assert np.allclose(host[mid] - lin[mid], 4.0e6)
+    assert np.allclose(host[host >= 60e6] - lin[host >= 60e6], 5.5e6)
+    assert np.allclose(apply_slip_steps(lin, slips), host)   # samples really occurred later
+    out = apply_slip_steps(host, slips[:1])
+    assert out is not host and out[-1] == host[-1] + 4.0e6    # input untouched, returns a copy
+    assert np.array_equal(apply_slip_steps(host, []), host)
+
+
+def test_align_slip_correction_keeps_drift_and_midrun_times(tmp_path):
+    """K samples lost between the start and end pulse trains: without the correction the line fit
+    turns the step into drift (~K/rate/T = 20 ms / 13 s = 1500 ppm) and mid-run samples sit ~K/rate/2
+    off; with it drift stays near the true (~0) and mid-run edges land within 0.5 ms."""
+    k = 100                                              # 20 ms
+    bumps = [T0 + 6_000_000_000, T0 + 12_000_000_000]    # before / after the slip (true t = 10 s)
+    rec, pi, _ = _build(tmp_path, slip=True, slip_k=k, bumps=bumps)
+    res = align(rec, pi, pi)
+    assert res["slip_corrected"] is True
+    assert abs(res["slip_samples_total"] - k) <= 5
+    assert abs(res["drift_ppm"]) < 5                     # true drift ~0 (clock fit absorbs 30 ppm)
+    assert res["max_residual_ms"] < 0.5
+    saved = json.loads((pi / "alignment.json").read_text())
+    assert saved["slip_corrected"] is True
+    df = pd.read_parquet(pi / "power_trace.parquet")
+    t, p = df["t_pi_ns"].to_numpy(), df["P_W"].to_numpy()
+    for b0 in bumps:
+        w = (t > b0 - 50e6) & (t < b0 + 50e6)
+        t_edge = t[w][np.argmax(p[w] > 4.2)]             # 3.2 W base + 2 W bump, half-way = 4.2 W
+        assert abs(t_edge - b0) < 0.5e6, (b0, (t_edge - b0) / 1e6)
 
 
 def test_align_reports_raw_dropped_but_does_not_gate(tmp_path):

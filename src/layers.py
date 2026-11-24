@@ -208,8 +208,7 @@ def _bytes_moved(in_args, out_shapes, out_dtype="torch.float32"):
         n = 1
         for d in s: n *= d
         b += n*per_elem
-    # add weight reads (cold):
-    # caller adds params*4 for fp32
+    # add weight reads (cold): the caller adds param_bytes (numel * element_size), not params*4
     return int(b)
 
 
@@ -239,6 +238,11 @@ def _t_eff(class_name, in_shapes):
     except Exception:
         pass
     return 1
+
+
+def param_bytes(mod) -> int:
+    """Bytes of a module's parameters as stored: sum of numel * element_size (dtype-aware)."""
+    return int(sum(p.numel() * p.element_size() for p in mod.parameters()))
 
 
 def _arg_tensors(rec):
@@ -337,6 +341,11 @@ class LayerProfiler:
     def params(self, path: str) -> int:
         return sum(p.numel() for p in self._modules[path].parameters())
 
+    def param_bytes(self, path: str) -> int:
+        """Weight bytes of the module at `path` as stored: numel * element_size per parameter
+        (fp16 weights count 2 bytes, not 4)."""
+        return param_bytes(self._modules[path])
+
     def in_shapes(self, path, idx):
         return [a["shape"] for a in self.input_recs[path][idx].get("args", [])
                 if a["k"] == "tensor"] + \
@@ -367,7 +376,7 @@ class LayerProfiler:
                 out_s = self.out_shapes(path, idx)
                 macs = _macs(self._modules[path], in_s, out_s)
                 bm = _bytes_moved(rec, out_s,
-                                  out_dtype=_out_dtype_for(rec, cfg["class"])) + self.params(path) * 4
+                                  out_dtype=_out_dtype_for(rec, cfg["class"])) + self.param_bytes(path)
                 te = _t_eff(cfg["class"], in_s)
                 rows.append({
                     "path": path,
@@ -411,7 +420,7 @@ class LayerProfiler:
                 out_s = self.out_shapes(path, idx)
                 out_dtype = _out_dtype_for(rec, cfg["class"])
                 te = _t_eff(cfg["class"], in_s)
-                wbytes = sum(p.numel() for p in mod.parameters()) * 4
+                wbytes = param_bytes(mod)
                 meas_cfg = {**cfg, "shapes": in_s,
                             "dtypes": sorted({a.get("dtype") for a in
                                               _arg_tensors(rec) if a.get("dtype")})}
@@ -435,6 +444,41 @@ class LayerProfiler:
                 entry["calls"] += self.calls[path][idx]
                 entry["sites"].append(path)
         return out
+
+
+class NullProfiler:
+    """Drop-in for LayerProfiler when run.py --layer-hooks off: registers NO forward hooks.
+
+    Keeps the contract run.py relies on: set_mode/set_frame still write the mode/iter labels into
+    `events` (so the event log, and the aligner's mode/iter labels, are unchanged), and the
+    attributes run.py touches exist and are empty (`_modules`, `exec_order`, `layer_events`).
+    There are no layer rows or leaf configs, so no layer_table.csv and no per-op power benches;
+    static features come from tools/static_features.py instead."""
+
+    def __init__(self, model=None) -> None:
+        self.model = model
+        self.frame = 0
+        self.mode = "forward"
+        self._modules: dict[str, nn.Module] = {}
+        self.exec_order: list[tuple] = []
+        self.events = None
+        self.layer_events = False
+
+    def set_frame(self, frame: int) -> None:
+        self.frame = frame
+        if self.events is not None:
+            self.events.labels["iter"] = frame
+
+    def set_mode(self, mode: str) -> None:
+        self.mode = mode
+        if self.events is not None:
+            self.events.labels["mode"] = mode
+
+    def aggregated(self, exclude_frame: int = 0) -> list:
+        return []
+
+    def leaf_configs(self) -> dict:
+        return {}
 
 
 def _out_shapes(out) -> list:
