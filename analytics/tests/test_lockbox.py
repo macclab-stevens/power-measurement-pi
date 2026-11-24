@@ -196,7 +196,7 @@ def test_secondary_fits_skip_the_candidate_that_is_already_the_auto_final(env):
 def test_mode_l_fit_final_pickles_every_rung_and_reports_sha(lockbox_env):
     recs = ri.read_records(lockbox_env.paths.runs_log)
     got = {r["rung"]: r for r in recs if r.get("command") == "final-mode-l"}
-    assert list(got) == list(mlm.default_rungs())
+    assert list(got) == list(mlm.R1_RUNGS)
     for name, r in got.items():
         assert r["path"].endswith(f"mode_l_{name}.pkl") and len(r["sha256"]) == 64 and r["n_cells"] == 6
         assert r["base_models"] == ["yolov8m", "yolov8n", "yolov8s"]
@@ -228,7 +228,7 @@ def test_manifest_lists_every_frozen_model_and_the_predictions_sha(env):
     man = json.loads(out["manifest"].read_text())
     assert out["manifest"] == paths.out_dir / lb.MANIFEST
     assert man["predictions_sha256"] == lb.runlog.file_hash(out["path"]) == out["rec"]["predictions_sha256"]
-    assert set(man["mode_l"]) == set(mlm.default_rungs()) and len(man["mode_a"]) == 7
+    assert set(man["mode_l"]) == set(mlm.R1_RUNGS) and len(man["mode_a"]) == 7
     recs = ri.read_records(paths.runs_log)
     for name, v in man["mode_l"].items():
         rec = ri.latest_record(recs, command="final-mode-l", part="fit_final", rung=name, seed=MASTER)

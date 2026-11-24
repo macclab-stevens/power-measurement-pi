@@ -462,7 +462,7 @@ def frozen_mode_l(recs: list, predict_rec: dict, seed: int) -> tuple:
     must still be the latest `final-mode-l` fit of its rung and its pickle must hash to the recorded sha256."""
     frozen, latest = predict_rec["mode_l_frozen"], lb.mode_l_refs(recs, seed)
     models, ids = {}, {}
-    for name in mlm.default_rungs():
+    for name in mlm.R1_RUNGS:
         want = frozen.get(name)
         if want is None:
             raise lb.LockboxError(f"the `lockbox-predict` run {predict_rec['run_id']} recorded no frozen Mode L model for rung {name}")

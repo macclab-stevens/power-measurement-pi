@@ -53,9 +53,10 @@ def mode_a_frozen(recs: list, seed: int) -> tuple:
 
 
 def mode_l_frozen(recs: list, seed: int) -> tuple:
-    """(table, [missing rungs]) of the `final-mode-l` fits of `seed`, the latest line of each of the eight rungs."""
+    """(table, [missing rungs]) of the `final-mode-l` fits of `seed`, the latest line of each of the eight R1 rungs
+    (the R2 rungs are not part of the frozen set)."""
     rows, missing = [], []
-    for name, rung in mlm.default_rungs().items():
+    for name, rung in ((n, r) for n, r in mlm.default_rungs().items() if n in mlm.R1_RUNGS):
         rec = ri.latest_record(recs, command="final-mode-l", part="fit_final", rung=name, seed=seed)
         if rec is None:
             missing.append(name)

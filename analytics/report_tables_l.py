@@ -6,7 +6,7 @@ import pandas as pd
 import evaluate
 from report_tables import pct, pct_ci, verdict
 
-RUNG_ORDER = ["L0", "L1", "L1-cell", "L2", "L3-ridge", "L3-trees", "L4-ridge", "L4-trees"]
+RUNG_ORDER = ["L0", "L1", "L1-cell", "L2", "L3-ridge", "L3-trees", "L4-ridge", "L4-trees", "L5-cmos", "L5-cmos-trees"]
 PHASES = ["idle", "load_weights", "warmup", "forward", "serve"]
 EXPLORATORY_NOTE = ("`L1-cell` is exploratory: it was added after a scored smoke fold (protocol amendment of "
                     "2026-11-23, `analytics/PROTOCOL.md`). `L1` is the pre-registered PMIC rung.")

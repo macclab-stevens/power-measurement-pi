@@ -60,7 +60,7 @@ def build(root) -> SimpleNamespace:
         # Mode L: first grid point of every rung on three YOLO-named models
         w, cat = make_windows(models=("yolov8n", "yolov8s", "yolov8m"))
         qc = pd.DataFrame({"cell_id": cat["cell_id"], "primary": True})
-        rungs = mlm.first_point(mlm.default_rungs())
+        rungs = mlm.first_point({k: v for k, v in mlm.default_rungs().items() if k in mlm.R1_RUNGS})
         for name in rungs:
             _, info = mode_l.fit_final(w, cat.assign(source="v2"), qc, name, MASTER, rungs)
             runlog.append({"command": "final-mode-l", "part": "fit_final", "seed": MASTER, "rung": name, **info}, paths.runs_log)
