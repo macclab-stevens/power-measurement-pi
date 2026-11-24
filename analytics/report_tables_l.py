@@ -220,8 +220,9 @@ def deploy_summary(dep: pd.DataFrame) -> pd.DataFrame:
 
 
 def deploy_rows(dep: pd.DataFrame) -> pd.DataFrame:
-    """Row-level view without the bulk `serve-default` case (it is in the CSV)."""
-    d = dep[dep["case"] != "serve-default"]
+    """Row-level view without the bulk serve cases (`serve-default`, `serve-default (duration known)`, `serve-gap`;
+    they are in the CSV)."""
+    d = dep[~dep["case"].isin(["serve-default", "serve-default (duration known)", "serve-gap"])]
     return pd.DataFrame({"case": d["case"], "cell_id": d["cell_id"], "phase": d["phase"], "measured J": d["measured_J"],
                          "predicted J": d["predicted_J"], "APE %": d["ape"].map(pct), "lo90 J": d["lo90_J"],
                          "hi90 J": d["hi90_J"], "flagged": d["flagged"].map(lambda v: "" if pd.isna(v) else ("yes" if v else "no"))})

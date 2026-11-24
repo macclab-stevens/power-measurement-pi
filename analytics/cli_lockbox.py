@@ -1,5 +1,6 @@
 """CLI commands that freeze the models the lockbox is scored with and run the lockbox pipeline:
-`final-mode-l`, `final-mode-a-secondary`, `lockbox-predict`, `lockbox-score`. Registered in cli.py's COMMANDS.
+`final-mode-l`, `final-mode-a-secondary`, `lockbox-predict`, `lockbox-score`, and the post hoc (R2)
+`lockbox-calculator-gap`. Registered in cli.py's COMMANDS.
 None of them fits anything on lockbox data: the fit commands drop `source == lockbox` rows first."""
 import sys
 
@@ -153,6 +154,33 @@ def cmd_lockbox_score(args) -> int:
     return 0
 
 
+def cmd_lockbox_calculator_gap(args) -> int:
+    """Post hoc (R2): the frozen predictions through the closed-loop gap scenario, no measured duration. Fits nothing and
+    does not touch the frozen lockbox outputs."""
+    import derive
+    import pandas as pd
+    import data
+    import lockbox
+    import lockbox_score as ls
+    import qc
+    import report_inputs as ri
+    paths = ri.Paths.default()
+    if not lockbox.lockbox_cells_exist():
+        return _fail(f"no lockbox cells under {settings.data_root() / 'lockbox' / 'cells'}")
+    if not paths.qc_csv.is_file():
+        return _fail(f"{paths.qc_csv} is missing; run `uv run python cli.py qc` first")
+    try:
+        cat = data.catalogue()
+        der = derive.derive_all(cat, cache=True)
+        out = ls.run_posthoc_gap(paths, cat=cat, der=der, qc_train=pd.read_csv(paths.qc_csv),
+                                 qc_l=qc.run_qc(ls.require_lockbox(cat), der))
+    except (lockbox.LockboxError, ri.ReportInputError, ValueError) as exc:
+        return _fail(exc)
+    print(out["summary"].to_string(index=False))
+    print(f"post hoc (R2): {len(out['df'])} cells -> {out['csv']}, {out['md']}; run {out['rec']['run_id']}")
+    return 0
+
+
 def add_seed(p) -> None:
     p.add_argument("--seed", type=int, help="seed of the frozen fits (default: the config.toml seed)")
 
@@ -198,4 +226,7 @@ COMMANDS = {
                         "before any lockbox cell exists", cmd_lockbox_predict, add_predict_args),
     "lockbox-score": ("score the frozen models on ~/pi-power-data/lockbox -> reports/lockbox.md and derived/lockbox/; "
                       "fits nothing", cmd_lockbox_score, add_score_args),
+    "lockbox-calculator-gap": ("post hoc (R2): serve-phase calculator on the lockbox with the frozen predictions and the "
+                               "closed-loop gap scenario (no measured duration) -> reports/r2/lockbox_calculator_gap.{csv,md}; "
+                               "fits nothing", cmd_lockbox_calculator_gap, None),
 }

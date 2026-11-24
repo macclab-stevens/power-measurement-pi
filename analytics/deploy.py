@@ -25,6 +25,8 @@ ONDEMAND_ASSUMPTION = "ondemand: active energy taken at 2400 MHz, idle power fro
 VALIDATION_COLS = ["case", "cell_id", "phase", "measured_J", "predicted_J", "ape", "source", "notes",
                    "predicted_J_no_soak", "lo90_J", "hi90_J", "flagged", "saturated"]
 _ABSENT = ("serve_fps", "soak_minutes", "concurrent_mode")
+KNOWN_CASE = "serve-default (duration known)"
+KNOWN_NOTE = "duration known (leaks measured duration)"
 
 
 # ------------------------------------------------------------------ keys and measured lookups
@@ -158,8 +160,16 @@ def predict(scenario: dict, e_img_mJ: float, t_img_ms: float, idle: pd.DataFrame
             offsets: dict | None, soak: float | None) -> dict:
     """Total energy of a deployment.
 
-    scenario: cpu_key ("1500" / "2000" / "2400" / "ondemand"), fan_mode, duration_s, rig (default
-    "nov2026"), and either rate_fps (float, or "max") or n_images. e_img_mJ and t_img_ms are per image;
+    scenario: cpu_key ("1500" / "2000" / "2400" / "ondemand"), fan_mode, rig (default "nov2026"), and
+    exactly one of two duration kinds (anything else is a ValueError):
+      - `duration_s`: the wall time is known a priori (open loop, a fixed fps, a wall-clock deployment), with
+        either rate_fps (float, or "max") or n_images;
+      - `gap_s`: a closed loop (request, then sleep `gap_s`, repeated), whose wall time depends on the latency
+        being predicted. Needs `n_images`, forbids `rate_fps`; optional `overhead_s` (default 0.0, per-request time
+        outside the forward pass, see `request_overhead_s`) and `batch` (default 1, images per request). With
+        R = n_images / batch requests, duration = R * (batch * t_img + gap_s + overhead_s); busy = n_images * t_img.
+        The measured serve duration is never an input of this kind.
+    e_img_mJ and t_img_ms are per image;
     for `ondemand` the caller passes the 2400 MHz prediction and P_idle comes from the ondemand row.
     Idle power is the table row at fan `full`, plus offsets[fan]["idle_W"] for fan auto / off; the
     active offset adds offsets[fan]["active_W"] * busy_s. `soak` is the energy-per-image ratio f
@@ -169,11 +179,24 @@ def predict(scenario: dict, e_img_mJ: float, t_img_ms: float, idle: pd.DataFrame
     rate is capped by the latency (including rate "max") or the busy time had to be clipped.
 
     Returns E_J, E_J_no_soak, mean_P_W, n_images, busy_s, idle_s, saturated, assumptions."""
-    dur = float(scenario["duration_s"])
     fan, ck, rig = scenario.get("fan_mode", "full"), str(scenario["cpu_key"]), scenario.get("rig", DEFAULT_RIG)
     t_s = t_img_ms / 1000.0
     cap = 1.0 / t_s
     assumptions, saturated = [], False
+    has_dur, has_gap = scenario.get("duration_s") is not None, scenario.get("gap_s") is not None
+    if has_dur == has_gap:
+        raise ValueError("scenario needs exactly one of duration_s (known a priori) and gap_s (closed loop), got "
+                         + ("both" if has_dur else "neither"))
+    if has_gap:
+        if "n_images" not in scenario or "rate_fps" in scenario:
+            raise ValueError("a gap_s scenario needs n_images and takes no rate_fps")
+        n_req = float(scenario["n_images"]) / float(scenario.get("batch", 1))
+        dur = n_req * (float(scenario.get("batch", 1)) * t_s + float(scenario["gap_s"])
+                       + float(scenario.get("overhead_s", 0.0)))
+        assumptions.append(f"closed loop: duration = requests * (batch * latency + gap {float(scenario['gap_s']):g} s "
+                           f"+ overhead {float(scenario.get('overhead_s', 0.0)):.4g} s)")
+    else:
+        dur = float(scenario["duration_s"])
     if "n_images" in scenario:
         n = float(scenario["n_images"])
     else:
@@ -207,6 +230,59 @@ def predict(scenario: dict, e_img_mJ: float, t_img_ms: float, idle: pd.DataFrame
     return {"E_J": e, "E_J_no_soak": e_no, "mean_P_W": e / dur if dur > 0 else float("nan"),
             "n_images": n, "busy_s": busy, "idle_s": dur - busy, "saturated": saturated,
             "assumptions": assumptions}
+
+
+# ------------------------------------------------------------------ closed-loop request overhead
+
+DEFAULT_SERVE_GAP_MS = 200.0     # src/run.py --serve-gap-ms default, for a run_meta without the key
+
+
+def family_of(base_model: str) -> str:
+    """Request-path family of a model: "yolo" (detector post-processing) or "other"."""
+    return "yolo" if str(base_model).startswith("yolo") else "other"
+
+
+def with_serve_gap(cells: pd.DataFrame) -> pd.DataFrame:
+    """`cells` with a `serve_gap_ms` column: kept if present, else read from each row's `path`/run_meta.json
+    (`serve_gap_ms`, default 200 ms as in src/run.py). A cell that cannot be read, or a frame with no `path`,
+    gets the default."""
+    if "serve_gap_ms" in cells.columns:
+        return cells
+    gaps = []
+    for pth in (cells["path"] if "path" in cells.columns else [None] * len(cells)):
+        try:
+            gaps.append(float(data.read_meta(pth).get("serve_gap_ms", DEFAULT_SERVE_GAP_MS)))
+        except (OSError, ValueError, TypeError):    # includes pth None
+            gaps.append(DEFAULT_SERVE_GAP_MS)
+    return cells.assign(serve_gap_ms=gaps)
+
+
+def request_overhead_s(cells: pd.DataFrame, exclude_cell: str | None = None) -> dict:
+    """Per-request time outside the forward pass and the idle gap, by family: {"yolo": s, "other": s, "all": s}.
+
+    `cells` are TRAINING cells carrying serve_n_requests, batch, serve_dur_ms, latency_ms_per_image,
+    serve_fps and serve_gap_ms (or a `path` to read it from; see `with_serve_gap`) and base_model, cell_id.
+    Only closed-loop cells count (serve_fps NaN, finite duration, latency and a positive request count). For a
+    cell, with R requests of `batch` images each, the overhead is
+        (serve_dur - R * batch * latency - R * gap) / R,
+    where serve_dur is the summed duration of the serve-phase samples (derive._serve) and every request, the last
+    included, is followed by the gap (src/run.py). It uses the cell's own measured latency: this is a property of
+    the request path, estimated from training cells only. The result per family is the median; a family with no
+    cell gets the all-cells median ("all"). `exclude_cell` drops one cell (leave-one-cell-out validation).
+    Raises ValueError when no usable cell remains."""
+    c = with_serve_gap(cells)
+    c = c[c["serve_fps"].isna() & (c["serve_n_requests"] > 0) & np.isfinite(c["serve_dur_ms"].astype(float))
+          & np.isfinite(c["latency_ms_per_image"].astype(float))]
+    if exclude_cell is not None:
+        c = c[c["cell_id"] != exclude_cell]
+    if c.empty:
+        raise ValueError("no closed-loop serve cell to estimate the request overhead from")
+    r = c["serve_n_requests"].astype(float)
+    oh = (c["serve_dur_ms"] / 1000.0 - r * c["batch"].astype(float) * c["latency_ms_per_image"] / 1000.0
+          - r * c["serve_gap_ms"] / 1000.0) / r
+    fam = c["base_model"].map(family_of)
+    allm = float(oh.median())
+    return {f: (float(oh[fam == f].median()) if (fam == f).any() else allm) for f in ("yolo", "other")} | {"all": allm}
 
 
 # ------------------------------------------------------------------ Mode A predictions
@@ -285,9 +361,14 @@ def validate(cat: pd.DataFrame, der: pd.DataFrame, qc: pd.DataFrame, preds: pd.D
     """Compare the calculator with measured whole-phase energy, using only `preds` (held-out Mode A
     predictions: config_key, e_img_mJ, t_img_ms, optional lo90_mJ, hi90_mJ, flagged).
 
-    Cases: serve-default (every Mode A eligible primary cell's serve phase), serve-fps (yolo11n serve
-    1/5/15 fps), ondemand (yolo11s ondemand, forward per image and serve), soak (forward phase with the
-    soak factor of the other soak only), fan (offsets measured on these cells: not a validation).
+    Cases: serve-default (duration known) (every Mode A eligible primary cell's serve phase, with the MEASURED
+    serve duration: this leaks the latency being predicted, because a closed-loop serve phase lasts
+    n * (latency + gap + overhead); kept for comparison and labelled so), serve-gap (the same cells, honest:
+    gap scenario with the request overhead estimated from the other training serve cells, leave-one-cell-out),
+    serve-fps (yolo11n serve 1/5/15 fps; duration known a priori as n / fps), ondemand (yolo11s ondemand,
+    forward per image and serve; the serve rows are duration known, ondemand-gap are the honest ones), soak
+    (forward phase with the soak factor of the other soak only), fan (offsets measured on these cells: not a
+    validation; fan-gap holds the serve rows without the measured duration).
     Rows whose configuration has no prediction are skipped; counts are in df.attrs["skipped"] (case ->
     n) and the fan offsets, soak factors and idle table in attrs.
 
@@ -328,12 +409,42 @@ def validate(cat: pd.DataFrame, der: pd.DataFrame, qc: pd.DataFrame, preds: pd.D
         rows.append(_val_row(case, row, phase, measured_J, p, source, notes, lo=lo, hi=hi, flagged=fl))
 
     def serve(case, row, notes=""):
+        """Serve phase with the MEASURED duration (leaks the latency for a closed-loop cell)."""
         n = float(row["serve_n_requests"]) * float(row["batch"])
         if not n > 0 or not np.isfinite(row["serve_dur_ms"]):
             skipped[case] = skipped.get(case, 0) + 1
             return
         scen = _scenario(row, n_images=n, duration_s=row["serve_dur_ms"] / 1000.0)
         run(case, row, "serve", scen, row["serve_E_mJ"] / 1000.0, notes)
+
+    def serve_fps(case, row, notes=""):
+        """Fixed-rate serve phase: the duration is n / fps, known a priori (never the measured duration)."""
+        n = float(row["serve_n_requests"]) * float(row["batch"])
+        if not n > 0 or not np.isfinite(row["serve_dur_ms"]):
+            skipped[case] = skipped.get(case, 0) + 1
+            return
+        scen = _scenario(row, n_images=n, duration_s=n / float(row["serve_fps"]))
+        run(case, row, "serve", scen, row["serve_E_mJ"] / 1000.0, notes)
+
+    t_gap = with_serve_gap(t)
+
+    def serve_gap(case, row, notes=""):
+        """Closed-loop serve phase without the measured duration: gap scenario, the request overhead from the
+        other training serve cells (leave-one-cell-out; family of this cell's model)."""
+        n = float(row["serve_n_requests"]) * float(row["batch"])
+        if not n > 0 or not np.isfinite(row["serve_dur_ms"]):
+            skipped[case] = skipped.get(case, 0) + 1
+            return
+        try:
+            oh = request_overhead_s(t_gap, exclude_cell=row["cell_id"])[family_of(row["base_model"])]
+        except ValueError:                         # no other closed-loop cell: no leak-free overhead
+            skipped[case] = skipped.get(case, 0) + 1
+            return
+        gap = float(t_gap.loc[t_gap["cell_id"] == row["cell_id"], "serve_gap_ms"].iloc[0]) / 1000.0
+        scen = _scenario(row, n_images=n, gap_s=gap, overhead_s=oh, batch=float(row["batch"]))
+        run(case, row, "serve", scen, row["serve_E_mJ"] / 1000.0,
+            f"{notes + '; ' if notes else ''}gap {gap * 1000:g} ms, request overhead {oh * 1000:.2f} ms "
+            f"(median of the other training serve cells)")
 
     # forward phase has no idle time: duration is the busy time of the predicted latency
     def forward(case, row, n, notes, soak=None):
@@ -347,12 +458,15 @@ def validate(cat: pd.DataFrame, der: pd.DataFrame, qc: pd.DataFrame, preds: pd.D
 
     plain = t[np.isfinite(t["serve_dur_ms"].astype(float)) & (t["serve_n_requests"] > 0)]
     for _, r in plain[plain["mode_a_eligible"].astype(bool)].iterrows():
-        serve("serve-default", r)
+        serve(KNOWN_CASE, r, KNOWN_NOTE)
+        serve_gap("serve-gap", r)
     for _, r in plain[plain["serve_fps"].notna() & (plain["base_model"] == "yolo11n")].iterrows():
-        serve("serve-fps", r, f"serve_fps={r['serve_fps']:g}")
+        serve_fps("serve-fps", r, f"serve_fps={r['serve_fps']:g}; duration n / fps")
     for _, r in t[(t["governor"] == "ondemand") & (t["base_model"] == "yolo11s")].iterrows():
         forward("ondemand", r, 1, "forward phase, per image (J per image); active energy at 2400 MHz")
-        serve("ondemand", r, "serve phase; idle power from the ondemand baseline")
+        serve("ondemand", r, f"serve phase; idle power from the ondemand baseline; {KNOWN_NOTE}")
+        if np.isnan(r["serve_fps"]):
+            serve_gap("ondemand-gap", r, "serve phase; idle power from the ondemand baseline")
     for _, r in t[t["soak_minutes"].notna()].iterrows():
         f = soak_factor(der, cat, exclude_cell=r["cell_id"], qc=qc)
         soaks[r["cell_id"]] = f
@@ -366,7 +480,8 @@ def validate(cat: pd.DataFrame, der: pd.DataFrame, qc: pd.DataFrame, preds: pd.D
                   & t["concurrent_mode"].isna()].iterrows():
         note = "offsets measured on these cells: not a validation"
         forward("fan", r, 1, f"forward phase, per image (J per image); {note}")
-        serve("fan", r, f"serve phase; {note}")
+        serve("fan", r, f"serve phase; {note}; {KNOWN_NOTE}")
+        serve_gap("fan-gap", r, f"serve phase; {note}")
     out = pd.DataFrame(rows, columns=VALIDATION_COLS)
     out.attrs.update(skipped=skipped, fan_offsets=offsets, soak_factors=soaks, idle=idle)
     return out
