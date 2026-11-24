@@ -129,3 +129,27 @@ under-voltage bits were current in any cell (all non-zero words are the 0x50000 
   `lockbox-score` refuses a mismatch unless `--allow-code-change`, which labels the result exploratory, and checks the measured cells'
   layer tables against the static CSVs the predictions used. (5) A missing or NaN alignment residual is a Q2 failure (no cell changes status).
   The novelty threshold comes from S-LOMO (standardised over 8 models) while lockbox novelty is standardised over the 9 training models.
+- 2026-11-24, **R2 revision (post review, exploratory; the lockbox has been seen)**. An external audit
+  (`docs/review/2026-11-23-external-audit.md`) was checked against our data (`docs/review/2026-11-24-audit-response.md`,
+  levers in `analytics/audit/`). R1 stays reproducible from tag `analytics-frozen`; its reports are copied to
+  `reports/r1_frozen/`. R2 changes, in order of effect:
+  - (1) Mode A inner selection uses a model-balanced error: the mean over inner folds of the fold median |log(p/y)|. It
+    replaces pooled-row MdAPE, which let the 49 YOLO rows decide.
+  - (2) Inner folds follow the regime of the outer test fold:
+    - leave-one-base-model-out when a test base model is absent from training (new-model);
+    - random 5-fold over configurations when all test base models are in training (seen-model).
+    The applicability threshold still comes from leave-one-base-model-out folds. Final models are fitted per regime.
+  - (3) 90 % intervals weight each inner fold equally.
+  - (4) Features: `log_weight_bytes` and `frac_macs_other` are dropped. Added `v2f` = V_core(f)² · f (DVFS table in
+    `config.toml`) and `log_n_calls`, the per-image module calls; the instrumentation hooks cost about 45–85 µs each.
+  - (5) New candidate `M4Physics`: NNLS additive latency × weighted-ridge power.
+  - (6) Metrics add MaxAPE, P90 APE, R² on log and the median interval width.
+  - (7) The deployment calculator scores closed-loop serve phases with duration = n · (t_pred + gap + overhead). The
+    measured duration leaked the latency.
+  - (8) Mode L: window labels on a slip-corrected time axis (`timefix.py`). New features `f_eff_mhz`, `vcore_eff`,
+    `v2_cycles_rate`, `v2_instr_rate` and `llc_miss_rate`; the dead `ctx_sw_rate` is dropped. New rungs L5-cmos and
+    L5-cmos-trees. Grid selection on the inference-segment APE. Forward-window MAE and forward-only R² are reported.
+  - (9) Collection code: the slip-step correction in `host/align.py`, dtype-aware weight bytes in `src/layers.py`,
+    and `run.py --layer-hooks off`.
+  Every lockbox number of an R2 model is post hoc and labelled so. A confirmatory test of R2 needs a new lockbox
+  (`docs/review/next-collection.md`).
