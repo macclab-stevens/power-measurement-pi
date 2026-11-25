@@ -10,8 +10,8 @@ on the Pi), so start() polls the raw file until the first complete interval line
 derives `offset_ns = t_first_seen - t0 - first_time` (>= 0); all timestamps are then
 `t0_ns + offset_ns + time*1e9`. If no line shows up within 2 s, offset_ns is 0 (method "none").
 
-Facts about perf on the Pi 5 (6.18.60, perf_event_paranoid=2 => user-space only, events print as
-`cycles:u`): the 10 default events (7 hardware + 3 software) fit the PMU without multiplexing, but
+Facts about perf on the Pi 5 (6.18.60; under perf_event_paranoid=2 everything is user-space only, events print as
+`cycles:u`; see HW_MODIFIER for paranoid <= 1): the 11 default events (7 hardware + 4 software) fit the PMU without multiplexing, but
 each interval still reports `pct_running` (the share of the interval an event was actually counted;
 the count is already scaled up by perf), and more hardware events than counters would multiplex;
 an event that was never scheduled prints `<not counted>`. perf also prints metric-only lines with
@@ -42,8 +42,20 @@ import time
 # (duplicates), so they are dropped, as are LLC-loads and bus-cycles.
 DEFAULT_EVENTS = ("cycles", "instructions", "cache-references", "cache-misses",
                   "branch-misses", "stalled-cycles-backend", "LLC-load-misses",
-                  "task-clock", "context-switches", "page-faults")
-SOFTWARE_EVENTS = ("task-clock", "context-switches", "page-faults")   # always 100 % running
+                  "task-clock", "context-switches", "page-faults", "cpu-migrations")
+SOFTWARE_EVENTS = ("task-clock", "context-switches", "page-faults", "cpu-migrations")   # always 100 % running
+# Hardware events are requested user-only (`:u`) whatever perf_event_paranoid allows, so hardware counts stay
+# comparable with every cell collected under paranoid=2 (where perf forces `:u`). Software events carry no modifier:
+# with paranoid <= 1 they include the kernel (context switches, kernel page faults, migrations), which under
+# paranoid=2 read 0. The A76 PMU is full with the 7 hardware events, so kernel-mode hardware twins (cycles:k, ...)
+# would multiplex and break the 95 % coverage gate.
+HW_MODIFIER = ":u"
+
+
+def perf_event_spec(events) -> list[str]:
+    """`-e` names for perf: hardware events with HW_MODIFIER, software events as given. Column names are
+    unchanged (parse_interval_csv strips the modifier)."""
+    return [e if e in SOFTWARE_EVENTS or ":" in e else e + HW_MODIFIER for e in events]
 STOP_TIMEOUT_S = 5.0
 FIRST_LINE_POLL_S = 0.002       # how often start() looks for perf's first interval line
 FIRST_LINE_GIVE_UP_S = 2.0
@@ -191,7 +203,8 @@ def counters_meta(enabled: bool, available: bool, interval_ms: int, events, t0_n
                   offset_method: str | None = None,
                   min_pct: float | None = None) -> dict:
     """The run_meta.json `perf_counters` block."""
-    scope = None if paranoid is None else ("user" if paranoid >= 2 else "user+kernel")
+    scope = None if paranoid is None else ("user" if paranoid >= 2
+                                           else "hardware user, software user+kernel")
     return {"enabled": enabled, "available": available, "interval_ms": interval_ms,
             "events": list(events), "t0_ns": t0_ns, "offset_ns": offset_ns,
             "offset_method": offset_method, "error": error,
@@ -233,7 +246,7 @@ class PerfStat:
             self.note_error("perf not found on PATH")
             return False
         argv = ["perf", "stat", "-I", str(self.interval_ms), "-x", ",", "-o", self.out_path,
-                "-e", ",".join(self.events), "-p", str(self.pid)]
+                "-e", ",".join(perf_event_spec(self.events)), "-p", str(self.pid)]
         try:
             os.remove(self.out_path)   # a stale file would fake the first-line detection
         except OSError:

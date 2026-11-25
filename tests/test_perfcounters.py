@@ -8,6 +8,7 @@ import sys
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+import perfcounters
 from perfcounters import (DEFAULT_EVENTS, PerfStat, counters_meta, first_line_time_s,
                           min_pct_running, parse_interval_csv, read_paranoid, to_wide,
                           write_counters_csv)
@@ -68,8 +69,9 @@ def _popen_factory(procs):
 
 def test_parse_fixture_row_count_and_event_names():
     rows = parse_interval_csv(_fixture_text(), T0)
-    assert len(rows) == 3 * len(DEFAULT_EVENTS)    # metric-only lines are not rows
-    assert {r["event"] for r in rows} == set(DEFAULT_EVENTS)   # ':u' stripped
+    fixture_events = [e for e in DEFAULT_EVENTS if e != "cpu-migrations"]   # recorded before it was added
+    assert len(rows) == 3 * len(fixture_events)    # metric-only lines are not rows
+    assert {r["event"] for r in rows} == set(fixture_events)   # ':u' stripped
     assert all(":" not in r["event"] for r in rows)
 
 
@@ -225,7 +227,7 @@ def test_start_builds_exact_argv_and_records_t0_before_spawn(tmp_path):
     assert order == ["clock", "popen"]
     assert ps.t0_ns == 123456789
     assert procs[0].argv == ["perf", "stat", "-I", "200", "-x", ",", "-o", raw,
-                             "-e", ",".join(DEFAULT_EVENTS), "-p", "4242"]
+                             "-e", ",".join(perfcounters.perf_event_spec(DEFAULT_EVENTS)), "-p", "4242"]
 
 
 def test_start_default_interval_is_100ms(tmp_path):
@@ -339,8 +341,8 @@ def test_read_paranoid(tmp_path):
     assert read_paranoid(str(p)) is None
 
 
-@pytest.mark.parametrize("paranoid,scope", [(2, "user"), (3, "user"), (1, "user+kernel"),
-                                            (0, "user+kernel"), (-1, "user+kernel")])
+@pytest.mark.parametrize("paranoid,scope", [(2, "user"), (3, "user"), (1, "hardware user, software user+kernel"),
+                                            (0, "hardware user, software user+kernel"), (-1, "hardware user, software user+kernel")])
 def test_meta_scope_from_paranoid(paranoid, scope):
     m = counters_meta(enabled=True, available=True, interval_ms=100, events=DEFAULT_EVENTS,
                       t0_ns=5, error=None, paranoid=paranoid)
@@ -373,7 +375,14 @@ def test_perfstat_meta_reflects_state(tmp_path):
 def test_default_events_are_the_non_multiplexing_set():
     assert DEFAULT_EVENTS == ("cycles", "instructions", "cache-references", "cache-misses",
                               "branch-misses", "stalled-cycles-backend", "LLC-load-misses",
-                              "task-clock", "context-switches", "page-faults")
+                              "task-clock", "context-switches", "page-faults", "cpu-migrations")
+
+
+def test_hardware_events_are_requested_user_only_software_events_unmodified():
+    spec = perfcounters.perf_event_spec(DEFAULT_EVENTS)
+    assert spec[:7] == [e + ":u" for e in DEFAULT_EVENTS[:7]]
+    assert spec[7:] == ["task-clock", "context-switches", "page-faults", "cpu-migrations"]
+    assert perfcounters.perf_event_spec(["cycles:k"]) == ["cycles:k"]
 
 
 def test_min_pct_running_over_hardware_events_only():
