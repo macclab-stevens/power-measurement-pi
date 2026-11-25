@@ -8,9 +8,9 @@ import eda_write as ew
 import evaluate
 import mode_a
 
-CAND_ORDER = mode_a.BASELINES + mode_a.LEARNED + ["M3Factored", mode_a.AUTO]
+CAND_ORDER = mode_a.BASELINES + mode_a.LEARNED + ["M3Factored", "M4Physics", mode_a.AUTO]
 SHORT = {"B0Median": "B0 median", "B1MacsProportional": "B1 MACs proportional", "B2NearestModel": "B2 nearest model",
-         "B3LogLinear": "B3 log-linear", "M1Ridge": "M1 ridge", "M2Trees": "M2 trees", "M3Factored": "M3 factored",
+         "B3LogLinear": "B3 log-linear", "M1Ridge": "M1 ridge", "M2Trees": "M2 trees", "M3Factored": "M3 factored", "M4Physics": "M4 physics",
          "AUTO": "AUTO"}
 UNITS = {"energy_mJ": "mJ", "latency_ms": "ms", "mean_P_W": "W"}
 NOUN = {"energy_mJ": "energy per image", "latency_ms": "latency per image", "mean_P_W": "mean power"}

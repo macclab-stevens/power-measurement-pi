@@ -152,3 +152,26 @@ def test_real_static_table_covers_mode_a(real_data):
     assert 2.5e9 < st.loc[("yolo11n", 640), "macs"] < 4.5e9
     md = static.model_descriptor(st)
     assert set(data.VISION_MODELS) <= set(md.index)
+
+
+def test_n_module_calls_counts_containers_and_leaves_with_multiplicity():
+    # counts per row: container 2 (x1), conv 2, bn 2, act 2, pool 6 (x3), up 2, fc 2, fc 2  -> 1+1+1+1+3+1+1+1
+    f = static.features_from_layer_table(_lt())
+    assert f["n_module_calls"] == 10
+    assert static.features_from_layer_table(_lt(), batch=2)["n_module_calls"] == 5
+
+
+def test_n_module_calls_unit_is_the_smallest_positive_leaf_count():
+    lt = pd.DataFrame([_row("0", "Seq", False, 0, None, 0, 8),         # container: 2 calls a frame
+                       _row("0.a", "Conv2d", True, 1, 5, 10, 4),         # leaf unit = 4 (smallest positive leaf count)
+                       _row("0.b", "ReLU", True, 0, 1, 10, 8),
+                       _row("0.c", "ReLU", True, 0, 1, 10, 0)])         # never called: not counted
+    assert static.n_module_calls(lt) == 2 + 1 + 2 + 0
+    assert static.n_module_calls(lt.iloc[0:0]) == 0.0
+
+
+def test_n_module_calls_reads_the_lockbox_static_csv_through_the_same_path():
+    import pathlib
+    p = pathlib.Path(static.__file__).parent / "lockbox_static" / "mbv3_224.csv"
+    f = static.features_from_layer_table(pd.read_csv(p))
+    assert f["n_module_calls"] == 208      # 208 hooked modules, each called once per image

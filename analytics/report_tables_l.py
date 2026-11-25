@@ -6,7 +6,7 @@ import pandas as pd
 import evaluate
 from report_tables import pct, pct_ci, verdict
 
-RUNG_ORDER = ["L0", "L1", "L1-cell", "L2", "L3-ridge", "L3-trees", "L4-ridge", "L4-trees"]
+RUNG_ORDER = ["L0", "L1", "L1-cell", "L2", "L3-ridge", "L3-trees", "L4-ridge", "L4-trees", "L5-cmos", "L5-cmos-trees"]
 PHASES = ["idle", "load_weights", "warmup", "forward", "serve"]
 EXPLORATORY_NOTE = ("`L1-cell` is exploratory: it was added after a scored smoke fold (protocol amendment of "
                     "2026-11-23, `analytics/PROTOCOL.md`). `L1` is the pre-registered PMIC rung.")
@@ -220,8 +220,9 @@ def deploy_summary(dep: pd.DataFrame) -> pd.DataFrame:
 
 
 def deploy_rows(dep: pd.DataFrame) -> pd.DataFrame:
-    """Row-level view without the bulk `serve-default` case (it is in the CSV)."""
-    d = dep[dep["case"] != "serve-default"]
+    """Row-level view without the bulk serve cases (`serve-default`, `serve-default (duration known)`, `serve-gap`;
+    they are in the CSV)."""
+    d = dep[~dep["case"].isin(["serve-default", "serve-default (duration known)", "serve-gap"])]
     return pd.DataFrame({"case": d["case"], "cell_id": d["cell_id"], "phase": d["phase"], "measured J": d["measured_J"],
                          "predicted J": d["predicted_J"], "APE %": d["ape"].map(pct), "lo90 J": d["lo90_J"],
                          "hi90 J": d["hi90_J"], "flagged": d["flagged"].map(lambda v: "" if pd.isna(v) else ("yes" if v else "no"))})

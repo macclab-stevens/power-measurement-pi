@@ -88,9 +88,10 @@ def test_learning_curve_uses_each_held_out_models_own_outer_fold_hyperparameters
     recs = ri.read_records(paths.runs_log)
     lc_rec = ri.latest_record(recs, command="learning-curve", part="learning_curve")
     slomo = ri.latest_record(recs, command="mode-a", split="S-LOMO", target="energy_mJ")
-    assert lc_rec["params_source_run_id"] == slomo["run_id"] == "energy_mJ" and lc_rec["candidate"] == "M1Ridge"
     df = pd.read_parquet(paths.mode_a_dir / "energy_mJ.parquet")
-    want = {f: json.loads(g["params"].iloc[0]) for f, g in df[df["candidate"] == "M1Ridge"].groupby("fold")}
+    cand = ex.auto_choice(df)   # which candidate AUTO prefers on the synthetic table depends on the selection rule
+    assert lc_rec["params_source_run_id"] == slomo["run_id"] == "energy_mJ" and lc_rec["candidate"] == cand
+    want = {f: json.loads(g["params"].iloc[0]) for f, g in df[df["candidate"] == cand].groupby("fold")}
     assert {h: want[h] for h in splits.YOLO} == lc_rec["params_by_heldout"]
     lc = pd.read_parquet(paths.extras_dir / f"{out['lc']['run_id']}.parquet")
     assert set(lc["k"]) == {2, 3, 4, 5} and set(lc["heldout"]) == set(splits.YOLO)

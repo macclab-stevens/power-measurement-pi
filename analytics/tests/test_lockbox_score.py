@@ -158,7 +158,7 @@ def test_calculator_uses_frozen_predictions_measured_duration_and_training_idle(
 def test_mode_l_scores_frozen_rungs_per_cell_and_reports_non_yolo_separately(env):
     out = score(env)
     c = out["mode_l"]
-    assert set(c["rung"]) == set(mlm.default_rungs()) and NON_PRIMARY not in set(c["cell_id"])
+    assert set(c["rung"]) == set(mlm.R1_RUNGS) and NON_PRIMARY not in set(c["cell_id"])
     rec = ri.latest_record(ri.read_records(env[0].runs_log), command="final-mode-l", part="fit_final", rung="L2")
     model = lb.load_frozen(rec)
     w = env[1]["w"]
@@ -177,7 +177,7 @@ def test_mode_l_scores_frozen_rungs_per_cell_and_reports_non_yolo_separately(env
 def test_probe_pairs_per_configuration_against_frozen_mode_a(env):
     out = score(env)
     pr = out["probe"]
-    assert len(pr) == len(mlm.default_rungs()) * (2 * 1 + 3 * 2 + 3 * 2 + 3 * 2)   # yolo12n 2 primary cells: 2 pairs
+    assert len(pr) == len(mlm.R1_RUNGS) * (2 * 1 + 3 * 2 + 3 * 2 + 3 * 2)   # yolo12n 2 primary cells: 2 pairs
     assert NON_PRIMARY not in set(pr["j"]) | set(pr["k"]) and (pr["j"] != pr["k"]).all()
     pred = pd.read_csv(env[0].out_dir / lb.PREDICTIONS_CSV).query("role == 'primary' and target == 'energy_mJ'")
     a = pred.query("model == 'resnet18'")["pred"].iloc[0]
@@ -280,7 +280,7 @@ def test_score_refuses_when_a_rung_is_refitted_after_predicting(env, tmp_path, m
     monkeypatch.setenv("ANALYTICS_DATA", str(tmp_path / "other_data"))        # the frozen pickles stay untouched
     w, cat = make_windows(models=("yolov8n", "yolov8s", "yolov8m"), seed=99)
     qc = pd.DataFrame({"cell_id": cat["cell_id"], "primary": True})
-    _, info = mode_l.fit_final(w, cat.assign(source="v2"), qc, "L2", MASTER, mlm.first_point(mlm.default_rungs()))
+    _, info = mode_l.fit_final(w, cat.assign(source="v2"), qc, "L2", MASTER, mlm.first_point({k: v for k, v in mlm.default_rungs().items() if k in mlm.R1_RUNGS}))
     frozen = {r["rung"]: r for r in ri.read_records(paths.runs_log) if r.get("command") == "final-mode-l"}["L2"]
     assert info["sha256"] != frozen["sha256"]
     lb.runlog.append({"command": "final-mode-l", "part": "fit_final", "seed": MASTER, "rung": "L2", **info}, paths.runs_log)
@@ -366,3 +366,87 @@ def test_final_commands_refuse_once_lockbox_cells_exist(argv, tmp_path, monkeypa
     err = capsys.readouterr().err
     assert "lockbox cells already exist" in err and argv[0] in err
     assert not (tmp_path / "derived" / "models").exists()
+
+
+# ------------------------------------------------------------------ post hoc (R2) gap calculator
+
+def _gap_frames():
+    cat_l = pd.DataFrame({"cell_id": ["a_r0", "b_r0", "np_r0"], "source": "lockbox", "base_model": ["yolov8n", "resnet18", "yolov8n"],
+                          "imgsz": [480, 224, 480], "batch": 1, "cpu_mhz": 2400, "governor": "pinned", "fan_mode": "full",
+                          "rig": "nov2026", "path": ""})                                     # path "": default 200 ms gap
+    der = pd.DataFrame({"cell_id": cat_l["cell_id"], "mode": "forward", "serve_n_requests": 10, "serve_dur_ms": [5900.0, 5400.0, 5900.0],
+                        "serve_E_mJ": [44000.0, 41000.0, 44000.0], "latency_ms_per_image": 300.0, "energy_mJ_per_image": 3000.0})
+    qc_l = pd.DataFrame({"cell_id": cat_l["cell_id"], "primary": [True, True, False]})
+    rows = []
+    for m, z in (("yolov8n", 480), ("resnet18", 224)):
+        for tgt, v in (("energy_mJ", 3000.0), ("latency_ms", 300.0)):
+            rows.append({"model": m, "imgsz": z, "target": tgt, "role": "primary", "pred": v, "lo90": 0.9 * v, "hi90": 1.1 * v,
+                         "flagged": False, "novelty": 0.0 if m == "resnet18" else 1.0})
+    idle_t = pd.DataFrame([("nov2026", "2400", "full", 5.0)], columns=["rig", "cpu_key", "fan_mode", "P_idle_W"])
+    train = pd.DataFrame([{"cell_id": f"t{i}", "base_model": m, "serve_n_requests": 10, "batch": 1, "serve_dur_ms": d,
+                           "latency_ms_per_image": 300.0, "serve_fps": NAN, "serve_gap_ms": 200.0}
+                          for i, (m, d) in enumerate([("yolo11n", 5500.0), ("yolo11s", 5500.0), ("effb0", 5200.0)])])
+    return cat_l, der, qc_l, pd.DataFrame(rows), idle_t, train
+
+
+def test_calculator_posthoc_gap_two_variants_beside_the_frozen_known_duration():
+    cat_l, der, qc_l, pred, idle_t, train = _gap_frames()
+    g = ls.calculator_posthoc_gap(cat_l, der, qc_l, pred, idle_t, train_cells=train).set_index("cell_id")
+    assert list(g.index) == ["a_r0", "b_r0"] and list(g.columns) == ls.POSTHOC_GAP_COLS[1:]      # non-primary cell dropped
+    a = g.loc["a_r0"]
+    # overhead 0: 10 x (0.3 + 0.2) = 5 s, busy 3 s, 2 s idle at 5 W
+    assert a["predicted_J_oh0"] == pytest.approx(30.0 + 2.0 * 5.0) and a["gap_s"] == pytest.approx(0.2)
+    # yolo overhead = median of (5.5 - 3 - 2) / 10 = 0.05 s -> 5.5 s, 2.5 s idle; resnet18 (other): 0.02 s
+    assert a["overhead_est_s"] == pytest.approx(0.05) and a["predicted_J_est"] == pytest.approx(30.0 + 2.5 * 5.0)
+    assert g.loc["b_r0", "overhead_est_s"] == pytest.approx(0.02) and g.loc["b_r0", "predicted_J_est"] == pytest.approx(30.0 + 2.2 * 5.0)
+    # the frozen calculator's number: the measured 5.9 s duration, shown only as the reference
+    assert a["measured_duration_s"] == pytest.approx(5.9) and a["predicted_J_known"] == pytest.approx(30.0 + 2.9 * 5.0)
+    assert a["ape_oh0"] == pytest.approx(abs(40.0 - 44.0) / 44.0) and a["ape_est"] == pytest.approx(abs(42.5 - 44.0) / 44.0)
+    assert a["ape_known"] == pytest.approx(abs(44.5 - 44.0) / 44.0)
+    s = ls.summarise_posthoc_gap(g.reset_index())
+    assert list(s["n"]) == [2, 2, 2] and s["median_ape"].iloc[1] == pytest.approx(g["ape_oh0"].median())
+
+
+def test_calculator_posthoc_gap_never_reads_the_measured_duration():
+    cat_l, der, qc_l, pred, idle_t, train = _gap_frames()
+    base = ls.calculator_posthoc_gap(cat_l, der, qc_l, pred, idle_t, train_cells=train)
+    other = ls.calculator_posthoc_gap(cat_l, der.assign(serve_dur_ms=99000.0), qc_l, pred, idle_t, train_cells=train)
+    for c in ("predicted_J_oh0", "predicted_J_est"):
+        assert list(other[c]) == pytest.approx(list(base[c]))
+    assert list(other["predicted_J_known"]) != pytest.approx(list(base["predicted_J_known"]))
+
+
+def test_calculator_posthoc_gap_without_training_cells_has_no_estimated_variant():
+    cat_l, der, qc_l, pred, idle_t, _ = _gap_frames()
+    g = ls.calculator_posthoc_gap(cat_l, der, qc_l, pred, idle_t)
+    assert g["predicted_J_est"].isna().all() and g["ape_oh0"].notna().all() and g.attrs["overhead"] is None
+
+
+def test_run_posthoc_gap_writes_r2_files_and_a_runlog_line(tmp_path):
+    cat_l, der, qc_l, pred, idle_t, train = _gap_frames()
+    out_dir = tmp_path / "reports"
+    out_dir.mkdir()
+    pred.assign(candidate="AUTO", config_key="k", model_sha256="x").to_csv(out_dir / lb.PREDICTIONS_CSV, index=False)
+    paths = ri.Paths.default().under(out_dir)
+    paths = dataclasses.replace(paths, runs_log=tmp_path / "runs.jsonl")
+    cat_t = pd.DataFrame({"cell_id": train["cell_id"], "source": "v2", "base_model": train["base_model"], "variant": train["base_model"],
+                          "precision": "fp32", "imgsz": 640, "batch": 1, "threads": 4, "cpu_mhz": 2400, "rig": "nov2026",
+                          "governor": "pinned", "fan_mode": "full", "task": "image", "serve_fps": NAN, "soak_minutes": NAN,
+                          "concurrent_mode": None, "input_source": "repeat", "mode_a_eligible": True})
+    cat = pd.concat([cat_t, cat_l.assign(task="image", serve_fps=NAN, soak_minutes=NAN, concurrent_mode=None, input_source="repeat")],
+                    ignore_index=True)
+    der_t = pd.DataFrame({"cell_id": train["cell_id"], "mode": "forward", "batch": 1, "baseline_W": 5.0, "serve_n_requests": 10,
+                          "serve_dur_ms": train["serve_dur_ms"], "serve_E_mJ": 40000.0, "latency_ms_per_image": 300.0,
+                          "energy_mJ_per_image": 3000.0})
+    out = ls.run_posthoc_gap(paths, cat=cat, der=pd.concat([der_t, der], ignore_index=True),
+                             qc_train=pd.DataFrame({"cell_id": train["cell_id"], "primary": True}), qc_l=qc_l)
+    assert out["csv"] == out_dir / "r2" / "lockbox_calculator_gap.csv" and out["md"].is_file()
+    assert list(pd.read_csv(out["csv"]).columns) == ls.POSTHOC_GAP_COLS
+    assert "post hoc (R2)" in out["md"].read_text()
+    rec = json.loads((tmp_path / "runs.jsonl").read_text().splitlines()[-1])
+    assert rec["command"] == "lockbox-calculator-gap" and set(rec["median_ape"]) == {"known", "oh0", "est"}
+    assert not (out_dir / "lockbox.md").exists()
+
+
+def test_lockbox_calculator_gap_command_is_registered():
+    assert cli.build_parser().parse_args(["lockbox-calculator-gap"]).command == "lockbox-calculator-gap"

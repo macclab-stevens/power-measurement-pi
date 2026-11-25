@@ -203,10 +203,11 @@ def _validated():
 
 def test_validate_serve_default_hand_value_and_skips():
     v = _validated()
-    r = v[(v.case == "serve-default")]
+    r = v[(v.case == "serve-default (duration known)")]
     assert list(r.cell_id) == ["ser"]            # non-primary 'npr' ignored, 'alien' has no prediction
-    assert v.attrs["skipped"]["serve-default"] == 1
+    assert v.attrs["skipped"]["serve-default (duration known)"] == 1
     row = r.iloc[0]
+    assert "leaks measured duration" in row.notes
     # 10 images x 3 J + idle (4.9 - 3.0) s x P_idle (median baseline 2400 full nov2026 cells = 5.0 W)
     assert row.source == "lomo" and row.phase == "serve" and row.measured_J == pytest.approx(38.0)
     idle = v.attrs["idle"].set_index(["rig", "cpu_key", "fan_mode"]).loc[("nov2026", "2400", "full"), "P_idle_W"]
@@ -219,6 +220,8 @@ def test_validate_serve_fps_saturation_flag_and_batch():
     v = _validated()
     r = v[v.case == "serve-fps"].iloc[0]
     assert r.cell_id == "fps5" and "serve_fps=5" in r.notes and r.measured_J == pytest.approx(300.0)
+    # a priori duration n / fps = 10 / 5 = 2 s (never the measured 30 s): busy 3 s clipped to 2 s, saturated
+    assert r.saturated and r.predicted_J == pytest.approx(10 * 3.0)
     cat, der, qc = _frames([({"cell_id": "b", "mode_a_eligible": True, "batch": 4},
                              dict(sdur=4000.0, sE=30000.0, batch=4), True),
                             ({"cell_id": "other"}, dict(), True)])      # idle power needs another cell
@@ -245,7 +248,7 @@ def test_validate_idle_excludes_the_validated_cell_for_every_case():
     spec += [({"cell_id": "ser", "mode_a_eligible": True}, dict(sdur=4900.0, sE=38000.0, base=9.0), True)]
     cat, der, qc = _frames(spec)
     v = deploy.validate(cat, der, qc, _preds())
-    row = v[v.cell_id == "ser"].iloc[0]
+    row = v[(v.cell_id == "ser") & (v.case == "serve-default (duration known)")].iloc[0]
     # median(4, 5, 6) = 5.0 without the cell; including its own 9.0 it would be 5.5
     assert row.predicted_J == pytest.approx(30.0 + 1.9 * 5.0)
     assert v.attrs["idle"].set_index(["rig", "cpu_key", "fan_mode"]).loc[("nov2026", "2400", "full"), "P_idle_W"] == 5.5
@@ -254,7 +257,7 @@ def test_validate_idle_excludes_the_validated_cell_for_every_case():
              dict(e=6600.0, lat=640.0, sdur=8400.0, sE=74000.0, base=b), True) for i, b in enumerate([4.0, 4.4, 5.0])]
     cat, der, qc = _frames(spec)
     o = deploy.validate(cat, der, qc, _preds())
-    got = o[o.phase == "serve"].set_index("cell_id")["predicted_J"]
+    got = o[(o.phase == "serve") & (o.case == "ondemand")].set_index("cell_id")["predicted_J"]
     for cid, other_median in (("od0", 4.7), ("od1", 4.5), ("od2", 4.2)):
         assert got[cid] == pytest.approx(66.0 + 2.0 * other_median)
 
@@ -265,6 +268,7 @@ def test_validate_skips_a_cell_with_no_idle_row_apart_from_itself():
     cat, der, qc = _frames(spec)
     v = deploy.validate(cat, der, qc, _preds())
     assert v.empty and v.attrs["skipped"]["ondemand"] == 2          # forward and serve: no leak-free idle row
+    assert v.attrs["skipped"]["ondemand-gap"] == 1
 
 
 def test_idle_table_exclude_cell():
@@ -303,7 +307,7 @@ def test_validate_skips_when_no_predictions():
     cat, der, qc = _frames(_val_spec())
     v = deploy.validate(cat, der, qc, _preds().iloc[0:0])
     assert v.empty and list(v.columns) == deploy.VALIDATION_COLS
-    assert v.attrs["skipped"]["serve-default"] == 2
+    assert v.attrs["skipped"]["serve-default (duration known)"] == 2 and v.attrs["skipped"]["serve-gap"] == 2
 
 
 # ------------------------------------------------------------------ Mode A prediction loading
@@ -407,3 +411,120 @@ def test_cli_deploy_validate_fails_clearly_without_mode_a_runs(tmp_path, monkeyp
     pd.DataFrame({"cell_id": ["a"], "primary": [True]}).to_csv(tmp_path / "qc_cells.csv", index=False)
     assert cli.main(["deploy-validate"]) == 1
     assert "no S-LOMO Mode A run" in capsys.readouterr().err
+
+
+# ------------------------------------------------------------------ closed-loop gap scenario
+
+def _gsc(**kw):
+    return {"cpu_key": "2400", "fan_mode": "full", "n_images": 10, **kw}
+
+
+def test_predict_gap_scenario_arithmetic():
+    # 10 requests x (0.3 + 0.2 + 0.1) s = 6 s; busy 3 s, idle 3 s at 5 W
+    p = deploy.predict(_gsc(gap_s=0.2, overhead_s=0.1), 3000.0, 300.0, _idle(), None, None)
+    assert p["busy_s"] == pytest.approx(3.0) and p["idle_s"] == pytest.approx(3.0) and not p["saturated"]
+    assert p["E_J"] == pytest.approx(30.0 + 3.0 * 5.0) and p["mean_P_W"] == pytest.approx(45.0 / 6.0)
+    assert any("closed loop" in a for a in p["assumptions"])
+    # overhead defaults to 0: duration 10 x 0.5 s
+    q = deploy.predict(_gsc(gap_s=0.2), 3000.0, 300.0, _idle(), None, None)
+    assert q["idle_s"] == pytest.approx(2.0) and q["E_J"] == pytest.approx(30.0 + 2.0 * 5.0)
+    # a slower predicted latency lengthens the duration: it is not an input
+    r = deploy.predict(_gsc(gap_s=0.2), 3000.0, 400.0, _idle(), None, None)
+    assert r["busy_s"] + r["idle_s"] == pytest.approx(10 * 0.6)
+
+
+def test_predict_gap_scenario_batch_counts_requests():
+    # 8 images in requests of 4: 2 requests x (4 x 0.1 + 0.2) s = 1.2 s, busy 0.8 s
+    p = deploy.predict(_gsc(n_images=8, batch=4, gap_s=0.2), 1000.0, 100.0, _idle(), None, None)
+    assert p["busy_s"] == pytest.approx(0.8) and p["idle_s"] == pytest.approx(0.4)
+
+
+def test_predict_duration_and_gap_contract():
+    bad = [_gsc(gap_s=0.2, duration_s=5.0),                          # both
+           _gsc(),                                                   # neither
+           {"cpu_key": "2400", "rate_fps": 1},                       # neither, rate only
+           {"cpu_key": "2400", "rate_fps": 1, "gap_s": 0.2},         # gap with a rate
+           {"cpu_key": "2400", "gap_s": 0.2},                        # gap without n_images
+           _gsc(gap_s=0.2, rate_fps=1)]
+    for sc in bad:
+        with pytest.raises(ValueError):
+            deploy.predict(sc, 3000.0, 300.0, _idle(), None, None)
+    # the old contract is unchanged
+    deploy.predict(_gsc(duration_s=5.0), 3000.0, 300.0, _idle(), None, None)
+
+
+def _serve_cells(rows):
+    """rows: (cell_id, base_model, serve_dur_ms, latency_ms, [serve_fps]); 10 requests, batch 1, gap 200 ms."""
+    return pd.DataFrame([{"cell_id": c, "base_model": m, "serve_n_requests": 10, "batch": 1, "serve_dur_ms": d,
+                          "latency_ms_per_image": lat, "serve_fps": (f[0] if f else NAN), "serve_gap_ms": 200.0}
+                         for c, m, d, lat, *f in rows])
+
+
+def test_request_overhead_per_family_median_and_leave_one_out():
+    cells = _serve_cells([("y1", "yolo11n", 5000.0, 300.0),          # (5.0 - 3.0 - 2.0) / 10 = 0
+                          ("y2", "yolo11s", 5100.0, 300.0),          # 0.01
+                          ("y3", "yolov8n", 5600.0, 300.0),          # 0.06
+                          ("o1", "effb0", 5300.0, 300.0),            # 0.03
+                          ("o2", "resnet18", 5500.0, 300.0)])        # 0.05
+    oh = deploy.request_overhead_s(cells)
+    assert oh["yolo"] == pytest.approx(0.01) and oh["other"] == pytest.approx(0.04)
+    assert oh["all"] == pytest.approx(0.03)
+    loo = deploy.request_overhead_s(cells, exclude_cell="y2")
+    assert loo["yolo"] == pytest.approx(0.03)                        # median of 0 and 0.06
+    assert deploy.family_of("yolo11n") == "yolo" and deploy.family_of("mbv3") == "other"
+
+
+def test_request_overhead_fallback_fps_cells_and_empty():
+    cells = _serve_cells([("o1", "effb0", 5300.0, 300.0), ("o2", "resnet18", 5500.0, 300.0),
+                          ("f", "yolo11n", 30000.0, 300.0, 5.0),     # fps cell: not closed loop, ignored
+                          ("nan", "yolo11n", NAN, 300.0)])           # no duration: ignored
+    oh = deploy.request_overhead_s(cells)
+    assert oh["yolo"] == pytest.approx(oh["all"]) == pytest.approx(0.04)    # no usable yolo cell: all-cells median
+    assert oh["other"] == pytest.approx(0.04)
+    with pytest.raises(ValueError):
+        deploy.request_overhead_s(cells[cells.cell_id == "o1"], exclude_cell="o1")
+
+
+def test_request_overhead_batch_and_gap_column():
+    c = _serve_cells([("b", "effb0", 4000.0, 100.0)]).assign(batch=4, serve_gap_ms=400.0)
+    # 10 requests of 4 images x 0.1 s + 0.4 s gap = 8 s expected; measured 4 s -> overhead -0.4 s
+    assert deploy.request_overhead_s(c)["all"] == pytest.approx(-0.4)
+
+
+def test_with_serve_gap_reads_run_meta_and_defaults(tmp_path):
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir(); b.mkdir()
+    (a / "run_meta.json").write_text(json.dumps({"serve_gap_ms": 50.0}))
+    (b / "run_meta.json").write_text(json.dumps({}))
+    out = deploy.with_serve_gap(pd.DataFrame({"path": [str(a), str(b), str(tmp_path / "missing")]}))
+    assert list(out["serve_gap_ms"]) == [50.0, 200.0, 200.0]
+    assert list(deploy.with_serve_gap(pd.DataFrame({"x": [1]}))["serve_gap_ms"]) == [200.0]
+
+
+def test_validate_serve_gap_rows_use_leave_one_out_overhead():
+    spec = [(dict(cell_id=f"a{i}"), dict(base=5.0), True) for i in range(3)]           # idle 5 W, no serve duration
+    spec += [({"cell_id": "ser", "mode_a_eligible": True}, dict(sdur=5900.0, sE=44000.0), True)]
+    spec += [({"cell_id": f"y{i}"}, dict(sdur=sd), True) for i, sd in enumerate([5000.0, 5100.0, 5200.0])]
+    cat, der, qc = _frames(spec)
+    v = deploy.validate(cat, der, qc, _preds())
+    g, k = (v[v.case == c].iloc[0] for c in ("serve-gap", "serve-default (duration known)"))
+    assert list(v[v.case == "serve-gap"].cell_id) == ["ser"]
+    # overhead per request = median of y0..y2 = 0.01 s (not the 0.09 s of the cell itself): 10 x (0.3 + 0.2 + 0.01)
+    # = 5.1 s; busy 3 s
+    assert g.predicted_J == pytest.approx(30.0 + 2.1 * 5.0) and "overhead 10.00 ms" in g.notes
+    assert k.predicted_J == pytest.approx(30.0 + 2.9 * 5.0)         # the measured 5.9 s: duration known
+    assert g.measured_J == k.measured_J == pytest.approx(44.0) and g.phase == "serve"
+
+
+def test_validate_gap_rows_never_read_the_measured_duration():
+    spec = [(dict(cell_id=f"a{i}"), dict(base=5.0), True) for i in range(3)]
+    spec += [({"cell_id": "ser", "mode_a_eligible": True}, dict(sdur=sd, sE=44000.0), True) for sd in (5900.0,)]
+    spec += [({"cell_id": f"y{i}"}, dict(sdur=5000.0), True) for i in range(2)]
+    cat, der, qc = _frames(spec)
+    a = deploy.validate(cat, der, qc, _preds())
+    der2 = der.assign(serve_dur_ms=np.where(der.cell_id == "ser", 99000.0, der.serve_dur_ms))   # only the cell's own
+    b = deploy.validate(cat, der2, qc, _preds())
+    pa, pb = (x[x.case == "serve-gap"].iloc[0].predicted_J for x in (a, b))
+    assert pa == pytest.approx(pb)
+    ka, kb = (x[x.case == "serve-default (duration known)"].iloc[0].predicted_J for x in (a, b))
+    assert ka != pytest.approx(kb)

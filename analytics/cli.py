@@ -257,7 +257,8 @@ def cmd_mode_l(args) -> int:
                          folds=args.fold)
     for r, m in out["metrics"].items():
         print(f"{r}: whole-cell MdAPE {m['mdape']:.4f}, bias {m['bias_pct']:+.4f}, "
-              f"1 s {m['median_ape_1s']:.3f}, 10 s {m['median_ape_10s']:.3f}")
+              f"1 s {m['median_ape_1s']:.3f}, 10 s {m['median_ape_10s']:.3f}, "
+              f"forward MAE {m['mae_fwd_W']:.3f} W, forward R2 {m['r2_fwd']:.3f}, all-window R2 {m['r2_all']:.3f}")
     print(f"{out['wall_s']:.0f} s -> {settings.derived_dir() / 'mode_l' / (out['run_id'] + '.parquet')}")
     ex = out["lomo"].attrs["excluded"]
     print(f"excluded non-YOLO windows: {ex or 'none'}")
@@ -314,6 +315,8 @@ def cmd_windows(args) -> int:
     print(f"dropped (cover_frac < {windows.MIN_COVER}): {a.get('dropped')} of {a.get('n_intervals')} intervals")
     print(f"guarded windows (zero denominator): {a.get('guards')}; by feature {a.get('guards_by_feature')}")
     print(f"not-counted windows (counted == 0, rates set to 0): {a.get('not_counted')}")
+    print(f"slip correction: {a.get('slip_corrected')} cells corrected, {a.get('slip_no_pulses')} slip cells "
+          f"skipped for lack of sync pulses")
     print("counted / not counted by phase (top 12 phases by windows):")
     by = w.groupby("phase")["counted"].agg(counted="sum", n="size")
     by["not_counted"] = by["n"] - by["counted"]
@@ -393,7 +396,7 @@ COMMANDS = {
     "deploy-validate": ("validate the deployment calculator on serve, ondemand, fan and soak cells using the "
                         "latest S-LOMO Mode A runs (the --seed one if present) -> reports/deploy_validation.csv",
                         cmd_deploy_validate, add_seed_arg),
-    "windows": ("build derived/windows.parquet (100 ms counter windows) and derived/pmic_windows.parquet "
+    "windows": ("build derived/windows_r2.parquet (100 ms counter windows) and derived/pmic_windows_r2.parquet "
                 "(5 s PMIC windows); print drop, guard and memory figures", cmd_windows, add_derive_args),
     "mode-l": ("Mode L ladder (leave one YOLO model out), PMIC-only check and probe mode -> "
                "derived/mode_l/<run_id>*.parquet and runs.jsonl; needs qc_cells.csv", cmd_mode_l, add_mode_l_args),

@@ -9,6 +9,7 @@ import itertools
 
 import numpy as np
 import pandas as pd
+from scipy.optimize import nnls
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.pipeline import Pipeline
@@ -19,6 +20,9 @@ import settings
 FEATURES = ["log_macs", "log_params", "log_weight_bytes", "log_act_bytes", "depth", "frac_macs_conv",
             "frac_macs_linear", "frac_macs_norm", "frac_macs_act", "frac_macs_pool", "frac_macs_other",
             "imgsz", "batch", "threads", "cpu_ghz", "is_int8", "is_fp16", "n_quantized_modules"]
+# R2: FEATURES minus the collinear / uninformative log_weight_bytes and frac_macs_other, plus the a priori
+# physics features v2f = V_core(f)^2 * f and log_n_calls (hook calls per image). M1Ridge and M2Trees use it.
+FEATURES_R2 = [f for f in FEATURES if f not in ("log_weight_bytes", "frac_macs_other")] + ["v2f", "log_n_calls"]
 RIG_FEATURE = "rig_nov"
 B3_FEATURES = ["log_macs", "log_params", "cpu_ghz", "threads", "batch", "is_int8", "is_fp16"]
 TARGETS = ("energy_mJ", "latency_ms", "mean_P_W")
@@ -193,28 +197,30 @@ class B3LogLinear:
 
 
 # ---- learned models ---------------------------------------------------------------------------
-ALL_FEATURES = FEATURES + [RIG_FEATURE]
+ALL_FEATURES = FEATURES_R2 + [RIG_FEATURE]
+R1_ALL_FEATURES = FEATURES + [RIG_FEATURE]   # what a model pickled before R2 (no `features_` attribute) was fitted on
 
 
 class M1Ridge:
-    """StandardScaler + Ridge on FEATURES + rig_nov, fitted to log(target); params: alpha (default 1)."""
+    """StandardScaler + Ridge on FEATURES_R2 + rig_nov, fitted to log(target); params: alpha (default 1)."""
 
     def fit(self, train, target, params=None):
         _check_target(target)
         y = _log_target(train, target)
         alpha = float((params or {}).get("alpha", 1.0))
         self.model_ = Pipeline([("scale", StandardScaler()), ("ridge", Ridge(alpha=alpha))])
-        self.model_.fit(feature_matrix(train, ALL_FEATURES), y)
+        self.features_ = list(ALL_FEATURES)
+        self.model_.fit(feature_matrix(train, self.features_), y)
         self._fitted = True
         return self
 
     def predict(self, test):
         _need_fit(self)
-        return np.exp(self.model_.predict(feature_matrix(test, ALL_FEATURES)))
+        return np.exp(self.model_.predict(feature_matrix(test, getattr(self, "features_", R1_ALL_FEATURES))))
 
 
 class M2Trees:
-    """HistGradientBoostingRegressor on FEATURES + rig_nov, fitted to log(target). `seed` becomes the
+    """HistGradientBoostingRegressor on FEATURES_R2 + rig_nov, fitted to log(target). `seed` becomes the
     estimator's random_state (default: the config.toml seed); a `random_state` in params wins."""
 
     def __init__(self, seed: int | None = None):
@@ -224,13 +230,14 @@ class M2Trees:
         _check_target(target)
         y = _log_target(train, target)
         p = {"random_state": settings.seed() if self.seed is None else self.seed, **(params or {})}
-        self.model_ = HistGradientBoostingRegressor(**p).fit(feature_matrix(train, ALL_FEATURES), y)
+        self.features_ = list(ALL_FEATURES)
+        self.model_ = HistGradientBoostingRegressor(**p).fit(feature_matrix(train, self.features_), y)
         self._fitted = True
         return self
 
     def predict(self, test):
         _need_fit(self)
-        return np.exp(self.model_.predict(feature_matrix(test, ALL_FEATURES)))
+        return np.exp(self.model_.predict(feature_matrix(test, getattr(self, "features_", R1_ALL_FEATURES))))
 
 
 class M3Factored:
@@ -261,14 +268,121 @@ class M3Factored:
         return self.latency_.predict(test) * self.power_.predict(test)
 
 
+def _row_weights(train: pd.DataFrame, y: np.ndarray) -> np.ndarray:
+    """sqrt of the squared-error weight of each training row: 1/y (a relative error) times
+    1/sqrt(rows of its base model), so every base model carries the same total weight whatever its row count."""
+    n = train.groupby("base_model")["base_model"].transform("size").to_numpy(float)
+    return 1.0 / (y * np.sqrt(n))
+
+
+class M4Physics:
+    """Physics-structured model; all three targets, fitted to the raw (not log) target.
+
+    latency_ms: non-negative least squares on additive cost terms, with u = 1/cpu_ghz and s = threads**beta,
+      [macs*u/s*(1-is_q), macs*u/s*is_int8, macs*u/s*is_fp16, act_bytes*u/s, n_module_calls*u, 1]
+    (is_q = is_int8 or is_fp16); rows are scaled by `_row_weights`. params: beta (default 1).
+    mean_P_W: ridge of mean_P_W on [v2f, v2f*threads, v2f*frac_macs_conv, v2f*log(act_bytes/macs), rig_nov,
+      is_int8, is_fp16] (standardised, unpenalised intercept), sample weights `_row_weights`**2 (scaled to
+    mean 1 so alpha is comparable). params: alpha (default 1).
+    energy_mJ: latency_hat * power_hat; params = {"latency": {"beta"}, "power": {"alpha"}} (each optional).
+    Deterministic: takes no seed."""
+    LAT_TERMS = ["macs_fp32", "macs_int8", "macs_fp16", "act_bytes", "n_calls", "const"]
+    PWR_TERMS = ["v2f", "v2f_threads", "v2f_conv", "v2f_log_ai", "rig_nov", "is_int8", "is_fp16"]
+    FLOOR = 1e-9
+
+    @staticmethod
+    def latency_design(df: pd.DataFrame, beta: float) -> np.ndarray:
+        u = 1.0 / df["cpu_ghz"].to_numpy(float)
+        s = df["threads"].to_numpy(float) ** beta
+        macs, act = df["macs"].to_numpy(float), df["act_bytes"].to_numpy(float)
+        i8, f16 = df["is_int8"].to_numpy(float), df["is_fp16"].to_numpy(float)
+        m = macs * u / s
+        return np.column_stack([m * (1 - i8 - f16), m * i8, m * f16, act * u / s,
+                                df["n_module_calls"].to_numpy(float) * u, np.ones(len(df))])
+
+    @staticmethod
+    def power_design(df: pd.DataFrame) -> np.ndarray:
+        v2f = df["v2f"].to_numpy(float)
+        return np.column_stack([v2f, v2f * df["threads"].to_numpy(float), v2f * df["frac_macs_conv"].to_numpy(float),
+                                v2f * (df["log_act_bytes"].to_numpy(float) - df["log_macs"].to_numpy(float)),
+                                feature_matrix(df, [RIG_FEATURE])[:, 0], df["is_int8"].to_numpy(float),
+                                df["is_fp16"].to_numpy(float)])
+
+    def fit(self, train, target, params=None):
+        _check_target(target)
+        params = params or {}   # the parts check their own targets; energy_mJ itself is never read
+        self.target_ = target
+        if target in ("latency_ms", "energy_mJ"):
+            lat = params.get("latency", {}) if target == "energy_mJ" else params
+            self._fit_latency(train, float(lat.get("beta", 1.0)))
+        if target in ("mean_P_W", "energy_mJ"):
+            pw = params.get("power", {}) if target == "energy_mJ" else params
+            self._fit_power(train, float(pw.get("alpha", 1.0)))
+        self._fitted = True
+        return self
+
+    def _fit_latency(self, train, beta):
+        y = train["latency_ms"].to_numpy(float)
+        if not np.all(np.isfinite(y)) or np.any(y <= 0):
+            raise ValueError("latency_ms must be finite and positive on the training set")
+        w = _row_weights(train, y)
+        A = self.latency_design(train, beta) * w[:, None]
+        if not np.isfinite(A).all():
+            raise ValueError("M4Physics latency design has non-finite values (macs, act_bytes, n_module_calls, "
+                             "cpu_ghz, threads must be finite)")
+        scale = np.maximum(np.linalg.norm(A, axis=0), self.FLOOR)   # positive column scaling keeps the constraint set
+        coef, _ = nnls(A / scale, y * w)
+        self.beta_, self.lat_coef_ = beta, coef / scale
+
+    def _fit_power(self, train, alpha):
+        y = train["mean_P_W"].to_numpy(float)
+        if not np.all(np.isfinite(y)) or np.any(y <= 0):
+            raise ValueError("mean_P_W must be finite and positive on the training set")
+        sw = _row_weights(train, y) ** 2
+        sw = sw / sw.mean()
+        self.pwr_model_ = Pipeline([("scale", StandardScaler()), ("ridge", Ridge(alpha=alpha))])
+        self.pwr_model_.fit(self.power_design(train), y, ridge__sample_weight=sw)
+        self.alpha_ = alpha
+
+    def predict_latency(self, test):
+        return np.maximum(self.latency_design(test, self.beta_) @ self.lat_coef_, self.FLOOR)
+
+    def predict_power(self, test):
+        return np.maximum(self.pwr_model_.predict(self.power_design(test)), self.FLOOR)
+
+    def predict(self, test):
+        _need_fit(self)
+        if self.target_ == "latency_ms":
+            return self.predict_latency(test)
+        if self.target_ == "mean_P_W":
+            return self.predict_power(test)
+        return self.predict_latency(test) * self.predict_power(test)
+
+
 CANDIDATES: dict[str, type] = {"B0Median": B0Median, "B1MacsProportional": B1MacsProportional,
                                "B2NearestModel": B2NearestModel, "B3LogLinear": B3LogLinear,
-                               "M1Ridge": M1Ridge, "M2Trees": M2Trees, "M3Factored": M3Factored}
+                               "M1Ridge": M1Ridge, "M2Trees": M2Trees, "M3Factored": M3Factored,
+                               "M4Physics": M4Physics}
 
-GRIDS: dict[str, list[dict] | None] = {
+GRIDS: dict[str, list[dict] | dict | None] = {
     "B0Median": [{}], "B1MacsProportional": [{}], "B2NearestModel": [{}], "B3LogLinear": [{}],
     "M1Ridge": [{"alpha": float(a)} for a in np.logspace(-2, 4, 7)],
     "M2Trees": [{"max_depth": d, "learning_rate": lr, "max_iter": it, "min_samples_leaf": leaf}
                 for d, lr, it, leaf in itertools.product([2, 3, 4], [0.05, 0.1], [100, 300], [3, 5])],
     "M3Factored": None,   # the runner chooses the latency and power parts
+    # M4Physics is per target: beta of the latency NNLS, alpha of the power ridge; energy picks both parts
+    "M4Physics": {"latency_ms": [{"beta": b} for b in (0.5, 0.75, 1.0)],
+                  "mean_P_W": [{"alpha": float(a)} for a in (0.01, 0.1, 1, 10, 100)],
+                  "energy_mJ": None},
 }
+
+
+def grid_for(grids: dict, name: str, target: str) -> list[dict]:
+    """The grid points of candidate `name` for `target`: `grids[name]`, or `grids[name][target]` for a
+    candidate (M4Physics) whose grid is per target. ValueError if there is none."""
+    g = grids[name]
+    if isinstance(g, dict):
+        g = g.get(target)
+    if not g:
+        raise ValueError(f"{name} has no grid for target {target!r}")
+    return g

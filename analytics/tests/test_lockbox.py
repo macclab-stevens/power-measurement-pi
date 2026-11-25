@@ -120,7 +120,8 @@ def test_feature_rows_use_the_shared_derived_columns(env):
     assert r["precision"] == "fp32" and r["rig"] == "nov2026" and r["n_quantized_modules"] == 0 and r["is_int8"] == 0 \
         and r["is_fp16"] == 0 and r["cpu_ghz"] == pytest.approx(2.4) and r["log_macs"] == pytest.approx(np.log(r["macs"]))
     again = tables.add_derived_columns(f.drop(columns=["log_macs", "cpu_ghz", "is_int8", "is_fp16", "log_params",
-                                                       "log_weight_bytes", "log_act_bytes"]))
+                                                       "log_weight_bytes", "log_act_bytes", "vcore_V", "v2f",
+                                                       "log_n_calls"]))
     pd.testing.assert_frame_equal(f, again[f.columns])
     assert r["config_key"] == tables.config_key(r) == "yolo12n|yolo12n|fp32|640|1|4|2400|nov2026"
 
@@ -195,7 +196,7 @@ def test_secondary_fits_skip_the_candidate_that_is_already_the_auto_final(env):
 def test_mode_l_fit_final_pickles_every_rung_and_reports_sha(lockbox_env):
     recs = ri.read_records(lockbox_env.paths.runs_log)
     got = {r["rung"]: r for r in recs if r.get("command") == "final-mode-l"}
-    assert list(got) == list(mlm.default_rungs())
+    assert list(got) == list(mlm.R1_RUNGS)
     for name, r in got.items():
         assert r["path"].endswith(f"mode_l_{name}.pkl") and len(r["sha256"]) == 64 and r["n_cells"] == 6
         assert r["base_models"] == ["yolov8m", "yolov8n", "yolov8s"]
@@ -227,7 +228,7 @@ def test_manifest_lists_every_frozen_model_and_the_predictions_sha(env):
     man = json.loads(out["manifest"].read_text())
     assert out["manifest"] == paths.out_dir / lb.MANIFEST
     assert man["predictions_sha256"] == lb.runlog.file_hash(out["path"]) == out["rec"]["predictions_sha256"]
-    assert set(man["mode_l"]) == set(mlm.default_rungs()) and len(man["mode_a"]) == 7
+    assert set(man["mode_l"]) == set(mlm.R1_RUNGS) and len(man["mode_a"]) == 7
     recs = ri.read_records(paths.runs_log)
     for name, v in man["mode_l"].items():
         rec = ri.latest_record(recs, command="final-mode-l", part="fit_final", rung=name, seed=MASTER)

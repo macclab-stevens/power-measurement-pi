@@ -120,6 +120,26 @@ def scaling_series(cfgs: pd.DataFrame, idle: pd.DataFrame) -> list[dict]:
     return out
 
 
+def fit_cmos(f_ghz, p) -> dict:
+    """OLS P = P0 + k * V(f)^2 * f (f in GHz, V from the DVFS table in config.toml): two parameters for three
+    clocks, so one residual degree of freedom (unlike the free power law). Returns P0, k, max_abs_resid and
+    rmse_resid (W); NaN with fewer than three points."""
+    f, y = np.asarray(f_ghz, float), np.asarray(p, float)
+    if f.size < 3:
+        return dict(P0=NAN, k=NAN, max_abs_resid=NAN, rmse_resid=NAN)
+    x = tables.vcore_v(f * 1000.0) ** 2 * f
+    k, p0 = np.polyfit(x, y, 1)
+    r = y - (p0 + k * x)
+    return dict(P0=float(p0), k=float(k), max_abs_resid=float(np.abs(r).max()), rmse_resid=float(np.sqrt(np.mean(r ** 2))))
+
+
+def cmos_table(series: list[dict]) -> pd.DataFrame:
+    """fit_cmos per scaling series (same series as scaling_table)."""
+    return pd.DataFrame([{"series": s["label"], "kind": s["kind"], "rig": s["rig"], "n_cells": s["n_cells"],
+                          **fit_cmos(s["f"], s["P"])} for s in series],
+                        columns=["series", "kind", "rig", "n_cells", "P0", "k", "max_abs_resid", "rmse_resid"])
+
+
 def scaling_table(series: list[dict]) -> pd.DataFrame:
     rows = []
     for s in series:

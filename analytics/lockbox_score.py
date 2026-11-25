@@ -153,6 +153,124 @@ def calculator(cat_l: pd.DataFrame, der: pd.DataFrame, qc_l: pd.DataFrame, pred:
     return out
 
 
+POSTHOC_GAP_COLS = ["cell_id", "model", "imgsz", "n_images", "gap_s", "measured_duration_s", "measured_J",
+                    "predicted_J_known", "ape_known", "predicted_J_oh0", "ape_oh0", "overhead_est_s",
+                    "predicted_J_est", "ape_est", "new_model"]
+
+
+def calculator_posthoc_gap(cat_l: pd.DataFrame, der: pd.DataFrame, qc_l: pd.DataFrame, pred: pd.DataFrame,
+                           idle: pd.DataFrame, train_cells: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Post hoc (R2) serve-phase calculator without the measured duration. The frozen `calculator` is untouched and
+    is re-evaluated here only as the `known` reference.
+
+    Per QC-primary lockbox cell with a serve phase (the cells `calculator` scores): the frozen AUTO-final
+    predictions (role primary) through the closed-loop gap scenario (`deploy.predict`, duration = n * (t_pred + gap
+    + overhead); the gap is the cell's run_meta `serve_gap_ms`, the measured `serve_dur_ms` is never an input),
+    in two variants: `oh0` (overhead 0) and `est` (overhead = `deploy.request_overhead_s(train_cells)` for the
+    cell's family; NaN columns when `train_cells`, the TRAINING serve cells, are not given). `known` is the frozen
+    calculator's measured-duration prediction, `measured_duration_s` is shown for reference only.
+    Columns: POSTHOC_GAP_COLS; attrs["skipped"] and attrs["overhead"] (the family medians, or None)."""
+    prim = pred[pred["role"] == "primary"]
+    e = prim[prim["target"] == "energy_mJ"].set_index(["model", "imgsz"])
+    t = prim[prim["target"] == "latency_ms"].set_index(["model", "imgsz"])
+    known = calculator(cat_l, der, qc_l, pred, idle).set_index("cell_id")
+    cells = deploy.with_serve_gap(lockbox_cell_table(cat_l, der, qc_l))
+    oh_by_fam = deploy.request_overhead_s(train_cells) if train_cells is not None else None
+    rows = []
+    for _, r in cells.iterrows():
+        if r["cell_id"] not in known.index:                    # skipped by `calculator`: no serve phase / prediction / idle
+            continue
+        k = (r["base_model"], int(r["imgsz"]))
+        n = float(r["serve_n_requests"]) * float(r["batch"])
+        gap = float(r["serve_gap_ms"]) / 1000.0
+        tm, em = float(t.loc[k, "pred"]), float(e.loc[k, "pred"])
+        oh = oh_by_fam[deploy.family_of(r["base_model"])] if oh_by_fam else float("nan")
+        meas = float(r["serve_E_mJ"]) / 1000.0
+
+        def pj(overhead):
+            sc = {"cpu_key": deploy.cpu_key(r), "fan_mode": r["fan_mode"], "rig": r["rig"], "n_images": n,
+                  "batch": float(r["batch"]), "gap_s": gap, "overhead_s": overhead}
+            return deploy.predict(sc, em, tm, idle, None, None)["E_J"]
+        p0 = pj(0.0)
+        pe = pj(oh) if np.isfinite(oh) else float("nan")
+        kn = known.loc[r["cell_id"]]
+        rows.append({"cell_id": r["cell_id"], "model": k[0], "imgsz": k[1], "n_images": n, "gap_s": gap,
+                     "measured_duration_s": float(r["serve_dur_ms"]) / 1000.0, "measured_J": meas,
+                     "predicted_J_known": float(kn["predicted_J"]), "ape_known": float(kn["ape"]),
+                     "predicted_J_oh0": p0, "ape_oh0": abs(p0 - meas) / meas, "overhead_est_s": oh,
+                     "predicted_J_est": pe, "ape_est": abs(pe - meas) / meas, "new_model": bool(kn["new_model"])})
+    out = pd.DataFrame(rows, columns=POSTHOC_GAP_COLS)
+    out.attrs["skipped"] = known.attrs.get("skipped")
+    out.attrs["overhead"] = oh_by_fam
+    return out
+
+
+POSTHOC_VARIANTS = (("known", "measured duration (frozen R1 calculator, leaks the duration)"),
+                    ("oh0", "gap scenario, overhead 0"),
+                    ("est", "gap scenario, overhead estimated from training cells"))
+
+
+def summarise_posthoc_gap(df: pd.DataFrame) -> pd.DataFrame:
+    """Median and mean APE (and the largest) per variant over the cells of `calculator_posthoc_gap`."""
+    rows = []
+    for key, label in POSTHOC_VARIANTS:
+        a = df[f"ape_{key}"].dropna()
+        rows.append({"variant": label, "n": len(a), "median_ape": float(a.median()) if len(a) else np.nan,
+                     "mean_ape": float(a.mean()) if len(a) else np.nan, "max_ape": float(a.max()) if len(a) else np.nan})
+    return pd.DataFrame(rows)
+
+
+def render_posthoc_gap(df: pd.DataFrame, summary: pd.DataFrame, prov: dict) -> str:
+    """reports/r2/lockbox_calculator_gap.md: summary and per-cell table, labelled post hoc (R2)."""
+    oh = df.attrs.get("overhead") or {}
+    out = ["# Lockbox deployment calculator without the measured duration (post hoc (R2))\n",
+           "The lockbox serve phase is closed loop (request, then a sleep of `serve_gap_ms`), so its wall duration depends on the "
+           "latency being predicted. The frozen R1 calculator (`reports/lockbox.md`) passed the MEASURED `serve_dur_ms`, which leaks "
+           "that latency. Here the same frozen Mode A AUTO-final predictions go through the gap scenario: duration = "
+           "n * (t_pred + gap + overhead). This is **post hoc (R2)**: it was computed after the lockbox was scored; nothing was "
+           "fitted on a lockbox cell, and the frozen outputs are untouched.\n",
+           "## Provenance\n",
+           f"- predictions `analytics/reports/{lb.PREDICTIONS_CSV}` sha256 `{prov['predictions_sha256']}`",
+           f"- training serve cells for the overhead: {prov['n_train_cells']}; request overhead (median per family): "
+           + (", ".join(f"{k} {v * 1000:.2f} ms" for k, v in oh.items()) if oh else "n/a"),
+           f"- lockbox cells scored: {len(df)} (the QC-primary ones with a serve phase, as in the frozen calculator); run `{prov['run_id']}`\n",
+           "## Median and mean APE (post hoc (R2))\n", md(summary), "## Per cell\n",
+           md(df[["cell_id", "model", "imgsz", "n_images", "gap_s", "measured_duration_s", "measured_J", "predicted_J_known", "ape_known",
+                  "predicted_J_oh0", "ape_oh0", "overhead_est_s", "predicted_J_est", "ape_est"]])]
+    return "\n".join(out) + "\n"
+
+
+def run_posthoc_gap(paths: ri.Paths, *, cat: pd.DataFrame, der: pd.DataFrame, qc_train: pd.DataFrame,
+                    qc_l: pd.DataFrame) -> dict:
+    """Write reports/r2/lockbox_calculator_gap.{csv,md} (under `paths.out_dir`) and one runlog line. Reads the committed
+    predictions CSV and the training cells' idle table and serve cells; fits nothing and writes none of the frozen
+    lockbox outputs (`lockbox.md`, `lockbox_predictions.csv`, derived/lockbox/)."""
+    cat_l = require_lockbox(cat)
+    cat_t = cat[cat["source"] != "lockbox"]
+    pred_path = Path(paths.out_dir) / lb.PREDICTIONS_CSV
+    if not pred_path.is_file():
+        raise lb.LockboxError(f"{pred_path} is missing")
+    pred, pred_sha = pd.read_csv(pred_path), runlog.file_hash(pred_path)
+    idle = deploy.idle_table(cat_t, der, qc_train)
+    train = deploy.cell_table(cat_t, der, qc_train)
+    df = calculator_posthoc_gap(cat_l, der, qc_l, pred, idle, train_cells=train)
+    summary = summarise_posthoc_gap(df)
+    run_id = uuid.uuid4().hex
+    out_dir = Path(paths.out_dir) / "r2"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    csv_path, md_path = out_dir / "lockbox_calculator_gap.csv", out_dir / "lockbox_calculator_gap.md"
+    df.to_csv(csv_path, index=False)
+    n_train = int((train["serve_fps"].isna() & (train["serve_n_requests"] > 0) & np.isfinite(train["serve_dur_ms"].astype(float))).sum())
+    md_path.write_text(render_posthoc_gap(df, summary, {"predictions_sha256": pred_sha, "n_train_cells": n_train, "run_id": run_id}))
+    rec = runlog.append({"run_id": run_id, "command": "lockbox-calculator-gap", "label": "post hoc (R2)",
+                         "predictions_sha256": pred_sha, "n_cells": len(df), "n_train_serve_cells": n_train,
+                         "overhead_s": df.attrs.get("overhead"),
+                         "median_ape": {k: float(m) for (k, _), m in zip(POSTHOC_VARIANTS, summary["median_ape"])},
+                         "mean_ape": {k: float(m) for (k, _), m in zip(POSTHOC_VARIANTS, summary["mean_ape"])},
+                         "outputs": [str(csv_path), str(md_path)]}, paths.runs_log)
+    return {"df": df, "summary": summary, "csv": csv_path, "md": md_path, "rec": rec}
+
+
 # ------------------------------------------------------------------ Mode L
 
 def mode_l_cells(w: pd.DataFrame, cat_l: pd.DataFrame, models: dict) -> pd.DataFrame:
@@ -344,7 +462,7 @@ def frozen_mode_l(recs: list, predict_rec: dict, seed: int) -> tuple:
     must still be the latest `final-mode-l` fit of its rung and its pickle must hash to the recorded sha256."""
     frozen, latest = predict_rec["mode_l_frozen"], lb.mode_l_refs(recs, seed)
     models, ids = {}, {}
-    for name in mlm.default_rungs():
+    for name in mlm.R1_RUNGS:
         want = frozen.get(name)
         if want is None:
             raise lb.LockboxError(f"the `lockbox-predict` run {predict_rec['run_id']} recorded no frozen Mode L model for rung {name}")

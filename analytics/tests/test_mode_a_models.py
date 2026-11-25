@@ -34,7 +34,10 @@ def make_frame(n_models=5, seed=1, clocks=(1500, 2000, 2400), precisions=("fp32"
                  "imgsz": sz, "batch": b, "threads": th, "cpu_mhz": mhz, "rig": rig,
                  "n_quantized_modules": 0 if prec == "fp32" else 50, "macs": macs,
                  "log_macs": np.log(macs), "log_params": np.log(macs0) - 3 + 0.1 * i, "cpu_ghz": mhz / 1000,
-                 "is_int8": int(prec == "int8"), "is_fp16": int(prec == "fp16"), **info}
+                 "is_int8": int(prec == "int8"), "is_fp16": int(prec == "fp16"), **info,
+                 "act_bytes": float(np.exp(info["log_act_bytes"])), "n_module_calls": 50.0 + 10 * i,
+                 "log_n_calls": float(np.log(50.0 + 10 * i)),
+                 "v2f": float(tables.vcore_v(mhz) ** 2 * mhz / 1000)}
             r.update({f"frac_macs_{g}": f for g, f in zip(["conv", "linear", "norm", "act", "pool", "other"], fr)})
             rows.append(r)
     df = pd.DataFrame(rows)
@@ -318,8 +321,9 @@ def test_no_candidate_reads_columns_outside_allowed_set(name, params, target):
     df = make_frame(n_models=4)
     df["dyn_energy_mJ"] = 1.0
     df["energy_cv"] = 0.01
-    allowed = set(mm.FEATURES) | set(tables.CONFIG_COLS) | {"macs"}
-    extra = {"latency_ms", "mean_P_W"} if name == "M3Factored" else {target}   # M3 fits its two parts
+    allowed = set(mm.FEATURES) | set(mm.FEATURES_R2) | set(tables.CONFIG_COLS) | {"macs", "act_bytes", "n_module_calls"}
+    factored = name in ("M3Factored", "M4Physics") and target == "energy_mJ"
+    extra = {"latency_ms", "mean_P_W"} if factored else {target}   # M3 and M4 fit their two parts
     train = df[sorted(allowed | extra)]
     test = df[sorted(allowed)]
     desc = make_desc()
@@ -331,7 +335,7 @@ def test_no_candidate_reads_columns_outside_allowed_set(name, params, target):
     for c in set(df.columns) - allowed - extra:
         if df[c].dtype != object:
             junk[c] = np.random.default_rng(0).normal(size=len(df))
-    if name == "M3Factored":
+    if factored:
         junk["energy_mJ"] = -1.0
     p2 = build(name, desc).fit(junk, target, params).predict(junk)
     np.testing.assert_allclose(p, p2)
@@ -372,3 +376,98 @@ def make_desc_from_table(df):
     out = pd.DataFrame({"log_params": g["log_params"], "log_macs_per_px": np.log(g["macs"] / g["imgsz"] ** 2),
                         "depth": g["depth"], **{c: g[c] for c in g.columns if c.startswith("frac_macs_")}})
     return out
+
+
+# ---- R2: features and M4Physics -----------------------------------------------------------------
+def test_features_r2_drops_two_adds_two_and_models_use_it():
+    assert set(mm.FEATURES) - set(mm.FEATURES_R2) == {"log_weight_bytes", "frac_macs_other"}
+    assert set(mm.FEATURES_R2) - set(mm.FEATURES) == {"v2f", "log_n_calls"}
+    assert mm.ALL_FEATURES == mm.FEATURES_R2 + ["rig_nov"]
+
+
+def m4_frame(n_models=5, seed=2):
+    """Latency exactly additive in the M4 cost terms (beta 0.75), power affine in the M4 design."""
+    df = make_frame(n_models=n_models, seed=seed, precisions=("fp32", "int8", "fp16"))
+    u = 1.0 / df["cpu_ghz"].to_numpy()
+    s = df["threads"].to_numpy(float) ** 0.75
+    q = df["macs"].to_numpy() * u / s
+    df["latency_ms"] = (2e-9 * q * (1 - df["is_int8"] - df["is_fp16"]) + 1e-9 * q * df["is_int8"]
+                        + 3e-9 * q * df["is_fp16"] + 5e-8 * df["act_bytes"] * u / s + 0.01 * df["n_module_calls"] * u + 4.0)
+    df["mean_P_W"] = 2.0 + 1.5 * df["v2f"] + 0.1 * df["v2f"] * df["threads"]
+    df["energy_mJ"] = df["latency_ms"] * df["mean_P_W"]
+    return df
+
+
+@pytest.mark.parametrize("target", mm.TARGETS)
+def test_m4_fit_predict_shapes_and_positive(target):
+    df = make_frame(n_models=4)
+    m = mm.M4Physics().fit(df, target, {})
+    p = m.predict(df.iloc[:7])
+    assert p.shape == (7,) and np.all(np.isfinite(p)) and np.all(p > 0)
+
+
+def test_m4_nnls_coefficients_are_non_negative_even_when_the_truth_wants_a_negative_term():
+    df = m4_frame()
+    df["latency_ms"] = df["latency_ms"] - 3.9 * 1.0   # a negative intercept is not representable
+    df["latency_ms"] = df["latency_ms"].clip(lower=0.2)
+    for beta in (0.5, 0.75, 1.0):
+        m = mm.M4Physics().fit(df, "latency_ms", {"beta": beta})
+        assert m.lat_coef_.shape == (6,) and np.all(m.lat_coef_ >= 0) and m.beta_ == beta
+        assert np.all(m.predict(df) > 0)
+
+
+def test_m4_recovers_an_exactly_additive_latency_and_affine_power():
+    df = m4_frame(n_models=6)
+    lat = mm.M4Physics().fit(df, "latency_ms", {"beta": 0.75}).predict(df)
+    np.testing.assert_allclose(lat, df["latency_ms"], rtol=1e-4)
+    pw = mm.M4Physics().fit(df, "mean_P_W", {"alpha": 1e-6})
+    np.testing.assert_allclose(pw.predict(df), df["mean_P_W"], rtol=1e-3)
+
+
+def test_m4_energy_is_latency_times_power_of_the_chosen_parts():
+    df = m4_frame()
+    spec = {"latency": {"beta": 0.5}, "power": {"alpha": 10.0}}
+    e = mm.M4Physics().fit(df, "energy_mJ", spec).predict(df)
+    lat = mm.M4Physics().fit(df, "latency_ms", {"beta": 0.5}).predict(df)
+    pw = mm.M4Physics().fit(df, "mean_P_W", {"alpha": 10.0}).predict(df)
+    np.testing.assert_allclose(e, lat * pw)
+
+
+def test_m4_rows_are_balanced_per_base_model():
+    """A base model with 10x the rows must not outweigh a small one: the weights give each model equal total weight."""
+    df = m4_frame(n_models=3)
+    big = pd.concat([df[df["base_model"] == "m0"]] * 4 + [df[df["base_model"] != "m0"]], ignore_index=True)
+    w = mm._row_weights(big, big["latency_ms"].to_numpy(float))
+    tot = pd.Series(w ** 2 * big["latency_ms"].to_numpy(float) ** 2).groupby(big["base_model"].to_numpy()).sum()
+    np.testing.assert_allclose(tot.to_numpy(), 1.0)   # (w*y)^2 = 1/n_model per row
+
+
+def test_m4_does_not_mutate_input_and_has_per_target_grids():
+    df = m4_frame()
+    before = df.copy(deep=True)
+    mm.M4Physics().fit(df, "energy_mJ", {})
+    pd.testing.assert_frame_equal(df, before)
+    assert [g["beta"] for g in mm.GRIDS["M4Physics"]["latency_ms"]] == [0.5, 0.75, 1.0]
+    assert [g["alpha"] for g in mm.GRIDS["M4Physics"]["mean_P_W"]] == [0.01, 0.1, 1, 10, 100]
+    assert mm.grid_for(mm.GRIDS, "M1Ridge", "energy_mJ") == mm.GRIDS["M1Ridge"]
+    assert mm.grid_for(mm.GRIDS, "M4Physics", "mean_P_W") == mm.GRIDS["M4Physics"]["mean_P_W"]
+    with pytest.raises(ValueError):
+        mm.grid_for(mm.GRIDS, "M4Physics", "energy_mJ")
+
+
+def test_model_without_features_attribute_predicts_on_the_r1_feature_list():
+    """A model pickled before R2 has no `features_`; it must keep using the columns it was fitted on."""
+    df = make_frame(n_models=4)
+    m = mm.M1Ridge().fit(df, "energy_mJ", {"alpha": 1.0})
+    assert m.features_ == mm.ALL_FEATURES
+    old = mm.M1Ridge()
+    old.model_ = Pipeline_fit(df, mm.R1_ALL_FEATURES, np.log(df["energy_mJ"]))
+    old._fitted = True
+    np.testing.assert_allclose(old.predict(df), np.exp(old.model_.predict(mm.feature_matrix(df, mm.R1_ALL_FEATURES))))
+
+
+def Pipeline_fit(df, cols, y):
+    from sklearn.linear_model import Ridge
+    from sklearn.pipeline import Pipeline
+    from sklearn.preprocessing import StandardScaler
+    return Pipeline([("scale", StandardScaler()), ("ridge", Ridge(alpha=1.0))]).fit(mm.feature_matrix(df, cols), y)

@@ -293,7 +293,7 @@ def section_deploy(a: Analysis) -> list:
             "the soak rows use the soak factor of the other soak only. Run ids: deploy-validate run (if logged), then the Mode A energy and "
             "latency runs it used (the latest at the time the report was built).\n",
             cap("Summary by case and phase."), md(tl.deploy_summary(d)),
-            cap("Rows other than `serve-default` (see `reports/deploy_validation.csv` for all)."),
+            cap("Rows other than the bulk `serve-default (duration known)` and `serve-gap` cases (see `reports/deploy_validation.csv` for all)."),
             md(tl.deploy_rows(d), {"measured J": "{:.2f}", "predicted J": "{:.2f}", "lo90 J": "{:.2f}", "hi90 J": "{:.2f}"})]
 
 

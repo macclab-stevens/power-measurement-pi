@@ -30,6 +30,13 @@ def test_v1_defaults_unchanged():
     assert (a.frames_source, a.stream_dir) == ("repeat", "inputs/stream50")
 
 
+def test_layer_hooks_flag(capsys):
+    assert _parse().layer_hooks == "on"                  # default: behaviour unchanged
+    assert _parse("--layer-hooks", "on").layer_hooks == "on"
+    assert _parse("--layer-hooks", "off").layer_hooks == "off"
+    assert "--layer-hooks" in _err(capsys, "--layer-hooks", "maybe")
+
+
 def test_fan_full_conflicts_with_other_fan_modes(capsys):
     assert "--fan-full" in _err(capsys, "--fan-full", "--fan", "off")
     assert "--fan-full" in _err(capsys, "--fan-full", "--fan", "auto")

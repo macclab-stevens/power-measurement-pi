@@ -25,12 +25,28 @@ def _is_leaf(s: pd.Series) -> pd.Series:
     return s.map(lambda v: v is True or str(v).strip().lower() in ("true", "1"))
 
 
+def n_module_calls(lt: pd.DataFrame, batch: int = 1) -> float:
+    """Per-image count of module (forward-hook) calls: the sum over ALL rows, containers and leaves, of
+    the multiplicity round(count / min_positive_leaf_count), divided by `batch`. This is the number of
+    hook invocations a measured (instrumented) cell paid for per image. The multiplicity unit is the
+    smallest positive leaf count, as for the MAC features (the smallest positive count over all rows if
+    there are no leaf rows). 0.0 when no row has a positive count."""
+    count = pd.to_numeric(lt["count"], errors="coerce").fillna(0)
+    ref = count[_is_leaf(lt["leaf"]) & (count > 0)]
+    if not len(ref):
+        ref = count[count > 0]
+    if not len(ref):
+        return 0.0
+    return float((count / ref.min()).round().sum()) / batch
+
+
 def features_from_layer_table(lt: pd.DataFrame, batch: int = 1) -> dict:
     """Per-image static features over the leaf rows of a layer table (see Task 4 brief).
 
     A row's per-inference multiplicity is round(count / min_count), min_count being the smallest
     positive leaf count; MACs and activation bytes are divided by `batch`, params are not."""
-    leaf = lt[_is_leaf(lt["leaf"])].copy()
+    is_leaf = _is_leaf(lt["leaf"])
+    leaf = lt[is_leaf].copy()
     count = pd.to_numeric(leaf["count"], errors="coerce").fillna(0)
     pos = count[count > 0]
     mult = (count / pos.min()).round() if len(pos) else count * 0
@@ -49,6 +65,7 @@ def features_from_layer_table(lt: pd.DataFrame, batch: int = 1) -> dict:
         "act_bytes": float(act_row.sum()) / batch,
         "depth": int(leaf["path"].astype(str).str.count(r"\.").max()) + 1 if len(leaf) else 0,
         "n_leaf": int(len(uniq)),
+        "n_module_calls": n_module_calls(lt, batch),
     }
     upath_group = uniq["class"].map(lambda c: CLASS_GROUPS.get(c, "other"))
     for g in GROUPS:

@@ -117,10 +117,10 @@ def mode_a_refs(recs: list, seed: int) -> list:
 
 
 def mode_l_refs(recs: list, seed: int) -> dict:
-    """{rung: latest `final-mode-l` runlog record of `seed`} for all eight rungs; a missing rung raises
-    LockboxError naming the command."""
+    """{rung: latest `final-mode-l` runlog record of `seed`} for all eight R1 rungs (the R2 rungs are not part of
+    the frozen lockbox); a missing rung raises LockboxError naming the command."""
     out = {}
-    for name in mlm.default_rungs():
+    for name in mlm.R1_RUNGS:
         rec = ri.latest_record(recs, command="final-mode-l", part="fit_final", rung=name, seed=seed)
         if rec is None:
             raise LockboxError(f"no frozen Mode L model for rung {name} with seed {seed}; run `{FINAL_L_CMD} --seed {seed}`")

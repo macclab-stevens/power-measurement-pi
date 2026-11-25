@@ -384,8 +384,25 @@ def copy_verified(src, dst) -> None:
             raise PackageError(f"copy of {src} to {dst} differs")
 
 
+HOOKS_OFF_ABSENT = ("layer_table.csv",)   # run.py --layer-hooks off writes no layer table
+
+
+def hooks_off(cell_dir: Path) -> bool:
+    """True when the cell's run_meta.json records `layer_hooks: "off"` (older cells have no key: hooks on)."""
+    try:
+        return read_json(Path(cell_dir) / "run_meta.json").get("layer_hooks") == "off"
+    except (OSError, ValueError, PackageError):   # unreadable meta: check_files / later steps report it
+        return False
+
+
+def required_files(cell_dir: Path) -> tuple:
+    """REQUIRED_FILES without the layer table for a hooks-off cell (static features then come from
+    tools/static_features.py)."""
+    return tuple(f for f in REQUIRED_FILES if not (hooks_off(cell_dir) and f in HOOKS_OFF_ABSENT))
+
+
 def check_files(cell: Cell) -> None:
-    missing = [f for f in REQUIRED_FILES if not (cell.dir / f).is_file()]
+    missing = [f for f in required_files(cell.dir) if not (cell.dir / f).is_file()]
     if missing:
         raise PackageError(f"{cell.cell_id}: ok in results but files missing in {cell.dir}: {missing}")
 
@@ -399,7 +416,8 @@ def package_cell(cell: Cell, out: Path) -> dict:
     tmp.mkdir(parents=True)
     src = cell.dir
     try:
-        for f in COPIED_FILES + tuple(f for f in OPTIONAL_FILES if (src / f).is_file()):
+        copied = tuple(f for f in COPIED_FILES if not (hooks_off(src) and f in HOOKS_OFF_ABSENT))
+        for f in copied + tuple(f for f in OPTIONAL_FILES if (src / f).is_file()):
             copy_verified(src / f, tmp / f)
         for pat, name in SIDE_LOGS:
             p = src.parent / pat.format(cid=cell.cell_id)

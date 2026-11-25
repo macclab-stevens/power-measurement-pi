@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-METRIC_KEYS = ["n", "mdape", "mape", "mae", "rmse", "bias_pct", "mdale"]
+METRIC_KEYS = ["n", "mdape", "mape", "mae", "rmse", "bias_pct", "mdale", "maxape", "p90ape", "r2_log"]
 
 
 def _pair(a, b, what="arrays"):
@@ -24,7 +24,9 @@ def metrics(y, yhat) -> dict:
     Pairs with a non-finite value on either side are dropped and `n` is the number used. Raises
     ValueError if any remaining `y <= 0`. `mae`/`rmse` are in the target's units; `mdape`, `mape`,
     `bias_pct` (median of signed `(yhat - y) / y`) are fractions; `mdale` is the median of
-    `|log(yhat / y)|` and is NaN when any retained prediction is <= 0 (log undefined)."""
+    `|log(yhat / y)|` and is NaN when any retained prediction is <= 0 (log undefined). `maxape` and
+    `p90ape` are the maximum and the 90th percentile (linear interpolation) of `|pct|`; `r2_log` is
+    `1 - SSE/SST` of `log y` against `log yhat` (NaN when a prediction is <= 0 or `log y` is constant)."""
     y, yhat = _pair(y, yhat, "y and yhat")
     keep = np.isfinite(y) & np.isfinite(yhat)
     y, yhat = y[keep], yhat[keep]
@@ -35,16 +37,21 @@ def metrics(y, yhat) -> dict:
     err = yhat - y
     pct = err / y
     if (yhat <= 0).any():
-        mdale = float("nan")
+        mdale = r2_log = float("nan")
     else:
         mdale = float(np.median(np.abs(np.log(yhat / y))))
+        sst = float(np.sum((np.log(y) - np.log(y).mean()) ** 2))
+        r2_log = float(1.0 - np.sum((np.log(y) - np.log(yhat)) ** 2) / sst) if sst > 0 else float("nan")
     return {"n": int(y.size),
             "mdape": float(np.median(np.abs(pct))),
             "mape": float(np.mean(np.abs(pct))),
             "mae": float(np.mean(np.abs(err))),
             "rmse": float(math.sqrt(np.mean(err ** 2))),
             "bias_pct": float(np.median(pct)),
-            "mdale": mdale}
+            "mdale": mdale,
+            "maxape": float(np.max(np.abs(pct))),
+            "p90ape": float(np.percentile(np.abs(pct), 90)),
+            "r2_log": r2_log}
 
 
 def coverage(y, lo, hi) -> float:
@@ -56,6 +63,14 @@ def coverage(y, lo, hi) -> float:
     if not keep.any():
         return float("nan")
     return float(np.mean((y[keep] >= lo[keep]) & (y[keep] <= hi[keep])))
+
+
+def interval_width(lo, hi) -> float:
+    """Median of hi / lo over the rows where both bounds are finite and positive (NaN if none): the
+    typical multiplicative width of a prediction interval."""
+    lo, hi = _pair(lo, hi, "lo and hi")
+    keep = np.isfinite(lo) & np.isfinite(hi) & (lo > 0)
+    return float(np.median(hi[keep] / lo[keep])) if keep.any() else float("nan")
 
 
 def cluster_bootstrap(df: pd.DataFrame, group_col: str, stat, n: int = 2000, *, seed: int):

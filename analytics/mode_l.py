@@ -56,8 +56,26 @@ def _cell_apes(w: pd.DataFrame, p: np.ndarray) -> np.ndarray:
     return np.where(true > 0, np.abs(pred - true) / np.where(true > 0, true, 1.0), np.nan)
 
 
+def _meas_ape(c: pd.DataFrame, p: np.ndarray) -> float:
+    """Energy APE over the inference segment (phase `forward`) of one cell's windows `c` with window power
+    predictions `p`; NaN if the cell has no forward window or no energy there."""
+    meas = c["phase"].to_numpy() == tables.MODE
+    if not meas.any():
+        return float("nan")
+    return _ape(float((p * c["dur_s"].to_numpy(float))[meas].sum()), c["E_mJ"].to_numpy(float)[meas].sum() / 1000.0)
+
+
+def _cell_meas_apes(w: pd.DataFrame, p: np.ndarray) -> np.ndarray:
+    """Inference-segment energy APE per cell of `w` (order of first appearance); NaN for a cell without one."""
+    return np.array([_meas_ape(w.iloc[idx], p[idx]) for idx in w.groupby("cell_id", sort=False).indices.values()])
+
+
 def _score_cell(c: pd.DataFrame, p: np.ndarray) -> dict:
-    """Metrics of one cell's windows `c` (sorted by w_idx) with window power predictions `p`."""
+    """Metrics of one cell's windows `c` (sorted by w_idx) with window power predictions `p`.
+
+    Besides the energy APEs, the sums that pool into R^2 and MAE over cells: `n_all`, `sum_y_all`, `sum_y2_all`,
+    `sse_all` over every window and `n_fwd`, `sum_y_fwd`, `sum_y2_fwd`, `sse_fwd`, `sae_fwd` over the forward
+    (inference) windows only (y = measured window power); `mae_fwd_W` is the cell's own forward MAE."""
     dur, e, ph = c["dur_s"].to_numpy(float), c["E_mJ"].to_numpy(float), c["phase"].to_numpy()
     e_true, e_pred = e.sum() / 1000.0, float((p * dur).sum())
     meas = ph == tables.MODE
@@ -69,6 +87,15 @@ def _score_cell(c: pd.DataFrame, p: np.ndarray) -> dict:
            "mae_window_W": float(np.mean(np.abs(p - c["P_W"].to_numpy(float)))),
            "n_windows": len(c), "n_windows_meas": int(meas.sum())}
     out["ape_meas"] = _ape(out["E_pred_meas_J"], out["E_true_meas_J"]) if meas.any() else float("nan")
+    y = c["P_W"].to_numpy(float)
+    err = p - y
+    ok = np.isfinite(y) & np.isfinite(p)
+    f = ok & meas
+    out.update(n_all=int(ok.sum()), sum_y_all=float(y[ok].sum()), sum_y2_all=float((y[ok] ** 2).sum()),
+               sse_all=float((err[ok] ** 2).sum()),
+               n_fwd=int(f.sum()), sum_y_fwd=float(y[f].sum()), sum_y2_fwd=float((y[f] ** 2).sum()),
+               sse_fwd=float((err[f] ** 2).sum()), sae_fwd=float(np.abs(err[f]).sum()),
+               mae_fwd_W=float(np.abs(err[f]).mean()) if f.any() else float("nan"))
     for name, size in HORIZONS.items():
         out[name] = block_ape(p, dur, e, size)
     for phase in PHASES:
@@ -76,6 +103,24 @@ def _score_cell(c: pd.DataFrame, p: np.ndarray) -> dict:
         out[f"ape_phase_{phase}"] = (_ape(float((p * dur)[m].sum()), e[m].sum() / 1000.0)
                                      if m.any() else float("nan"))
     return out
+
+
+def pooled_window_metrics(g: pd.DataFrame) -> dict:
+    """Window-level metrics pooled over the cells of a `run_lomo` result `g` (one rung): `r2_all` (all windows),
+    `r2_fwd`, `mae_fwd_W` (forward windows only), `n_win_all`, `n_win_fwd`. R^2 = 1 - SSE / SST with SST about
+    the pooled mean of the measured window power; NaN when there are no windows or SST is 0.
+
+    R^2 over all windows is inflated by the idle / active bimodality of power, so R^2 on the forward
+    windows is the honest figure; both pool over cells, so the between-configuration spread is part of SST."""
+    def r2(n, sy, sy2, sse):
+        sst = sy2 - sy * sy / n if n > 0 else float("nan")
+        return float(1.0 - sse / sst) if n > 0 and sst > 0 else float("nan")
+    s = g[["n_all", "sum_y_all", "sum_y2_all", "sse_all", "n_fwd", "sum_y_fwd", "sum_y2_fwd", "sse_fwd",
+           "sae_fwd"]].sum()
+    return {"r2_all": r2(s["n_all"], s["sum_y_all"], s["sum_y2_all"], s["sse_all"]),
+            "r2_fwd": r2(s["n_fwd"], s["sum_y_fwd"], s["sum_y2_fwd"], s["sse_fwd"]),
+            "mae_fwd_W": float(s["sae_fwd"] / s["n_fwd"]) if s["n_fwd"] > 0 else float("nan"),
+            "n_win_all": int(s["n_all"]), "n_win_fwd": int(s["n_fwd"])}
 
 
 # ------------------------------------------------------------------ outer / inner folds
@@ -100,24 +145,31 @@ def _fit(rung: mm.Rung, seed: int, params: dict, train: pd.DataFrame):
 
 
 def _select(rung: mm.Rung, seed: int, train: pd.DataFrame) -> dict:
-    """Grid point with the lowest median whole-cell energy APE over the inner test cells of a
-    leave-one-base-model-out inside `train` (ties: first point)."""
+    """Grid point with the lowest median inference-segment (`forward` phase) energy APE (the `ape_meas` of
+    `_score_cell`; R2, R1 used the whole cell, which idle phases dilute) over the inner test cells of a
+    leave-one-base-model-out inside `train` (ties: first point). If no inner cell has a forward window the
+    whole-cell APE is used instead."""
     if len(rung.grid) == 1:
         return rung.grid[0]
-    apes = [[] for _ in rung.grid]
+    meas = [[] for _ in rung.grid]
+    whole = [[] for _ in rung.grid]
     for m in sorted(train["base_model"].unique()):
         tr, te = train[train["base_model"] != m], train[train["base_model"] == m]
         for gi, params in enumerate(rung.grid):
-            apes[gi].extend(_cell_apes(te, _fit(rung, seed, params, tr).predict(te)))
+            p = _fit(rung, seed, params, tr).predict(te)
+            meas[gi].extend(_cell_meas_apes(te, p))
+            whole[gi].extend(_cell_apes(te, p))
+    apes = meas if any(np.isfinite(a).any() for a in meas) else whole
     med = [np.nanmedian(a) if np.isfinite(a).any() else np.inf for a in apes]
     return rung.grid[int(np.argmin(med))]
 
 
 def fit_final(w: pd.DataFrame, cat: pd.DataFrame, qc: pd.DataFrame | None, rung_name: str, seed: int,
-              rungs: dict | None = None) -> tuple:
+              rungs: dict | None = None, suffix: str = "") -> tuple:
     """The shipped window model of one rung: the grid point is chosen by `_select` (leave one YOLO base
     model out over all training cells), then the model is refitted on every QC-primary counter cell of the
-    YOLO base models and pickled to derived/models/mode_l_<rung>.pkl. Lockbox cells never enter (a
+    YOLO base models and pickled to derived/models/mode_l_<rung><suffix>.pkl (`suffix` "" is the frozen R1 name; post hoc
+    R2 fits pass "_r2" so that they never overwrite a frozen pickle). Lockbox cells never enter (a
     `source` column marks them). Returns (model, {"path", "sha256", "params", "n_cells", "n_windows",
     "base_models"}). `seed` is the tree random_state (selection and final fit)."""
     rungs = rungs or mm.default_rungs()
@@ -133,7 +185,7 @@ def fit_final(w: pd.DataFrame, cat: pd.DataFrame, qc: pd.DataFrame | None, rung_
     model = _fit(rung, seed, params, train)
     out = settings.derived_dir() / "models"
     out.mkdir(parents=True, exist_ok=True)
-    path = out / f"mode_l_{rung_name}.pkl"
+    path = out / f"mode_l_{rung_name}{suffix}.pkl"
     path.write_bytes(pickle.dumps(model))
     return model, {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "params": params,
                    "n_cells": int(train["cell_id"].nunique()), "n_windows": len(train),
@@ -269,10 +321,11 @@ def run_all(w, pw, cat, der, qc, *, seed, n_jobs, mode_a_pred, out_dir, rungs=No
     lomo.to_parquet(out / f"{run_id}.parquet", index=False)
     per = {r: {"exploratory": bool(g["exploratory"].iloc[0]), **evaluate.metrics(g["E_true_J"], g["E_pred_J"]),
                "median_ape_1s": float(g["ape_1s"].median()), "median_ape_10s": float(g["ape_10s"].median()),
-               "mdape_meas": evaluate.metrics(g["E_true_meas_J"], g["E_pred_meas_J"])["mdape"]}
+               "mdape_meas": evaluate.metrics(g["E_true_meas_J"], g["E_pred_meas_J"])["mdape"],
+               **pooled_window_metrics(g)}
            for r, g in lomo.groupby("rung", sort=False)}
     runlog.append({"run_id": run_id, "command": "mode-l", "part": "lomo", "seed": seed, "n_jobs": n_jobs,
-                   "folds": sorted(lomo["fold"].unique()), "n_cells": int(lomo["cell_id"].nunique()),
+                   "folds": sorted(lomo["fold"].unique()), "rungs": list(lomo["rung"].unique()), "n_cells": int(lomo["cell_id"].nunique()),
                    "excluded_non_yolo": lomo.attrs["excluded"], "metrics": per, "wall_s": round(wall, 1)}, runlog_path)
     t0 = time.perf_counter()
     pm = run_pmic_v1(pw, cat, qc)

@@ -158,3 +158,48 @@ def test_real_table_fold_counts():
     assert {k: len(v) for k, v in sp.items()} == {"S-LOMO": 9, "S-LSO": 3, "S-LVO": 3, "S-LCO": 4, "RANDOM": 5}
     assert {f.fold: f.similarity_class for f in sp["S-LVO"]}["yolo11n_fp16"] == "unsupported"
     assert [f.fold for f in sp["S-LCO"]] == ["1500", "2000", "2400", "1500+2000->2400"]
+
+
+# ---- R2: inner folds matched to the regime ---------------------------------------------------------------
+def _check_partition(train_t, inner):
+    ok = sorted(train_t["config_key"])
+    assert sorted(k for _, va in inner for k in va) == ok            # every key validates exactly once
+    for tr, va in inner:
+        assert tr and va and not set(tr) & set(va) and set(tr) | set(va) == set(ok)
+
+
+def _fold_frames(t, split, fold):
+    f = next(x for x in splits.make_splits(t, 1)[split] if x.fold == fold)
+    return t[t["config_key"].isin(f.train_keys)].reset_index(drop=True), t[t["config_key"].isin(f.test_keys)]
+
+
+def test_regime_is_decided_from_the_data_not_the_split_name():
+    t = _table()
+    for split, fold, want in (("S-LOMO", "yolo11n", "new-model"), ("S-LSO", "n", "new-model"),
+                              ("S-LVO", "yolo11n_fp16", "seen-model"), ("S-LCO", "2400", "seen-model"),
+                              ("S-LCO", "1500+2000->2400", "seen-model")):
+        train, test = _fold_frames(t, split, fold)
+        assert splits.regime_of(train, test) == want, (split, fold)
+    train, test = _fold_frames(t, "S-LOMO", "yolo11n")
+    assert splits.regime_of(train, train.iloc[:3]) == "seen-model"      # any frame whose models are all in training
+    assert splits.regime_of(train, pd.concat([train.iloc[:2], test])) == "new-model"   # one absent model is enough
+
+
+def test_new_model_regime_is_leave_one_base_model_out_and_seen_model_is_random_five_fold():
+    t = _table()
+    train, _ = _fold_frames(t, "S-LOMO", "yolo11n")
+    assert splits.inner_folds_for(train, "new-model", 1) == splits.inner_folds(train)
+    inner = splits.inner_folds_for(train, "seen-model", 7, 2)
+    assert len(inner) == 5
+    _check_partition(train, inner)
+    with pytest.raises(ValueError, match="regime"):
+        splits.inner_folds_for(train, "S-LOMO", 1)
+
+
+def test_inner_random_is_deterministic_in_seed_and_index_order_independent_and_loco_when_tiny():
+    t = _table()
+    a = splits.inner_folds_for(t, "seen-model", 7, 2)
+    assert a == splits.inner_folds_for(t.sample(frac=1, random_state=0), "seen-model", 7, 2)
+    assert a != splits.inner_folds_for(t, "seen-model", 7, 3) and a != splits.inner_folds_for(t, "seen-model", 8, 2)
+    inner = splits.inner_folds_for(t.iloc[:4], "seen-model", 7)
+    assert len(inner) == 4 and all(len(va) == 1 and len(tr) == 3 for tr, va in inner)

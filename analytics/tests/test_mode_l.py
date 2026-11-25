@@ -29,7 +29,9 @@ def make_windows(models=("yolov8n", "yolov8s", "yolov8m"), cells_per_model=2, se
                 "phase": ph, "counted": 1, "busy": busy, "cycles_rate": busy * 2.4e9,
                 "instr_rate": busy * 3e9, "ipc": 1.2 + 0.0 * busy, "cache_miss_rate": 0.01,
                 "branch_mpki": 2.0, "stall_frac": 0.3, "llc_mpki": 0.5, "ctx_sw_rate": 0.0,
-                "pf_rate": 10.0, "busy_l1": np.r_[0, busy[:-1]], "busy_l2": np.r_[0, 0, busy[:-2]],
+                "pf_rate": 10.0, "llc_miss_rate": 1e6 * busy, "f_eff_mhz": 2400.0, "vcore_eff": 0.9294,
+                "v2_cycles_rate": 0.9294 ** 2 * busy * 2.4e9, "v2_instr_rate": 0.9294 ** 2 * busy * 3e9,
+                "busy_l1": np.r_[0, busy[:-1]], "busy_l2": np.r_[0, 0, busy[:-2]],
                 "busy_l3": np.r_[0, 0, 0, busy[:-3]], "cycles_rate_l1": 1.0, "cycles_rate_l2": 1.0,
                 "cycles_rate_l3": 1.0, "ipc_l1": 1.2, "ipc_l2": 1.2, "ipc_l3": 1.2, "freq_mhz": 2400.0,
                 "temp_C": 55.0 + 5 * busy, "fan_state": 4.0, "pmic_W": (P - icpt) / 2 + 1.0 if pmic else NAN,
@@ -111,12 +113,48 @@ def test_l3_features_have_no_pmic_and_l4_adds_it():
 
 def test_grids_match_the_protocol():
     g = mm.default_rungs()
-    assert list(g) == ["L0", "L1", "L1-cell", "L2", "L3-ridge", "L3-trees", "L4-ridge", "L4-trees"]
+    assert list(g) == ["L0", "L1", "L1-cell", "L2", "L3-ridge", "L3-trees", "L4-ridge", "L4-trees", "L5-cmos",
+                       "L5-cmos-trees"]
+    assert g["L5-cmos"].grid == g["L3-ridge"].grid and g["L5-cmos-trees"].grid == g["L3-trees"].grid
     assert [p["alpha"] for p in g["L2"].grid] == pytest.approx(list(np.logspace(-2, 4, 7)))
     assert len(g["L3-ridge"].grid) == 7 and len(g["L0"].grid) == 1 and len(g["L1"].grid) == 1
     tg = g["L4-trees"].grid
     assert {(p["max_depth"], p["min_samples_leaf"]) for p in tg} == {(3, 50), (3, 200), (5, 50), (5, 200)}
     assert {p["learning_rate"] for p in tg} == {0.1} and {p["max_iter"] for p in tg} == {200}
+
+
+def test_no_rung_uses_ctx_sw_rate_and_l5_adds_the_five_cmos_features():
+    for name, rung in mm.default_rungs().items():
+        m = rung.make(0)
+        if hasattr(m, "feature_names"):
+            assert "ctx_sw_rate" not in m.feature_names(), name
+    assert "ctx_sw_rate" not in mm.COUNTERS
+    l3, l5 = mm.L3Counters("ridge").feature_names(), mm.L5Cmos("ridge").feature_names()
+    five = ["llc_miss_rate", "f_eff_mhz", "vcore_eff", "v2_cycles_rate", "v2_instr_rate"]
+    assert l5 == l3 + five and not set(five) & set(l3)
+    assert mm.L5Cmos("trees").feature_names() == l5 and "pmic_W" not in l5 and "pmic_missing" not in l5
+    assert "pmic_missing" in mm.L4CountersPmic("ridge").feature_names()
+
+
+def test_l5_fits_and_uses_the_new_columns():
+    w, _ = make_windows()
+    sw = np.ones(len(w))
+    for variant, params in (("ridge", {"alpha": 1.0}), ("trees", mm.TREE_GRID[0])):
+        m = mm.L5Cmos(variant, seed=0).fit(w, params, sw)
+        assert np.isfinite(m.predict(w)).all()
+        w2 = w.drop(columns=["v2_cycles_rate"])
+        with pytest.raises(KeyError):
+            m.predict(w2)
+
+
+def test_unpickled_r1_model_keeps_its_ctx_sw_rate_feature():
+    w, _ = make_windows()
+    m = mm.L3Counters("ridge").fit(w, {"alpha": 1.0}, np.ones(len(w)))
+    del m.counters                                  # what a pickle from before R2 looks like
+    assert "ctx_sw_rate" in m.feature_names() and m._X(w).shape[1] == len(mm.COUNTERS) + 1 + len(mm.ONEHOT)
+    w = w.drop(columns=["ctx_sw_rate"])
+    with pytest.raises(KeyError):
+        m.predict(w)
 
 
 def test_trees_seed_is_the_run_seed():
@@ -276,6 +314,61 @@ def test_grid_point_chosen_by_inner_median_ape():
     rungs = {"c": mm.Rung("c", lambda seed: Const(), [{"c": 3.0}, {"c": 6.5}, {"c": 12.0}])}
     res = mode_l.run_lomo(w, cat, seed=0, rungs=rungs)
     assert {json.loads(p)["c"] for p in res["params"]} == {6.5}
+
+
+def _select_workload():
+    """Windows where the inference segment (forward) is 10 W and the long idle part 2 W: the grid point
+    that is best on the whole cell (c = 3.2: overall mean) is not the best on the inference segment (c = 10)."""
+    w, cat = make_windows(models=("yolov8n", "yolov8s", "yolov8m"))
+    fwd = w["w_idx"] >= 170
+    w["phase"] = np.where(fwd, "forward", "baseline_A")
+    w["P_W"] = np.where(fwd, 10.0, 2.0)
+    w["E_mJ"] = w["P_W"] * 100.0
+    w["base_model"] = w["cell_id"].str.split("_").str[0]
+    n_fwd = fwd.sum() / len(w)
+    return w, 10.0 * n_fwd + 2.0 * (1 - n_fwd)
+
+
+class _Const:
+    def fit(self, train_w, params, sample_weight):
+        self.c = params["c"]
+        return self
+
+    def predict(self, x):
+        return np.full(len(x), self.c)
+
+
+def test_select_uses_the_inference_segment_ape_not_the_whole_cell():
+    w, whole_mean = _select_workload()
+    grid = [{"c": whole_mean}, {"c": 10.0}, {"c": 2.0}]
+    rung = mm.Rung("c", lambda seed: _Const(), grid)
+    te = w[w["base_model"] == "yolov8n"]
+    assert np.nanmedian(mode_l._cell_apes(te, np.full(len(te), whole_mean))) < 0.01      # whole-cell prefers c = mean
+    assert np.nanmedian(mode_l._cell_apes(te, np.full(len(te), 10.0))) > 0.2
+    assert mode_l._select(rung, 0, w) == {"c": 10.0}                                      # inference segment: c = 10
+
+
+def test_select_falls_back_to_whole_cell_without_forward_windows():
+    w, whole_mean = _select_workload()
+    w["phase"] = "idle"
+    rung = mm.Rung("c", lambda seed: _Const(), [{"c": 10.0}, {"c": whole_mean}, {"c": 2.0}])
+    assert mode_l._select(rung, 0, w) == {"c": whole_mean}
+
+
+def test_score_cell_forward_window_sums_and_pooled_metrics():
+    w, cat = make_windows(models=("yolov8n", "yolov8s", "yolov8m"), cells_per_model=1)
+    res = mode_l.run_lomo(w, cat, seed=0, rungs={"c": mm.Rung("c", lambda seed: _Const(), [{"c": 6.0}])})
+    pm = mode_l.pooled_window_metrics(res)
+    d = w.merge(cat[["cell_id", "base_model"]], on="cell_id")
+    f = d[d["phase"] == "forward"]
+    assert pm["n_win_fwd"] == len(f) and pm["n_win_all"] == len(d)
+    assert pm["mae_fwd_W"] == pytest.approx(np.abs(6.0 - f["P_W"]).mean())
+    r2f = 1 - ((f["P_W"] - 6.0) ** 2).sum() / ((f["P_W"] - f["P_W"].mean()) ** 2).sum()
+    r2a = 1 - ((d["P_W"] - 6.0) ** 2).sum() / ((d["P_W"] - d["P_W"].mean()) ** 2).sum()
+    assert pm["r2_fwd"] == pytest.approx(r2f) and pm["r2_all"] == pytest.approx(r2a)
+    one = res.iloc[0]
+    cf = w[(w["cell_id"] == one["cell_id"]) & (w["phase"] == "forward")]
+    assert one["mae_fwd_W"] == pytest.approx(np.abs(6.0 - cf["P_W"]).mean())
 
 
 # ------------------------------------------------------------------ pmic leave-one-workload-out

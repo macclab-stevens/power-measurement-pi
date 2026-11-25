@@ -221,6 +221,9 @@ def write_eda_config(cat, der, qc, cfgs, report_dir) -> str:
     prim = deploy._primary(cat, qc)
     vers = "; ".join(f"dataset {eda.VERSION.get(r, r)} ({r} rig, {int(n)} cells)" for r, n in prim.groupby("rig").size().items())
     L = ["# Exploration report: Raspberry Pi 5 power datasets, configuration level\n",
+         "> R2 (2026-11-24): section 2.1 (CMOS form with the measured core voltage) is new, and the trace-level "
+         "sections use slip-corrected 100 ms windows (`timefix.py`), which moves some window figures in the third "
+         "decimal. The R1 version is `r1_frozen/eda.md`.\n",
          "Descriptive only: nothing on this page fits or evaluates a predictor. All numbers use QC `primary` cells "
          f"only ({len(prim)} of {len(cat)} catalogue cells; {vers}). Energies are mJ per image (per frame / batch), "
          "latencies ms, power W. Every table states n and the dataset version; a configuration is one "
@@ -275,6 +278,20 @@ def write_eda_config(cat, der, qc, cfgs, report_dir) -> str:
                  if len(fw) else "")
         fig_scaling(series, st, figdir)
         L.append("![Power against clock](fig/eda_clock_power.png)\n")
+        ct = eda.cmos_table(series)
+        fwc = ct[ct["kind"] == "forward power"]
+        L += ["### 2.1 CMOS form with the measured core voltage (R2)\n",
+              "The power law above has as many parameters as points. The core voltage is a fixed function of the "
+              "clock (median VDD_CORE from `context.csv`: 0.7234 / 0.8745 / 0.9294 V at 1500 / 2000 / 2400 MHz, "
+              "`[dvfs]` in config.toml), so dynamic power can be written `P = P0 + k V(f)^2 f`. That is two parameters "
+              "for three points, leaving one degree of freedom, and the residual tests the form. `P0` is the power "
+              "that does not scale with V^2 f (static, fan, DRAM, rest of the board).\n",
+              md_table(ct, {"P0": "{:.3f}", "k": "{:.3f}", "max_abs_resid": "{:.3f}", "rmse_resid": "{:.3f}"})]
+        if len(fwc):
+            L.append(f"Forward power: P0 {fwc['P0'].min():.2f}-{fwc['P0'].max():.2f} W (all positive: "
+                     f"{'yes' if (fwc['P0'] > 0).all() else 'no'}), worst residual {fwc['max_abs_resid'].max():.3f} W "
+                     f"over {len(fwc)} series. A positive P0 with a residual near the repeat noise means the V^2 f form "
+                     "identifies static and dynamic power, which the free power law could not.\n")
     else:
         L.append("_No complete three-clock series._\n")
     it = idle.copy().rename(columns={"P_idle_W": "idle W (median)", "n": "n cells", "iqr_W": "IQR W"})

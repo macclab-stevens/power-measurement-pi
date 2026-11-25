@@ -9,3 +9,10 @@ q3_slip_frac_flag = 0.01     # Q3flag: slip_scored_frac above this
 q5_pv_rel_flag = 0.02        # Q5flag: median |P - V*I| / P above this
 q6_sample_ratio_lo = 0.98    # Q6: n_samples / (span * achieved_sample_hz) outside [lo, hi] quarantines
 q6_sample_ratio_hi = 1.02
+
+# Core-voltage (VDD_CORE) a priori table, V at the pinned CPU clock (MHz): the median measured on both rigs
+# (audit response section 6). tables.vcore_v interpolates linearly between the points and clamps outside.
+[dvfs]
+1500 = 0.7234
+2000 = 0.8745
+2400 = 0.9294

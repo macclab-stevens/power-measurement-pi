@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 import data
+import settings
 
 CONFIG_COLS = ["base_model", "variant", "precision", "imgsz", "batch", "threads", "cpu_mhz", "rig"]
 MEASURES = {"energy_mJ": "energy_mJ_per_image", "latency_ms": "latency_ms_per_image",
@@ -19,13 +20,35 @@ def _cv(x: pd.Series) -> float:
     return float(x.std(ddof=1) / x.mean()) if len(x) >= 2 else float("nan")
 
 
+def dvfs_table() -> tuple[np.ndarray, np.ndarray]:
+    """(clocks in MHz ascending, VDD_CORE in V) from the `[dvfs]` section of config.toml."""
+    d = settings.cfg()["dvfs"]
+    mhz = sorted(d, key=float)
+    return np.array([float(k) for k in mhz]), np.array([float(d[k]) for k in mhz])
+
+
+def vcore_v(cpu_mhz) -> np.ndarray:
+    """Core voltage at `cpu_mhz` by linear interpolation of the DVFS table, clamped outside it."""
+    mhz, volt = dvfs_table()
+    return np.interp(np.asarray(cpu_mhz, dtype=float), mhz, volt)
+
+
 def add_derived_columns(t: pd.DataFrame) -> pd.DataFrame:
     """Copy of `t` plus the derived Mode A columns: log_{macs,params,weight_bytes,act_bytes}, cpu_ghz,
-    is_int8, is_fp16. Shared by `mode_a_table` and the lockbox feature rows so both are built identically."""
+    is_int8, is_fp16, and the R2 columns vcore_V (DVFS table), v2f = vcore_V**2 * cpu_ghz and
+    log_n_calls = log(n_module_calls). Shared by `mode_a_table` and the lockbox feature rows so both are
+    built identically."""
     t = t.copy()
     for k in ("macs", "params", "weight_bytes", "act_bytes"):
         t[f"log_{k}"] = np.log(t[k].astype(float))
     t["cpu_ghz"] = t["cpu_mhz"].astype(float) / 1000.0
+    t["vcore_V"] = vcore_v(t["cpu_mhz"].astype(float))
+    t["v2f"] = t["vcore_V"] ** 2 * t["cpu_ghz"]
+    calls = t["n_module_calls"].astype(float)
+    if len(calls) and not (np.isfinite(calls) & (calls > 0)).all():
+        raise ValueError("n_module_calls must be finite and positive (log_n_calls); got "
+                         f"{calls[~(np.isfinite(calls) & (calls > 0))].unique()[:3].tolist()}")
+    t["log_n_calls"] = np.log(calls)
     t["is_int8"] = (t["precision"] == "int8").astype(int)
     t["is_fp16"] = (t["precision"] == "fp16").astype(int)
     return t

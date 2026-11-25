@@ -39,7 +39,7 @@ import coload
 import perfcounters
 import pinning
 import yolo_variants
-from layers import LayerProfiler
+from layers import LayerProfiler, NullProfiler
 from microbench import bench_configs
 from powersampler import make_sampler
 from sysfs_sampler import SysfsSampler, ThermalAbort, thermal_exit_code, uv_alarm_errors
@@ -360,6 +360,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="power source: on-board PMIC (legacy) or EliteBook Monsoon recorder")
     ap.add_argument("--recorder-url", default="http://192.168.0.11:8051",
                     help="Monsoon recorder HTTP base URL (used with --sampler monsoon)")
+    ap.add_argument("--layer-hooks", default="on", choices=["on", "off"],
+                    help="per-layer forward hooks (layer_table.csv, per-op power benches). off: no "
+                         "hooks (NullProfiler; mode/iter labels still logged), no layer_table.csv "
+                         "and no benches (static features: tools/static_features.py)")
     ap.add_argument("--perf-counters", default="on", choices=["on", "off"],
                     help="hardware counters via perf stat -I (counters.csv); forced off with "
                          "--sampler pmic")
@@ -514,7 +518,8 @@ def main():
         load_s = time.perf_counter() - t_load
         variant = getattr(task, "variant", None) or {}
         require_quantized_modules(args.quant, variant)   # fail at load, not after the cell
-        prof = LayerProfiler(task.module)
+        hooks_on = args.layer_hooks == "on"
+        prof = LayerProfiler(task.module) if hooks_on else NullProfiler(task.module)
         modes = task.modes()
         n_params = sum(p.numel() for p in task.module.parameters())
         logger.info(f"task='{args.task}' model='{args.model}' modes={modes} | "
@@ -670,12 +675,16 @@ def main():
 
         # ---- outputs ---------------------------------------------------------
         layer_rows = prof.aggregated(exclude_frame=0)
-        _write_csv(os.path.join(outdir, "layer_table.csv"),
-                   ["path", "config_id", "class", "config_json",
-                    "input_shapes", "input_dtypes", "out_shapes", "callsite", "mode",
-                    "leaf", "params", "macs", "bytes_moved", "arith_intensity",
-                    "t_eff", "seq_len",
-                    "count", "lat_mean_ms", "lat_median_ms", "lat_std_ms"], layer_rows)
+        if hooks_on:
+            _write_csv(os.path.join(outdir, "layer_table.csv"),
+                       ["path", "config_id", "class", "config_json",
+                        "input_shapes", "input_dtypes", "out_shapes", "callsite", "mode",
+                        "leaf", "params", "macs", "bytes_moved", "arith_intensity",
+                        "t_eff", "seq_len",
+                        "count", "lat_mean_ms", "lat_median_ms", "lat_std_ms"], layer_rows)
+        else:
+            logger.info("--layer-hooks off: no layer_table.csv; static features come from "
+                        "tools/static_features.py")
         executed_dtype = yolo_variants.executed_conv_dtype(layer_rows)
         logger.info(f"layer profile: {len(layer_rows)} sites; "
                     f"{sum(1 for r in layer_rows if r['leaf'])} leaf configs")
@@ -807,6 +816,7 @@ def main():
             "quantized_compute_modules": variant.get("quantized_modules"),
             "executed_dtype": executed_dtype,
             "map_reference": map_ref,
+            "layer_hooks": args.layer_hooks,
             "serve_requests": args.serve if args.task != "train" else 0,
             "serve_gap_ms": args.serve_gap_ms,
             "serve_fps": args.serve_fps,
@@ -922,8 +932,10 @@ def main():
             if fan_end is None or fan_end[0] < fan_end[1]:
                 errors.append("fan not at max at end of run")
         errors += yolo_variants.quant_count_errors(args.quant, variant.get("quantized_modules"))
-        if args.quant == "fp16":
+        if args.quant == "fp16" and hooks_on:   # the executed dtype is read from the layer rows
             errors += yolo_variants.fp16_errors(layer_rows)
+        elif args.quant == "fp16":
+            logger.warning("--layer-hooks off: the fp16 executed-dtype check needs the layer rows and was skipped")
         if worker is not None:
             if worker.iterations < 1:
                 errors.append(f"concurrent worker {worker.tag} completed no iterations")

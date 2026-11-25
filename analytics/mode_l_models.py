@@ -13,9 +13,13 @@ from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.linear_model import Ridge
 
 COUNTERS = ["busy", "cycles_rate", "instr_rate", "ipc", "cache_miss_rate", "branch_mpki", "stall_frac",
-            "llc_mpki", "ctx_sw_rate", "pf_rate", "counted", "busy_l1", "busy_l2", "busy_l3",
+            "llc_mpki", "pf_rate", "counted", "busy_l1", "busy_l2", "busy_l3",
             "cycles_rate_l1", "cycles_rate_l2", "cycles_rate_l3", "ipc_l1", "ipc_l2", "ipc_l3",
             "freq_mhz", "temp_C", "fan_state"]
+# R1 feature list of the pickled R1 models (`ctx_sw_rate` is identically 0 under `:u` counting and was dropped in
+# R2); an unpickled model without a `counters` attribute keeps predicting with it.
+LEGACY_COUNTERS = COUNTERS[:8] + ["ctx_sw_rate"] + COUNTERS[8:]
+CMOS = ["llc_miss_rate", "f_eff_mhz", "vcore_eff", "v2_cycles_rate", "v2_instr_rate"]
 FAN_MODES = ("full", "auto", "off")
 GOVERNORS = ("pinned", "ondemand")
 ONEHOT = [f"fan_{f}" for f in FAN_MODES] + [f"gov_{g}" for g in GOVERNORS]
@@ -159,17 +163,21 @@ class L3Counters(_RidgeMixin):
         if variant not in ("ridge", "trees"):
             raise ValueError(f"unknown variant {variant!r}")
         self.variant, self.seed = variant, seed
+        self.counters = list(COUNTERS)
+
+    def _counters(self):
+        return getattr(self, "counters", LEGACY_COUNTERS)
 
     def feature_names(self):
-        return COUNTERS + ONEHOT + self.extra
+        return self._counters() + ONEHOT + self.extra
 
     def _X(self, w):
-        cols = [_col(w, c) for c in COUNTERS]
+        cols = [_col(w, c) for c in self._counters()]
         fm, gv = w["fan_mode"].astype(str).to_numpy(), w["governor"].astype(str).to_numpy()
         cols += [(fm == f).astype(float) for f in FAN_MODES] + [(gv == g).astype(float) for g in GOVERNORS]
         cols += [_col(w, c) for c in self.extra]
         X = np.column_stack(cols)
-        if self.variant == "ridge" and self.extra:
+        if self.variant == "ridge" and "pmic_W" in self.extra:
             X = np.column_stack([X, (~np.isfinite(_col(w, "pmic_W"))).astype(float)])
         return X
 
@@ -198,6 +206,12 @@ class L4CountersPmic(L3Counters):
         return super().feature_names() + (["pmic_missing"] if self.variant == "ridge" else [])
 
 
+class L5Cmos(L3Counters):
+    """L3 features plus the R2 CMOS features (llc_miss_rate, f_eff_mhz, vcore_eff and the V^2 x rate products);
+    no PMIC. Ridge or trees as L3."""
+    extra = CMOS
+
+
 # ------------------------------------------------------------------ rungs and grids
 
 class Rung(NamedTuple):
@@ -212,6 +226,9 @@ TREE_GRID = [{"max_depth": d, "learning_rate": 0.1, "max_iter": 200, "min_sample
              for d in (3, 5) for leaf in (50, 200)]
 
 
+R1_RUNGS = ("L0", "L1", "L1-cell", "L2", "L3-ridge", "L3-trees", "L4-ridge", "L4-trees")   # the eight frozen / lockbox-scored rungs
+
+
 def default_rungs() -> dict:
     ridge = [{"alpha": float(a)} for a in ALPHAS]
     return {
@@ -223,6 +240,8 @@ def default_rungs() -> dict:
         "L3-trees": Rung("L3-trees", lambda seed: L3Counters("trees", seed), TREE_GRID),
         "L4-ridge": Rung("L4-ridge", lambda seed: L4CountersPmic("ridge", seed), ridge),
         "L4-trees": Rung("L4-trees", lambda seed: L4CountersPmic("trees", seed), TREE_GRID),
+        "L5-cmos": Rung("L5-cmos", lambda seed: L5Cmos("ridge", seed), ridge),
+        "L5-cmos-trees": Rung("L5-cmos-trees", lambda seed: L5Cmos("trees", seed), TREE_GRID),
     }
 
 

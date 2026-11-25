@@ -5,6 +5,7 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from sklearn.model_selection import KFold
 
@@ -128,3 +129,43 @@ def inner_folds(train_t: pd.DataFrame) -> list:
             if tr:
                 out.append((tr, [k]))
     return out
+
+
+# ---- inner folds that match the kind of generalisation being tested ---------------------------------------
+N_INNER_RANDOM = 5
+REGIMES = ("new-model", "seen-model")
+
+
+def random_inner_folds(train_t: pd.DataFrame, seed: int, index: int = 0) -> list:
+    """Random 5-fold over the configurations of `train_t` as (train_keys, val_keys), deterministic in
+    (`seed`, `index`) through numpy.random.default_rng([seed, index]) over the sorted keys; leave-one-config-out
+    with fewer than 5 configurations."""
+    keys = sorted(train_t["config_key"].astype(str))
+    if len(keys) < N_INNER_RANDOM:
+        return [([x for x in keys if x != k], [k]) for k in keys if len(keys) > 1]
+    perm = np.random.default_rng([int(seed), int(index)]).permutation(len(keys))
+    out = []
+    for chunk in np.array_split(perm, N_INNER_RANDOM):
+        va = sorted(keys[j] for j in chunk)
+        out.append(([k for k in keys if k not in set(va)], va))
+    return out
+
+
+def regime_of(train_t: pd.DataFrame, test_t: pd.DataFrame) -> str:
+    """"seen-model" when every test base model is in the training frame, else "new-model". Decided from the
+    data, not from the split name."""
+    return "seen-model" if set(test_t["base_model"]) <= set(train_t["base_model"]) else "new-model"
+
+
+def inner_folds_for(train_t: pd.DataFrame, regime: str, seed: int, index: int = 0) -> list:
+    """Inner folds (train_keys, val_keys) for model selection, from the training table only. The inner rehearsal
+    must match the kind of generalisation being tested: a "new-model" regime (a test base model is absent from
+    training) is extrapolation over models, rehearsed by leave-one-base-model-out (`inner_folds`); a "seen-model"
+    regime (every test base model is in training; a seen model at a new variant, clock or configuration) is
+    interpolation over configurations, rehearsed by random 5-fold over configurations (`random_inner_folds`,
+    seeded by `seed` and the outer fold `index`)."""
+    if regime == "new-model":
+        return inner_folds(train_t)
+    if regime == "seen-model":
+        return random_inner_folds(train_t, seed, index)
+    raise ValueError(f"unknown regime {regime!r}; expected one of {REGIMES}")

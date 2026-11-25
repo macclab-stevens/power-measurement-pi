@@ -1,5 +1,6 @@
 """CLI commands that freeze the models the lockbox is scored with and run the lockbox pipeline:
-`final-mode-l`, `final-mode-a-secondary`, `lockbox-predict`, `lockbox-score`. Registered in cli.py's COMMANDS.
+`final-mode-l`, `final-mode-a-secondary`, `lockbox-predict`, `lockbox-score`, and the post hoc (R2)
+`lockbox-calculator-gap` and `lockbox-posthoc`. Registered in cli.py's COMMANDS.
 None of them fits anything on lockbox data: the fit commands drop `source == lockbox` rows first."""
 import sys
 
@@ -53,7 +54,7 @@ def cmd_final_mode_l(args) -> int:
     if not paths.qc_csv.is_file():
         return _fail(f"{paths.qc_csv} is missing; run `uv run python cli.py qc` first")
     seed = _seed(args)
-    names = args.rung or list(mode_l_models.default_rungs())
+    names = args.rung or list(mode_l_models.R1_RUNGS)
     unknown = [n for n in names if n not in mode_l_models.default_rungs()]
     if unknown:
         return _fail(f"unknown rung {unknown}; expected {list(mode_l_models.default_rungs())}")
@@ -153,6 +154,72 @@ def cmd_lockbox_score(args) -> int:
     return 0
 
 
+def cmd_lockbox_calculator_gap(args) -> int:
+    """Post hoc (R2): the frozen predictions through the closed-loop gap scenario, no measured duration. Fits nothing and
+    does not touch the frozen lockbox outputs."""
+    import derive
+    import pandas as pd
+    import data
+    import lockbox
+    import lockbox_score as ls
+    import qc
+    import report_inputs as ri
+    paths = ri.Paths.default()
+    if not lockbox.lockbox_cells_exist():
+        return _fail(f"no lockbox cells under {settings.data_root() / 'lockbox' / 'cells'}")
+    if not paths.qc_csv.is_file():
+        return _fail(f"{paths.qc_csv} is missing; run `uv run python cli.py qc` first")
+    try:
+        cat = data.catalogue()
+        der = derive.derive_all(cat, cache=True)
+        out = ls.run_posthoc_gap(paths, cat=cat, der=der, qc_train=pd.read_csv(paths.qc_csv),
+                                 qc_l=qc.run_qc(ls.require_lockbox(cat), der))
+    except (lockbox.LockboxError, ri.ReportInputError, ValueError) as exc:
+        return _fail(exc)
+    print(out["summary"].to_string(index=False))
+    print(f"post hoc (R2): {len(out['df'])} cells -> {out['csv']}, {out['md']}; run {out['rec']['run_id']}")
+    return 0
+
+
+def cmd_lockbox_posthoc(args) -> int:
+    """Post hoc (R2): fit the R2 Mode A and Mode L finals on the TRAINING data only and score the (seen) lockbox with them ->
+    reports/r2/lockbox_posthoc.{md} and CSVs. Never touches the frozen lockbox outputs; the R2 pickles carry new names."""
+    import derive
+    import pandas as pd
+    import data
+    import lockbox
+    import lockbox_posthoc as ph
+    import lockbox_score as ls
+    import qc
+    import report_inputs as ri
+    import static
+    import windows
+    paths = ri.Paths.default()
+    if not lockbox.lockbox_cells_exist():
+        return _fail(f"no lockbox cells under {settings.data_root() / 'lockbox' / 'cells'}")
+    for p in (paths.configs_csv, paths.qc_csv):
+        if not p.is_file():
+            return _fail(f"{p} is missing; run `uv run python cli.py tables` / `qc` first")
+    try:
+        cat = data.catalogue()
+        cat_t = cat[cat["source"] != "lockbox"].reset_index(drop=True)
+        der = derive.derive_all(cat, cache=True)
+        out = ph.run_posthoc(paths, _seed(args), cat=cat, der=der, qc_train=pd.read_csv(paths.qc_csv),
+                             qc_l=qc.run_qc(ls.require_lockbox(cat), der), t=pd.read_csv(paths.configs_csv),
+                             desc_train=static.model_descriptor(static.static_table(cat_t)),
+                             w_train=windows.build_windows(cat_t), static_dir=args.static_dir, n_jobs=args.n_jobs,
+                             probe=not args.no_probe)
+    except (lockbox.LockboxError, ri.ReportInputError, ValueError) as exc:
+        return _fail(exc)
+    s = out["mode_a_summary"]
+    print(f"{ph.LABEL}")
+    print(s[(s["target"] == "energy_mJ") & s["candidate"].isin(["AUTO", "M4Physics"])].to_string(index=False))
+    print(out["calc_compare"].to_string(index=False))
+    print(out["mode_l_summary"].to_string(index=False))
+    print(f"report -> {out['md']}; run {out['run_id']}")
+    return 0
+
+
 def add_seed(p) -> None:
     p.add_argument("--seed", type=int, help="seed of the frozen fits (default: the config.toml seed)")
 
@@ -165,6 +232,14 @@ def add_force(p) -> None:
 def add_seed_force(p) -> None:
     add_seed(p)
     add_force(p)
+
+
+def add_posthoc_args(p) -> None:
+    add_seed(p)
+    p.add_argument("--static-dir", default=str(settings.HERE / "lockbox_static"),
+                   help="folder with <model>_<imgsz>.csv of the lockbox configurations (default: analytics/lockbox_static)")
+    p.add_argument("--n-jobs", type=int, default=2, help="Mode L rungs fitted in parallel (default 2)")
+    p.add_argument("--no-probe", action="store_true", help="skip the probe comparison")
 
 
 def add_final_l_args(p) -> None:
@@ -198,4 +273,10 @@ COMMANDS = {
                         "before any lockbox cell exists", cmd_lockbox_predict, add_predict_args),
     "lockbox-score": ("score the frozen models on ~/pi-power-data/lockbox -> reports/lockbox.md and derived/lockbox/; "
                       "fits nothing", cmd_lockbox_score, add_score_args),
+    "lockbox-calculator-gap": ("post hoc (R2): serve-phase calculator on the lockbox with the frozen predictions and the "
+                               "closed-loop gap scenario (no measured duration) -> reports/r2/lockbox_calculator_gap.{csv,md}; "
+                               "fits nothing", cmd_lockbox_calculator_gap, None),
+    "lockbox-posthoc": ("post hoc (R2): R2 Mode A / calculator / Mode L fitted on training data only, scored on the seen lockbox "
+                        "-> reports/r2/lockbox_posthoc.md and CSVs (never a confirmatory test)", cmd_lockbox_posthoc,
+                        add_posthoc_args),
 }
