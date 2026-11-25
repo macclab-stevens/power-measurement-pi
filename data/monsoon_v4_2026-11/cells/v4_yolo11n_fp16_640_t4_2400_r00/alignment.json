@@ -1,0 +1,42 @@
+{
+  "rise_bias_ms": 0.05436163891899528,
+  "fall_bias_ms": -0.05436163891899535,
+  "rise_minus_fall_ms": 0.10872327783799063,
+  "lag_note": "c0 includes USB latency + any common Pi-timestamp-to-power lag; not separable from pulses alone",
+  "c0_ns": 657427.8224889698,
+  "c1": -2.020649306140789e-07,
+  "drift_ppm": -0.2020649306140789,
+  "ref_ns": 1.7955980356362455e+18,
+  "max_residual_ms": 0.16497557922970923,
+  "rms_residual_ms": 0.08460395324044112,
+  "n_edges": 12,
+  "trains": [
+    {
+      "name": "start",
+      "edges_found": 6,
+      "edges_logged": 6
+    },
+    {
+      "name": "end",
+      "edges_found": 6,
+      "edges_logged": 6
+    }
+  ],
+  "coarse_clock": {
+    "a_ns": 1.795279909354634e+18,
+    "b_ns": 200306.7357985522
+  },
+  "raw_dropped_nonzero_blocks_in_run": 2334,
+  "envelope_max_dev_ms": 0.065024,
+  "drift_warning": false,
+  "slip_rate_hz": 4992.327416676392,
+  "slips": [],
+  "slip_corrected": true,
+  "slip_samples_total": 0,
+  "warnings": [],
+  "slip_warning": false,
+  "nan_fraction": 0.0,
+  "max_block_gap_ms": 26.613995,
+  "fail_reasons": [],
+  "pass": true
+}

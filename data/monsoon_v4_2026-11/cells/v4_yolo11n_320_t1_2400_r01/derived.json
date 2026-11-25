@@ -1,0 +1,33 @@
+{
+  "energy_per_frame_mJ": 708.0399780273438,
+  "dyn_energy_per_frame_mJ": 244.08420230617756,
+  "latency_ms_per_frame": 96.94193509660944,
+  "energy_per_image_mJ": 708.0399780273438,
+  "n_frames": 29,
+  "batch": 1,
+  "baseline_mean_P_W": 4.785914421081543,
+  "by_mode": {
+    "forward": {
+      "n_frames": 29,
+      "energy_per_frame_mJ": 708.0399780273438,
+      "dyn_energy_per_frame_mJ": 244.08420230617756,
+      "latency_ms_per_frame": 96.94193509660944
+    }
+  },
+  "variant": "yolo11n",
+  "holdout": null,
+  "map_reference": {
+    "dataset": "coco-val2017-first500",
+    "map50": 0.44738,
+    "map50_95": 0.31754,
+    "measured": "2026-11-20",
+    "measured_on": {
+      "hostname": "pimacc",
+      "machine": "aarch64",
+      "quantized_engine": "x86",
+      "torch": "2.14.0+cu130"
+    },
+    "n_images": 500,
+    "tool_version": "bfbc381"
+  }
+}

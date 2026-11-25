@@ -1,0 +1,170 @@
+{
+  "task": "image",
+  "model": "yolo11s.pt",
+  "modes": [
+    "forward"
+  ],
+  "imgsz": 480,
+  "conf": 0.25,
+  "seq_len": 64,
+  "batch": 1,
+  "optimizer": null,
+  "train_loss": null,
+  "bench_skipped": true,
+  "bench_forced_off_by_soak": false,
+  "bench_forced_off": null,
+  "variant": "yolo11s",
+  "quant": "fp32",
+  "prune": null,
+  "quant_weights_sha256": null,
+  "quantized_modules": null,
+  "quantized_compute_modules": null,
+  "executed_dtype": null,
+  "map_reference": {
+    "dataset": "coco-val2017-first500",
+    "map50": 0.63226,
+    "map50_95": 0.46988,
+    "measured": "2026-11-20",
+    "measured_on": {
+      "hostname": "pimacc",
+      "machine": "aarch64",
+      "quantized_engine": "x86",
+      "torch": "2.14.0+cu130"
+    },
+    "n_images": 500,
+    "tool_version": "bfbc381"
+  },
+  "layer_hooks": "off",
+  "serve_requests": 10,
+  "serve_gap_ms": 200.0,
+  "serve_fps": null,
+  "serve_missed_deadlines": null,
+  "serve_wall_s": 5.575,
+  "soak_minutes": null,
+  "concurrent": null,
+  "frames_done": {
+    "forward": 30
+  },
+  "latency_ms_per_frame": {
+    "mean": 356.419,
+    "median": 355.268,
+    "p95": 366.932,
+    "n": 29
+  },
+  "latency_ms_per_image": {
+    "mean": 356.419,
+    "median": 355.268,
+    "p95": 366.932,
+    "n": 29
+  },
+  "inputs": {
+    "source": "repeat",
+    "files": [
+      {
+        "path": "bus.jpg",
+        "sha256": "c02019c4979c191eb739ddd944445ef408dad5679acab6fd520ef9d434bfbc63"
+      }
+    ]
+  },
+  "holdout": null,
+  "dataset_version": 2,
+  "governor": "pinned",
+  "fan_mode": "full",
+  "load_weights_s": 20.2106,
+  "first_call_ms": {
+    "forward": 384.108
+  },
+  "threads": 4,
+  "threads_detail": {
+    "torch": 4,
+    "opencv": 4,
+    "omp_env": "4"
+  },
+  "frames_per_mode": 30,
+  "warmup_passes": 10,
+  "params_M": 9.459,
+  "mean_fps": null,
+  "baseline_W": 4.88994,
+  "baseline_A_W": 4.870343,
+  "baseline_B_W": 4.909537,
+  "baseline_drift_W": 0.039194,
+  "schema_version": 4,
+  "sampler": "monsoon",
+  "recorder_url": "http://192.168.0.11:8051",
+  "recorder_status_start": {
+    "recording": true,
+    "serial": 36517,
+    "vout_V": 5.4,
+    "current_limit_A": 6.0,
+    "sample_hz": 4991.0866230410775,
+    "n_total": 1612642063,
+    "dropped": 0,
+    "raw_dropped_nonzero_blocks": 12573524,
+    "run_dir": "/home/macc2026/power-measurement-pi/host/data/20261121T115123",
+    "disk_free_gb": 342.1
+  },
+  "recorder_status_end": {
+    "recording": true,
+    "serial": 36517,
+    "vout_V": 5.4,
+    "current_limit_A": 6.0,
+    "sample_hz": 4992.392640916244,
+    "n_total": 1612890443,
+    "dropped": 0,
+    "raw_dropped_nonzero_blocks": 12575462,
+    "run_dir": "/home/macc2026/power-measurement-pi/host/data/20261121T115123",
+    "disk_free_gb": 342.1
+  },
+  "recorder_continuity_errors": [],
+  "perf_counters": {
+    "enabled": true,
+    "available": true,
+    "interval_ms": 100,
+    "events": [
+      "cycles",
+      "instructions",
+      "cache-references",
+      "cache-misses",
+      "branch-misses",
+      "stalled-cycles-backend",
+      "LLC-load-misses",
+      "task-clock",
+      "context-switches",
+      "page-faults",
+      "cpu-migrations"
+    ],
+    "t0_ns": 1795602956946663198,
+    "offset_ns": 26813244,
+    "offset_method": "first-line",
+    "error": null,
+    "paranoid": 1,
+    "scope": "hardware user, software user+kernel",
+    "min_pct_running": 100.0
+  },
+  "sysfs_period_s": 0.1,
+  "max_temp_C": 61.7,
+  "thermal_abort": null,
+  "throttled_start": 327680,
+  "throttled_end": 327680,
+  "pin_status_start": "governor=performance min_kHz=2400000 max_kHz=2400000 cur_kHz=2400000 fan_state=4/4 fan_rpm=8955 temp_mC=50150",
+  "pin_status_end": "governor=performance min_kHz=2400000 max_kHz=2400000 cur_kHz=2400000 fan_state=4/4 fan_rpm=9011 temp_mC=51250",
+  "t0_real_ns": 1795602932762070745,
+  "sync_tags": [
+    "start",
+    "end"
+  ],
+  "cpu_mhz_pinned": 2400,
+  "fan_full": true,
+  "pin_status": "governor=performance min_kHz=2400000 max_kHz=2400000 cur_kHz=2400000 fan_state=4/4 fan_rpm=8957 temp_mC=52350",
+  "achieved_sample_hz": 4992.4,
+  "throttle_bits": 327680,
+  "arch_fingerprint": {},
+  "op_sequence": {},
+  "hostname": "pimacc",
+  "kernel": "6.18.60+rpt-rpi-2712",
+  "ts": "20261125T053532",
+  "outdir": "runs/matrix/v4_yolo11s_480_t4_2400_r01",
+  "torch_version": "2.14.0+cu130",
+  "join_contract": "measurement config_id = op+attrs+shape+dtype; layer_table.config_id <-> perop_power.config_id; path/callsite + mode are structural columns; E_mJ = P_W * t_ms; P_delta = P_mean - baseline_W",
+  "methodology": "steady-state isolation microbench (deepcopy leaf, dtype-aware cache-hot inputs, VDD_CORE PMIC rail); per-op power is attributed, not instantaneous | monsoon: 5 V input power @5 kHz, events on lab PTP wall clock, aligned offline by sync pulses (host/align.py)"
+}
