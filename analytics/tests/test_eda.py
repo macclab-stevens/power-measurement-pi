@@ -324,3 +324,19 @@ def test_report_has_no_hard_coded_claims(synthetic, tmp_path):
     md = eda.write_eda_config(cat, der, qc, cfgs, tmp_path / "rep")
     assert "50-fold" not in md and "sits on the alpha bound" not in md
     assert "ICC = 1.0000" not in md
+
+
+def test_fit_cmos_recovers_p0_and_k():
+    import tables
+    f = np.array([1.5, 2.0, 2.4])
+    x = tables.vcore_v(f * 1000) ** 2 * f
+    r = eda.fit_cmos(f, 3.0 + 2.5 * x)
+    assert abs(r["P0"] - 3.0) < 1e-9 and abs(r["k"] - 2.5) < 1e-9 and r["max_abs_resid"] < 1e-9
+    assert np.isnan(eda.fit_cmos(f[:2], [1.0, 2.0])["P0"])
+
+
+def test_cmos_table_one_row_per_series():
+    s = [dict(label="m", rig="nov2026", f=np.array([1.5, 2.0, 2.4]), P=np.array([6.0, 8.2, 9.9]), n_cfg=3, n_cells=9,
+              kind="forward power")]
+    t = eda.cmos_table(s)
+    assert list(t["series"]) == ["m"] and t["P0"].notna().all()
