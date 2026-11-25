@@ -934,6 +934,8 @@ def main():
         errors += yolo_variants.quant_count_errors(args.quant, variant.get("quantized_modules"))
         if args.quant == "fp16" and hooks_on:   # the executed dtype is read from the layer rows
             errors += yolo_variants.fp16_errors(layer_rows)
+        elif args.quant == "fp16":
+            logger.warning("--layer-hooks off: the fp16 executed-dtype check needs the layer rows and was skipped")
         if worker is not None:
             if worker.iterations < 1:
                 errors.append(f"concurrent worker {worker.tag} completed no iterations")

@@ -15,7 +15,7 @@ correction to ADD to the stored time is
     corr(t) = sum_j step_j * (H(t - ts_j) - (Ha_j + (Hb_j - Ha_j) * (t - ta) / (tb - ta)))
 
 with H the unit step, `Ha_j = H(ta - ts_j)`, `Hb_j = H(tb - ts_j)` and the slip time on the Pi clock
-`ts_j = slip.t_ns - c0_ns`. A slip midway between the trains therefore gives -step/2 just before it
+`ts_j = (slip.t_ns - c0_ns + c1 * ref_ns) / (1 + c1)`, the same host-to-Pi map align.py applies to the samples. A slip midway between the trains therefore gives -step/2 just before it
 and +step/2 just after it. A slip before the start train (`ts < ta`) leaves the samples after the start
 train untouched and moves the samples before the slip by -step (the line is exact at the pulses, so the
 pulse-anchored part of the run keeps its stored times); a slip after the end train mirrors that.
@@ -49,11 +49,14 @@ def slip_correction_ns(alignment: dict, pulse_times_ns, t_ns) -> np.ndarray | No
     if len(pul) < MIN_PULSES:
         return None
     ta, tb = pul[:TRAIN_EDGES].mean(), pul[-TRAIN_EDGES:].mean()
-    c0 = float(alignment["c0_ns"])
+    c0, c1 = float(alignment["c0_ns"]), float(alignment.get("c1", 0.0))
+    ref = float(alignment.get("ref_ns", ta))
     x = t - ta                                    # relative times: float64 has ~256 ns resolution at 1.8e18
     out = np.zeros_like(t)
     for s in slips:
-        ts = float(s["t_ns"]) - c0 - ta            # slip time relative to ta
+        # Pi time of the slip: (t_host - c0 + c1 ref) / (1 + c1) = (t_host - c0 - ref) / (1 + c1) + ref (align.py's map),
+        # taken relative to ta with the large terms differenced first (float64 precision)
+        ts = (float(s["t_ns"]) - c0 - ref) / (1.0 + c1) + (ref - ta)
         ha, hb = float(0.0 > ts), float(tb - ta > ts)     # H(ta - ts_abs) = [0 > ts_rel], H(tb - ts_abs)
         out += float(s["step_ms"]) * 1e6 * ((x > ts) - (ha + (hb - ha) * x / (tb - ta)))
     return out

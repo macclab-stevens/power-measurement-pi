@@ -44,7 +44,11 @@ def add_derived_columns(t: pd.DataFrame) -> pd.DataFrame:
     t["cpu_ghz"] = t["cpu_mhz"].astype(float) / 1000.0
     t["vcore_V"] = vcore_v(t["cpu_mhz"].astype(float))
     t["v2f"] = t["vcore_V"] ** 2 * t["cpu_ghz"]
-    t["log_n_calls"] = np.log(t["n_module_calls"].astype(float))
+    calls = t["n_module_calls"].astype(float)
+    if len(calls) and not (np.isfinite(calls) & (calls > 0)).all():
+        raise ValueError("n_module_calls must be finite and positive (log_n_calls); got "
+                         f"{calls[~(np.isfinite(calls) & (calls > 0))].unique()[:3].tolist()}")
+    t["log_n_calls"] = np.log(calls)
     t["is_int8"] = (t["precision"] == "int8").astype(int)
     t["is_fp16"] = (t["precision"] == "fp16").astype(int)
     return t

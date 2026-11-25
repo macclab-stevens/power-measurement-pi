@@ -572,3 +572,15 @@ def test_main_cli(world, tmp_path, capsys):
     rc = pkg.main(["--runs", str(runs), "--manifest", str(runs / "nope.jsonl"), "--out", str(out),
                    "--name", "n"])
     assert rc == 1
+
+
+def test_hooks_off_cell_needs_no_layer_table(tmp_path):
+    import json as _json
+    import package_dataset as pdm
+    on, off = tmp_path / "on", tmp_path / "off"
+    for d, meta in ((on, {}), (off, {"layer_hooks": "off"})):
+        d.mkdir()
+        (d / "run_meta.json").write_text(_json.dumps(meta))
+    assert "layer_table.csv" in pdm.required_files(on)
+    assert "layer_table.csv" not in pdm.required_files(off)
+    assert pdm.hooks_off(off) and not pdm.hooks_off(on) and not pdm.hooks_off(tmp_path / "missing")

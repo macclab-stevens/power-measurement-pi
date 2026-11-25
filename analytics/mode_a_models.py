@@ -327,6 +327,9 @@ class M4Physics:
             raise ValueError("latency_ms must be finite and positive on the training set")
         w = _row_weights(train, y)
         A = self.latency_design(train, beta) * w[:, None]
+        if not np.isfinite(A).all():
+            raise ValueError("M4Physics latency design has non-finite values (macs, act_bytes, n_module_calls, "
+                             "cpu_ghz, threads must be finite)")
         scale = np.maximum(np.linalg.norm(A, axis=0), self.FLOOR)   # positive column scaling keeps the constraint set
         coef, _ = nnls(A / scale, y * w)
         self.beta_, self.lat_coef_ = beta, coef / scale

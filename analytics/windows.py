@@ -332,6 +332,8 @@ def _pulse_times(cell) -> np.ndarray:
 def corrected_trace(cell, correct: bool = True):
     """`_read_trace(cell)` with the slip correction applied to the sample times where the cell needs it.
 
+    The phase codes are re-read at the corrected times (the label in force at a sample's corrected time), so window
+    phase labels and the inference segment sit on the corrected axis too.
     Returns (t, P, codes, names, info). `info` is {"status": "none" | "corrected" | "no_pulses", "max_corr_ms"}
     ("none": no slips, or alignment.json already says slip_corrected). The corrected times are rounded to
     int64 ns; the trace is re-sorted by time only if the correction reordered samples (it does not for
@@ -345,7 +347,12 @@ def corrected_trace(cell, correct: bool = True):
     if corr is None:
         info["status"] = "no_pulses"
         return t, P, codes, names, info
-    t = t + np.round(corr).astype(np.int64)
+    t2 = t + np.round(corr).astype(np.int64)
+    # labels: align.py assigned each sample the event-log label at its STORED time; the event log is on the Pi clock,
+    # so a sample that really occurred at t2 takes the label in force at t2, i.e. that of the latest stored sample <= t2
+    j = np.clip(np.searchsorted(t, t2, side="right") - 1, 0, len(t) - 1)
+    codes = codes[j]
+    t = t2
     if len(t) > 1 and (np.diff(t) < 0).any():
         o = np.argsort(t, kind="stable")
         t, P, codes = t[o], P[o], codes[o]

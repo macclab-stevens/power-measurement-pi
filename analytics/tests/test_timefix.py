@@ -79,6 +79,18 @@ def test_needs_correction():
     assert not timefix.needs_correction(al([])) and not timefix.needs_correction(None)
 
 
+def test_slip_time_uses_the_drift_term_of_the_fit():
+    """align.py maps host to Pi time as (t - c0 + c1 ref) / (1 + c1); with 100 ppm fake drift and the slip 50 s
+    after ref the slip sits ~5 ms earlier on the Pi clock than t - c0 says."""
+    p = pulses(0, 100)
+    mid = (p[:6].mean() + p[-6:].mean()) / 2
+    c1, ref = 1e-4, float(p[0])
+    t_host = mid * (1 + c1) - c1 * ref                    # host time that maps exactly to Pi time `mid`
+    a = {"c0_ns": 0.0, "c1": c1, "ref_ns": ref, "slips": [{"t_ns": t_host, "step_ms": 6.0, "samples": 30}]}
+    c = timefix.slip_correction_ns(a, p, np.array([mid - 1e5, mid + 1e5]))
+    assert c[0] < -2.9e6 and c[1] > 2.9e6                 # the step sits at `mid`, not ~5 ms later
+
+
 # ------------------------------------------------------------------ in windows.py
 
 def slip_cell(tmp_path, name, alignment, with_pulses=True, n_win=5):
@@ -145,3 +157,13 @@ def test_build_windows_aggregates_slip_attrs(tmp_path, monkeypatch):
     df = windows.build_windows(data.catalogue())
     a = df.attrs
     assert a["slip_corrected"] == 1 and a["slip_no_pulses"] == 1 and [c["cell_id"] for c in a["slip_cells"]] == ["s5"]
+
+
+def test_phase_labels_are_read_at_the_corrected_times(tmp_path):
+    """A sample moved later by the correction takes the label in force at its corrected time."""
+    cell, k = slip_cell(tmp_path, "s3", SLIP)
+    t0, P0, c0, names, _ = windows.corrected_trace(cell, False)
+    t1, P1, c1, names1, info = windows.corrected_trace(cell, True)
+    assert info["status"] == "corrected" and list(names1) == list(names)
+    j = np.clip(np.searchsorted(t0, t1, side="right") - 1, 0, len(t0) - 1)
+    assert (c1 == c0[j]).all()
