@@ -364,6 +364,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="per-layer forward hooks (layer_table.csv, per-op power benches). off: no "
                          "hooks (NullProfiler; mode/iter labels still logged), no layer_table.csv "
                          "and no benches (static features: tools/static_features.py)")
+    ap.add_argument("--sysfs-period-s", type=float, default=1.0,
+                    help="sysfs.csv polling period in s (clock, temperature, fan, UV alarm; default 1.0)")
     ap.add_argument("--perf-counters", default="on", choices=["on", "off"],
                     help="hardware counters via perf stat -I (counters.csv); forced off with "
                          "--sampler pmic")
@@ -389,6 +391,8 @@ def parse_args(argv=None):
             ap.error("--serve-fps must be > 0")
         if args.serve <= 0:
             ap.error("--serve-fps needs --serve N")
+    if not 0.02 <= args.sysfs_period_s <= 10.0:
+        ap.error("--sysfs-period-s must be in [0.02, 10]")
     if args.soak_minutes is not None:
         if args.soak_minutes <= 0:
             ap.error("--soak-minutes must be > 0")
@@ -472,7 +476,7 @@ def main():
         sampler = make_sampler(args.sampler, args.recorder_url)
         monsoon = args.sampler == "monsoon"
         sampler.start()
-        sysfs = SysfsSampler()
+        sysfs = SysfsSampler(period_s=args.sysfs_period_s)
         perf_on = args.perf_counters == "on" and monsoon
         if args.perf_counters == "on" and not monsoon:
             logger.info("perf counters forced off (--sampler pmic)")
