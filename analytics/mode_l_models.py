@@ -206,6 +206,19 @@ class L4CountersPmic(L3Counters):
         return super().feature_names() + (["pmic_missing"] if self.variant == "ridge" else [])
 
 
+KERNEL = ["ctx_sw_rate", "migr_rate"]   # R4: kernel-visible software counters (perf_event_paranoid=1, v4 cells on)
+
+
+class L3Kernel(L3Counters):
+    """R4: L3 plus the kernel-visible context-switch and migration rates (0 in every cell before v4)."""
+    extra = KERNEL
+
+
+class L5CmosKernel(L3Counters):
+    """R4: L5 (CMOS features) plus the kernel-visible rates."""
+    extra = CMOS + KERNEL
+
+
 class L5Cmos(L3Counters):
     """L3 features plus the R2 CMOS features (llc_miss_rate, f_eff_mhz, vcore_eff and the V^2 x rate products);
     no PMIC. Ridge or trees as L3."""
@@ -242,6 +255,8 @@ def default_rungs() -> dict:
         "L4-trees": Rung("L4-trees", lambda seed: L4CountersPmic("trees", seed), TREE_GRID),
         "L5-cmos": Rung("L5-cmos", lambda seed: L5Cmos("ridge", seed), ridge),
         "L5-cmos-trees": Rung("L5-cmos-trees", lambda seed: L5Cmos("trees", seed), TREE_GRID),
+        "L3k-trees": Rung("L3k-trees", lambda seed: L3Kernel("trees", seed), TREE_GRID, exploratory=True),
+        "L5k-trees": Rung("L5k-trees", lambda seed: L5CmosKernel("trees", seed), TREE_GRID, exploratory=True),
     }
 
 

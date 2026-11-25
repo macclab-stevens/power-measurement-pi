@@ -1,6 +1,6 @@
 # QC report
 
-466 cells; included 465, primary 465, excluded 1. Rules are applied by `analytics/qc.py` with the bounds below (`analytics/config.toml`, `[qc]`). Per-cell values: `qc_cells.csv`.
+594 cells; included 593, primary 593, excluded 1. Rules are applied by `analytics/qc.py` with the bounds below (`analytics/config.toml`, `[qc]`). Per-cell values: `qc_cells.csv`.
 
 ## Bounds
 
@@ -15,18 +15,18 @@
 
 Q1flag, Q3flag, Q4unparsed, Q5flag only annotate. Q2 and Q6 exclude (`include` False). Q4 keeps the cell but it is not `primary`.
 
-|  | v1 | v2 | v3 | all |
-|---|---|---|---|---|
-| Q1flag | 0 | 0 | 0 | 0 |
-| Q2 | 0 | 0 | 0 | 0 |
-| Q3flag | 5 | 24 | 2 | 31 |
-| Q4 | 0 | 0 | 0 | 0 |
-| Q4unparsed | 0 | 0 | 0 | 0 |
-| Q5flag | 0 | 0 | 0 | 0 |
-| Q6 | 0 | 0 | 1 | 1 |
-| include | 224 | 179 | 62 | 465 |
-| primary | 224 | 179 | 62 | 465 |
-| cells | 224 | 179 | 63 | 466 |
+|  | v1 | v2 | v3 | v4 | all |
+|---|---|---|---|---|---|
+| Q1flag | 0 | 0 | 0 | 0 | 0 |
+| Q2 | 0 | 0 | 0 | 0 | 0 |
+| Q3flag | 5 | 24 | 2 | 7 | 38 |
+| Q4 | 0 | 0 | 0 | 0 | 0 |
+| Q4unparsed | 0 | 0 | 0 | 0 | 0 |
+| Q5flag | 0 | 0 | 0 | 0 | 0 |
+| Q6 | 0 | 0 | 1 | 0 | 1 |
+| include | 224 | 179 | 62 | 128 | 593 |
+| primary | 224 | 179 | 62 | 128 | 593 |
+| cells | 224 | 179 | 63 | 128 | 594 |
 
 ## Excluded cells (Q2 or Q6)
 
@@ -42,11 +42,11 @@ Finite values only; `n` counts them.
 
 |  | n | min | p50 | p95 | max |
 |---|---|---|---|---|---|
-| max_residual_ms | 466 | 0.0851437 | 0.170578 | 0.257404 | 0.755539 |
-| slip_scored_frac | 466 | 0 | 0 | 0.0338428 | 0.10541 |
-| ctx_read_frac_scored | 466 | 0 | 0.010343 | 0.0137521 | 0.0212797 |
-| pv_median_rel | 466 | 0 | 0 | 0 | 0 |
-| sample_ratio | 466 | 0.998976 | 0.999992 | 1.00061 | 1.00491 |
+| max_residual_ms | 594 | 0.0808123 | 0.168936 | 0.254335 | 0.755539 |
+| slip_scored_frac | 594 | 0 | 0 | 0.033379 | 0.10541 |
+| ctx_read_frac_scored | 594 | 0 | 0.0103757 | 0.0139741 | 0.0212797 |
+| pv_median_rel | 594 | 0 | 0 | 0 | 0 |
+| sample_ratio | 594 | 0.998401 | 0.999993 | 1.00061 | 1.00491 |
 
 ## Phase labels in the traces
 
@@ -54,20 +54,20 @@ Finite values only; `n` counts them.
 
 | label | cells | distinct raw labels |
 |---|---|---|
-| baseline_A | 466 | 1 |
-| baseline_B | 466 | 1 |
+| baseline_A | 594 | 1 |
+| baseline_B | 594 | 1 |
 | bench:* | 180 | 1228 |
 | concurrent_drain | 6 | 1 |
 | decode | 48 | 1 |
 | done | 1 | 1 |
-| first:* | 466 | 4 |
-| forward | 322 | 1 |
+| first:* | 594 | 4 |
+| forward | 450 | 1 |
 | gap | 180 | 1 |
-| idle | 466 | 1 |
-| load_weights | 466 | 1 |
+| idle | 594 | 1 |
+| load_weights | 594 | 1 |
 | prefill | 48 | 1 |
-| serve | 370 | 1 |
-| sync:end | 466 | 1 |
-| sync:start | 466 | 1 |
+| serve | 498 | 1 |
+| sync:end | 594 | 1 |
+| sync:start | 594 | 1 |
 | train | 96 | 1 |
-| warmup | 466 | 1 |
+| warmup | 594 | 1 |

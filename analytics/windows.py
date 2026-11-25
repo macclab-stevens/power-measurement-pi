@@ -69,7 +69,7 @@ log = logging.getLogger(__name__)
 
 WINDOWS_CACHE = "windows_r2.parquet"          # R2 caches have new names: the R1 caches stay for the frozen reports
 PMIC_CACHE = "pmic_windows_r2.parquet"
-CACHE_VERSION = "r2-slipfix-cmos-1"
+CACHE_VERSION = "r4-migr-1"           # R4: migr_rate added
 MIN_COVER = 0.8             # windows with cover_frac below this are dropped
 N_CORES = 4
 BUSY_FEFF_MIN = 0.03        # below this the cycles-based clock is too noisy: use the sysfs clock
@@ -83,7 +83,7 @@ GUARDED = ["ipc", "cache_miss_rate", "branch_mpki", "stall_frac", "llc_mpki"]
 WINDOW_COLS = (
     ["cell_id", "w_idx", "t_start_ns", "t_end_ns", "dur_s", "n_samples", "cover_frac", "P_W", "E_mJ",
      "phase", "phase_frac", "counted", "busy", "cycles_rate", "instr_rate", "ipc", "cache_miss_rate", "branch_mpki",
-     "stall_frac", "llc_mpki", "ctx_sw_rate", "pf_rate", "llc_miss_rate"]
+     "stall_frac", "llc_mpki", "ctx_sw_rate", "pf_rate", "llc_miss_rate", "migr_rate"]
     + [f"{c}_l{k}" for c in LAG_COLS for k in LAGS]
     + ["pct_min"] + SYSFS_COLS + CMOS_COLS + ["pmic_W", "pmic_age_s", "cpu_key", "fan_mode", "governor"])
 PMIC_COLS = ["cell_id", "t_read_ns", "t_start_ns", "t_end_ns", "dur_s", "P_W", "E_mJ", "phase", "pmic_W",
@@ -284,10 +284,14 @@ def counter_features(ctr: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     f["llc_mpki"], guards["llc_mpki"] = _ratio(g("LLC_load_misses"), g("instructions"), 1000.0)
     f["ctx_sw_rate"], _ = _ratio(g("context_switches"), dur)
     f["pf_rate"], _ = _ratio(g("page_faults"), dur)
+    # R4: kernel-visible from v4 on (perf_event_paranoid=1); 0 before. Older counter files lack the event: NaN
+    f["migr_rate"], _ = (_ratio(g("cpu_migrations"), dur) if "ctr_cpu_migrations" in ctr.columns
+                         else (np.full(len(ctr), NAN), None))
     f["llc_miss_rate"], _ = _ratio(g("LLC_load_misses"), dur)
     counted = np.isfinite(ctr[[c for c in ctr.columns if c.startswith("ctr_")]].to_numpy(dtype=np.float64)).any(axis=1)
     for c in ("busy", "cycles_rate", "instr_rate", "ctx_sw_rate", "pf_rate", "llc_miss_rate"):
-        f[c] = np.where(counted, f[c], 0.0)       # not counted: the process never ran, true count is zero
+        f[c] = np.where(counted, f[c], 0.0)
+    f["migr_rate"] = np.where(counted, f["migr_rate"], 0.0)       # not counted: the process never ran, true count is zero
     f["counted"] = counted.astype(np.int64)
     pct = [c for c in ctr.columns if c.startswith("pct_")]
     f["pct_min"] = ctr[pct].min(axis=1).to_numpy(dtype=np.float64) if pct else np.full(len(ctr), NAN)

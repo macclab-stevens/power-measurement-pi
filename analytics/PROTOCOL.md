@@ -177,3 +177,26 @@ under-voltage bits were current in any cell (all non-zero words are the 0x50000 
     - Mode A: energy MdAPE of AUTO over the 5 configurations, with MaxAPE and 90 % coverage beside it.
     - Calculator: median serve-phase APE with the predicted duration.
     - Mode L: whole-cell and inference-segment MdAPE per rung.
+- **2026-11-25, R4 (deployment energy, v4 data)** (`docs/review/2026-11-25-r4-plan.md`, `r4.py`, `reports/r4/`).
+  Exploratory until lockbox 3 is scored.
+  - **Target.** Deployment energy: only hooks-off cells enter Mode A, from v3 (calibration-off and additions), v4 (every
+    hooks-on training configuration measured again with the hooks off, plus a clock and size sweep) and lockbox 2. Lockbox 2
+    was scored once with the frozen R3 models and is now training data. Hooks-on cells are used only for the
+    instrumentation study (`hooks_by_clock.csv`). Lockbox 1 (hooks-on) and lockbox 3 stay out.
+  - **Board label.** Beside the Monsoon label, `energy_board_mJ` / `mean_P_board_W` = Monsoon minus R_rig·∫I²dt
+    (`harness.py`; R fitted per rig in `audit/cable.py`). The Monsoon label stays primary because it holds no model.
+  - **New outputs, chosen before the R4 numbers existed.**
+    - Base-model conformal intervals (`lo90_cf`, `hi90_cf`).
+    - ENS: geometric mean of M1Ridge and M4Physics.
+    - STACK: log-linear weight of M1Ridge and M4Physics, chosen by inner error.
+    - M5Pooled: M4Physics with shrunken architecture-family offsets.
+    - AUTO_R4: argmin over AUTO's candidates plus these three.
+    - AUTO itself is unchanged.
+  - **Static features** of the new hooks-off configurations come from `tools/static_features.py`, run on the Pi 5, and match
+    the NUC build exactly. Whole-model MACs come from `tools/flop_count.py`.
+  - **Mode L.** Leave one model out over the v4 cells only, the first cells with kernel-visible software counters
+    (perf_event_paranoid=1). Rungs L0, L3-trees and L5-cmos-trees, plus the kernel rungs L3k-trees and L5k-trees, which
+    add context-switch and migration rates. Headline: inference-segment MdAPE.
+  - **Lockbox 3,** pre-registered in `host/matrix_v4.py`: mobilenet_v2 2400, shufflenet_v2_x1_0 2000, resnet50 1500,
+    efficientnet_b2 2400, vit_b_32 2000 and convnext_small 2400 MHz, hooks off, 3 repeats each. It is measured only after
+    the R4 predictions are frozen and tagged.

@@ -143,16 +143,18 @@ def add_flops(st: pd.DataFrame, path=None) -> pd.DataFrame:
 
 def model_descriptor(st: pd.DataFrame) -> pd.DataFrame:
     """Per base model: log_params, log_macs_per_px, depth, frac_macs_* at imgsz 640 if present,
-    else the model's only imgsz (ValueError if several and no 640)."""
+    else 224, else the model's only imgsz (ValueError if several and neither)."""
     rows = {}
     for model, sub in st.groupby(level="base_model"):
         sizes = sub.index.get_level_values("imgsz")
         if 640 in sizes:
             size = 640
+        elif 224 in sizes:                       # R4: the torchvision models are also measured at 320 px
+            size = 224
         elif len(sizes) == 1:
             size = int(sizes[0])
         else:
-            raise ValueError(f"{model}: several imgsz {sorted(sizes)} and none is 640")
+            raise ValueError(f"{model}: several imgsz {sorted(sizes)} and none is 640 or 224")
         r = sub.loc[(model, size)]
         rows[model] = {
             "log_params": float(np.log(r["params"])),

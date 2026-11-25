@@ -9,8 +9,10 @@ import pyarrow.parquet as pq
 
 import settings
 
-SOURCES = ("v1", "v2", "v3", "lockbox", "lockbox2")
-HOLDOUT_SOURCES = ("lockbox", "lockbox2")   # never training data: every fit and table excludes them
+SOURCES = ("v1", "v2", "v3", "v4", "lockbox", "lockbox2", "lockbox3")
+# never training data in R1-R3: every fit and table excludes them. R4 (r4.py) trains on the hooks-off cells of lockbox 2,
+# which was scored once with the frozen R3 models; lockbox 3 is R4's own holdout.
+HOLDOUT_SOURCES = ("lockbox", "lockbox2", "lockbox3")
 VISION_MODELS = ["yolov8n", "yolov8s", "yolov8m", "yolo11n", "yolo11s", "yolo11m",
                  "effb0", "mbv3", "resnet18",
                  # v3 (2026-11-24): yolo12n (calibration, now training data), attention and modern architectures

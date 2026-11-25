@@ -33,7 +33,7 @@ def test_vision_models():
     assert data.VISION_MODELS == ["yolov8n", "yolov8s", "yolov8m", "yolo11n", "yolo11s", "yolo11m",
                                   "effb0", "mbv3", "resnet18",
                                   "yolo12n", "yolo12s", "swint", "vitb16", "convnextt", "maxvitt"]
-    assert data.HOLDOUT_SOURCES == ("lockbox", "lockbox2")
+    assert data.HOLDOUT_SOURCES == ("lockbox", "lockbox2", "lockbox3")
 
 
 def test_cell_dirs_skips_missing_sources(tmp_path):

@@ -332,13 +332,13 @@ def test_real_data_one_slomo_fold_energy(real_data):
     if not table.is_file():
         pytest.skip("reports/mode_a_configs.csv absent")
     t = pd.read_csv(table)
-    desc = static.model_descriptor(static.static_table(data.catalogue()))
+    desc = static.model_descriptor(static.static_table(data.catalogue(), static.static_layer_tables()))
     fold = next(f for f in splits.make_splits(t, settings.seed())["S-LOMO"] if f.fold == "yolo11s")
     t0 = time.perf_counter()
     res = mode_a.run_split(t, [fold], "energy_mJ", settings.seed(), desc, n_jobs=1)
     wall = time.perf_counter() - t0
     print(f"real-data S-LOMO yolo11s energy: {wall:.1f} s")   # printed, not asserted: it depends on the machine
-    assert len(res) == len(fold.test_keys) * 13
+    assert len(res) == len(fold.test_keys) * (len(mode_a.CANDIDATES_BY_TARGET["energy_mJ"]) + 2)   # + AUTO, AUTO_R4
     assert res["y_pred"].notna().all() and (res["y_pred"] > 0).all()
 
 

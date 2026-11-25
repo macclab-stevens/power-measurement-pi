@@ -64,12 +64,14 @@ def add_derived_columns(t: pd.DataFrame) -> pd.DataFrame:
     return t
 
 
-def mode_a_table(cat: pd.DataFrame, der: pd.DataFrame, qc: pd.DataFrame, st: pd.DataFrame) -> pd.DataFrame:
+def mode_a_table(cat: pd.DataFrame, der: pd.DataFrame, qc: pd.DataFrame, st: pd.DataFrame,
+                 holdouts: tuple | None = None) -> pd.DataFrame:
     """One row per configuration over Mode A eligible, QC-primary cells (mode `forward`, primary
     slip-excluded values; cells with no finite energy are dropped). Raises ValueError naming a
-    configuration whose (base_model, imgsz) has no static features in `st`."""
+    configuration whose (base_model, imgsz) has no static features in `st`. `holdouts` (R4) replaces
+    data.HOLDOUT_SOURCES as the sources left out; the caller then sets `mode_a_eligible` itself."""
     ok = qc.loc[qc["primary"].astype(bool), "cell_id"]
-    c = data.training_cells(cat)
+    c = data.training_cells(cat) if holdouts is None else cat[~cat["source"].isin(holdouts)]
     c = c[c["mode_a_eligible"].astype(bool) & c["cell_id"].isin(ok)]
     d = der[der["mode"] == MODE]
     for col in BOARD_COLS:                   # a derivation table from before the board columns gives NaN

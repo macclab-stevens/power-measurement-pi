@@ -155,7 +155,7 @@ def test_same_seed_identical_files_different_seed_differs(tmp_path):
 def test_real_table_fold_counts():
     t = pd.read_csv(REAL_CSV)
     sp = splits.make_splits(t, 20261122)
-    assert {k: len(v) for k, v in sp.items()} == {"S-LOMO": 9, "S-LSO": 3, "S-LVO": 3, "S-LCO": 4, "RANDOM": 5}
+    assert {k: len(v) for k, v in sp.items()} == {"S-LOMO": 15, "S-LSO": 3, "S-LVO": 3, "S-LCO": 4, "RANDOM": 5}
     assert {f.fold: f.similarity_class for f in sp["S-LVO"]}["yolo11n_fp16"] == "unsupported"
     assert [f.fold for f in sp["S-LCO"]] == ["1500", "2000", "2400", "1500+2000->2400"]
 

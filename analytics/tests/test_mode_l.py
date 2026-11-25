@@ -114,7 +114,7 @@ def test_l3_features_have_no_pmic_and_l4_adds_it():
 def test_grids_match_the_protocol():
     g = mm.default_rungs()
     assert list(g) == ["L0", "L1", "L1-cell", "L2", "L3-ridge", "L3-trees", "L4-ridge", "L4-trees", "L5-cmos",
-                       "L5-cmos-trees"]
+                       "L5-cmos-trees", "L3k-trees", "L5k-trees"]
     assert g["L5-cmos"].grid == g["L3-ridge"].grid and g["L5-cmos-trees"].grid == g["L3-trees"].grid
     assert [p["alpha"] for p in g["L2"].grid] == pytest.approx(list(np.logspace(-2, 4, 7)))
     assert len(g["L3-ridge"].grid) == 7 and len(g["L0"].grid) == 1 and len(g["L1"].grid) == 1
@@ -126,8 +126,10 @@ def test_grids_match_the_protocol():
 def test_no_rung_uses_ctx_sw_rate_and_l5_adds_the_five_cmos_features():
     for name, rung in mm.default_rungs().items():
         m = rung.make(0)
-        if hasattr(m, "feature_names"):
+        if hasattr(m, "feature_names") and name not in ("L3k-trees", "L5k-trees"):   # R4 kernel rungs, v4 cells only
             assert "ctx_sw_rate" not in m.feature_names(), name
+    assert mm.L3Kernel("trees").feature_names() == mm.L3Counters("trees").feature_names() + mm.KERNEL
+    assert mm.default_rungs()["L3k-trees"].exploratory and mm.default_rungs()["L5k-trees"].exploratory
     assert "ctx_sw_rate" not in mm.COUNTERS
     l3, l5 = mm.L3Counters("ridge").feature_names(), mm.L5Cmos("ridge").feature_names()
     five = ["llc_miss_rate", "f_eff_mhz", "vcore_eff", "v2_cycles_rate", "v2_instr_rate"]

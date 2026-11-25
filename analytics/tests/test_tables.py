@@ -119,12 +119,12 @@ def test_real_data(real_data):
     cat = data.catalogue()
     der = derive.derive_all(cat, cache=True)
     q = pd.read_csv(Path(qc.__file__).parent / "reports" / "qc_cells.csv")
-    st = static.static_table(cat)
+    st = static.static_table(cat, static.static_layer_tables())   # hooks-off configurations have no layer table
     t = tables.mode_a_table(cat, der, q, st)
-    assert len(t) == 58
+    assert len(t) == 140
     src = cat.set_index("cell_id")["source"]
     by_src = t["cell_ids"].map(lambda ids: "+".join(sorted({src[i] for i in ids.split(";")})))
-    assert by_src.value_counts().to_dict() == {"v2": 43, "v1": 15}
+    assert by_src.value_counts().to_dict() == {"v4": 64, "v2": 40, "v3": 18, "v1": 15, "v2+v3": 3}
     assert not t["macs"].isna().any()
     assert set(t["base_model"]) <= set(data.VISION_MODELS) and len(data.VISION_MODELS) == 15
     assert t["config_key"].is_unique
