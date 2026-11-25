@@ -8,8 +8,11 @@ the Pi, or physical rewiring.
 - **Done:** items 1, 2, 3 (the align fix; soak ticks not needed, no soak cells), 6 (sysfs at 10 Hz) and part of 8
   (attention models). The v3 collection ran: 63 cells, all ok, dataset branch `dataset-2026-11-v3`. Lockbox 2 ran: 15
   cells, frozen first, branch `dataset-2026-11-lockbox2`. Results: `analytics/reports/r3/README.md`.
-- **Prepared:** item 5. `src/perfcounters.py` requests hardware events user-only and software events kernel-visible, but
-  `perf_event_paranoid` is still 2 on the Pi: setting it needs the Pi's sudo password.
+- **Done 2026-11-25:** item 5. `/etc/sysctl.d/99-perf-paranoid.conf` on the Pi sets `kernel.perf_event_paranoid = 1`,
+  which is per-process user+kernel counting; it was not set to -1, which would also open system-wide counting.
+  `src/perfcounters.py` requests the 7 hardware events user-only (`:u`, checked: user 3,696 + kernel 7,633 ≈ 10,453
+  unmodified LLC misses) and the software events with the kernel, so context switches now count (258 in a test run). The
+  v3 and lockbox-2 cells were collected before this, at paranoid 2.
 - **Decided against:** item 7. The PMIC rungs of Mode L need the context reads, and their effect is 0.02 %.
 - **Not done:** item 4, which needs physical rewiring.
 
