@@ -237,15 +237,15 @@ Within the measured frames (iter >= 1), share of frame energy / time by step. A 
 
 ### 6.1 Power against temperature in forward windows
 
-Per configuration (Mode A key plus governor, fan mode and the soak / serve / concurrent / input tag), ordinary least squares of the 100 ms window power `P_W` on `temp_C` (1 Hz sysfs temperature, latest reading at the window end) over its forward-phase windows. `pooled` uses all the configuration's cells on raw values; `within` subtracts each cell's means first. The standard errors treat windows as independent; consecutive 100 ms windows are strongly autocorrelated (section 7.3), so they are lower bounds. Temperature is confounded with elapsed time and with the clock-pinned load, so a slope is a description, not a causal estimate. Configurations whose forward windows span less than 2 degC do not identify a slope and are excluded from the family summaries (still listed in the detail table below). n = 161 cells (dataset v2 (nov2026 rig) 161 cells); 50 configurations, 65851 forward windows; dataset v2 (nov2026 rig; v1 has no counters or sysfs).
+Per configuration (Mode A key plus governor, fan mode and the soak / serve / concurrent / input tag), ordinary least squares of the 100 ms window power `P_W` on `temp_C` (1 Hz sysfs temperature, latest reading at the window end) over its forward-phase windows. `pooled` uses all the configuration's cells on raw values; `within` subtracts each cell's means first. The standard errors treat windows as independent; consecutive 100 ms windows are strongly autocorrelated (section 7.3), so they are lower bounds. Temperature is confounded with elapsed time and with the clock-pinned load, so a slope is a description, not a causal estimate. Configurations whose forward windows span less than 2 degC do not identify a slope and are excluded from the family summaries (still listed in the detail table below). n = 161 cells (dataset v2 (nov2026 rig) 161 cells); 50 configurations, 65848 forward windows; dataset v2 (nov2026 rig; v1 has no counters or sysfs).
 
 | family | configs | used | cells | windows | pooled med | pooled min | pooled max | within med | within min | within max | % pooled > 0 |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| A | 12 | 12 | 44 | 12249 | +0.166 | +0.097 | +0.215 | +0.207 | +0.169 | +0.232 | 100 |
-| A-input | 1 | 1 | 6 | 618 | +0.251 | +0.251 | +0.251 | +0.292 | +0.292 | +0.292 | 100 |
+| A | 12 | 12 | 44 | 12248 | +0.166 | +0.097 | +0.216 | +0.207 | +0.169 | +0.232 | 100 |
+| A-input | 1 | 1 | 6 | 617 | +0.251 | +0.251 | +0.251 | +0.293 | +0.293 | +0.293 | 100 |
 | B | 5 | 5 | 15 | 1681 | +0.165 | +0.117 | +0.210 | +0.290 | +0.217 | +0.301 | 100 |
 | C | 20 | 20 | 60 | 11048 | +0.199 | +0.053 | +0.293 | +0.256 | +0.125 | +0.525 | 100 |
-| D | 10 | 10 | 34 | 4587 | +0.240 | +0.154 | +0.319 | +0.262 | +0.192 | +0.323 | 100 |
+| D | 10 | 10 | 34 | 4586 | +0.240 | +0.154 | +0.319 | +0.262 | +0.192 | +0.323 | 100 |
 | soak | 2 | 2 | 2 | 35668 | +0.037 | +0.030 | +0.045 | +0.037 | +0.030 | +0.045 | 100 |
 
 Slopes over the 50 identified configurations (W/degC): pooled +0.030 to +0.319 (median +0.181), within-cell +0.030 to +0.525 (median +0.233).
@@ -260,7 +260,7 @@ Per configuration (slope W/degC, standard error, forward windows, cells, tempera
 | C | yolo11m\|yolo11m\|fp32\|480\|1\|4\|2400\|pinned\|full | 3 | 611 | +0.193 | 0.012 | +0.210 | 0.012 | 16.0 |
 | A | yolo11m\|yolo11m\|fp32\|640\|1\|4\|1500\|pinned\|full | 3 | 1263 | +0.148 | 0.009 | +0.179 | 0.010 | 8.2 |
 | A | yolo11m\|yolo11m\|fp32\|640\|1\|4\|2000\|pinned\|full | 3 | 1105 | +0.159 | 0.009 | +0.169 | 0.009 | 13.8 |
-| A | yolo11m\|yolo11m\|fp32\|640\|1\|4\|2400\|pinned\|full | 5 | 1711 | +0.173 | 0.008 | +0.184 | 0.008 | 18.1 |
+| A | yolo11m\|yolo11m\|fp32\|640\|1\|4\|2400\|pinned\|full | 5 | 1710 | +0.173 | 0.008 | +0.184 | 0.008 | 18.1 |
 | soak | yolo11m\|yolo11m\|fp32\|640\|1\|4\|2400\|pinned\|full\|soak_minutes=30.0 | 1 | 17826 | +0.030 | 0.003 | +0.030 | 0.003 | 26.9 |
 | C | yolo11m\|yolo11m\|fp32\|960\|1\|4\|2400\|pinned\|full | 3 | 2339 | +0.120 | 0.008 | +0.125 | 0.009 | 18.1 |
 | B | yolo11n\|yolo11n_fp16\|fp16\|640\|1\|4\|2400\|pinned\|full | 3 | 382 | +0.210 | 0.013 | +0.258 | 0.013 | 17.0 |
@@ -275,13 +275,13 @@ Per configuration (slope W/degC, standard error, forward windows, cells, tempera
 | C | yolo11n\|yolo11n\|fp32\|640\|1\|2\|2400\|pinned\|full | 3 | 331 | +0.225 | 0.014 | +0.245 | 0.014 | 10.4 |
 | D | yolo11n\|yolo11n\|fp32\|640\|1\|4\|2400\|ondemand\|full | 5 | 508 | +0.237 | 0.010 | +0.249 | 0.009 | 14.9 |
 | D | yolo11n\|yolo11n\|fp32\|640\|1\|4\|2400\|pinned\|auto | 3 | 304 | +0.295 | 0.015 | +0.305 | 0.015 | 12.1 |
-| A-input | yolo11n\|yolo11n\|fp32\|640\|1\|4\|2400\|pinned\|full | 6 | 618 | +0.251 | 0.011 | +0.292 | 0.011 | 15.9 |
+| A-input | yolo11n\|yolo11n\|fp32\|640\|1\|4\|2400\|pinned\|full | 6 | 617 | +0.251 | 0.011 | +0.293 | 0.011 | 15.9 |
 | D | yolo11n\|yolo11n\|fp32\|640\|1\|4\|2400\|pinned\|full\|concurrent_mode=model | 3 | 584 | +0.181 | 0.008 | +0.210 | 0.008 | 14.3 |
 | D | yolo11n\|yolo11n\|fp32\|640\|1\|4\|2400\|pinned\|full\|concurrent_mode=spinner | 3 | 462 | +0.219 | 0.010 | +0.246 | 0.010 | 17.0 |
 | D | yolo11n\|yolo11n\|fp32\|640\|1\|4\|2400\|pinned\|full\|input=stream | 3 | 480 | +0.166 | 0.010 | +0.242 | 0.011 | 18.2 |
 | D | yolo11n\|yolo11n\|fp32\|640\|1\|4\|2400\|pinned\|full\|serve_fps=1.0 | 3 | 305 | +0.319 | 0.015 | +0.323 | 0.015 | 11.6 |
 | D | yolo11n\|yolo11n\|fp32\|640\|1\|4\|2400\|pinned\|full\|serve_fps=15.0 | 3 | 305 | +0.268 | 0.014 | +0.276 | 0.014 | 13.2 |
-| D | yolo11n\|yolo11n\|fp32\|640\|1\|4\|2400\|pinned\|full\|serve_fps=5.0 | 3 | 306 | +0.243 | 0.014 | +0.302 | 0.014 | 14.9 |
+| D | yolo11n\|yolo11n\|fp32\|640\|1\|4\|2400\|pinned\|full\|serve_fps=5.0 | 3 | 305 | +0.244 | 0.014 | +0.303 | 0.014 | 14.9 |
 | soak | yolo11n\|yolo11n\|fp32\|640\|1\|4\|2400\|pinned\|full\|soak_minutes=30.0 | 1 | 17842 | +0.045 | 0.001 | +0.045 | 0.001 | 28.6 |
 | D | yolo11n\|yolo11n\|fp32\|640\|1\|4\|2400\|pinned\|off | 3 | 304 | +0.284 | 0.015 | +0.284 | 0.016 | 11.5 |
 | C | yolo11n\|yolo11n\|fp32\|640\|2\|4\|2400\|pinned\|full | 3 | 304 | +0.289 | 0.018 | +0.316 | 0.019 | 12.1 |
@@ -302,8 +302,8 @@ Per configuration (slope W/degC, standard error, forward windows, cells, tempera
 | C | yolo11s\|yolo11s\|fp32\|960\|1\|4\|2400\|pinned\|full | 3 | 1394 | +0.111 | 0.007 | +0.139 | 0.008 | 20.3 |
 | A | yolov8m\|yolov8m\|fp32\|640\|1\|4\|1500\|pinned\|full | 3 | 1068 | +0.097 | 0.006 | +0.207 | 0.008 | 11.5 |
 | A | yolov8m\|yolov8m\|fp32\|640\|1\|4\|2000\|pinned\|full | 3 | 893 | +0.181 | 0.009 | +0.185 | 0.009 | 13.2 |
-| A | yolov8m\|yolov8m\|fp32\|640\|1\|4\|2400\|pinned\|full | 5 | 1330 | +0.215 | 0.008 | +0.219 | 0.008 | 19.8 |
-| A | yolov8s\|yolov8s\|fp32\|640\|1\|4\|1500\|pinned\|full | 3 | 769 | +0.130 | 0.007 | +0.226 | 0.008 | 9.9 |
+| A | yolov8m\|yolov8m\|fp32\|640\|1\|4\|2400\|pinned\|full | 5 | 1329 | +0.216 | 0.008 | +0.219 | 0.008 | 19.8 |
+| A | yolov8s\|yolov8s\|fp32\|640\|1\|4\|1500\|pinned\|full | 3 | 770 | +0.130 | 0.007 | +0.226 | 0.008 | 9.9 |
 | A | yolov8s\|yolov8s\|fp32\|640\|1\|4\|2000\|pinned\|full | 3 | 653 | +0.205 | 0.009 | +0.206 | 0.010 | 13.8 |
 | A | yolov8s\|yolov8s\|fp32\|640\|1\|4\|2400\|pinned\|full | 5 | 988 | +0.185 | 0.008 | +0.215 | 0.008 | 21.5 |
 
@@ -313,7 +313,7 @@ The two 30-minute soak cells (yolo11n and yolo11m, 640 px, 4 threads, 2400 MHz, 
 
 | cell | n_windows | duration_s | t95_s | final_P_W | cold_P_W | hot_P_W | delta_P_W | delta_pct | cold_T_C | hot_T_C |
 |---|---|---|---|---|---|---|---|---|---|---|
-| yolo11n_soak30_640_t4_2400_r00 | 17842 | 1800 | 23 | 10.507 | 9.891 | 10.507 | +0.616 | +6.22 | 58.3 | 71.7 |
+| yolo11n_soak30_640_t4_2400_r00 | 17842 | 1800 | 23 | 10.506 | 9.891 | 10.506 | +0.615 | +6.22 | 58.3 | 71.7 |
 | yolo11m_soak30_640_t4_2400_r00 | 17826 | 1801 | 8 | 11.424 | 10.857 | 11.424 | +0.567 | +5.22 | 65.4 | 76.6 |
 
 ![Soak power and temperature](fig/eda_soak.png)
@@ -334,22 +334,22 @@ Residual of each cell's energy per image from its configuration mean (relative, 
 
 Spearman and Pearson correlation of `P_W` with each counter feature, per phase group (`forward`, `idle` = `baseline_A` + `baseline_B`, `serve`, `gap`) and pooled over the four. `raw` uses all windows; `dm` subtracts, for each cell and phase, the mean of both variables first (so only within-cell, within-phase co-movement remains). Ratio features (`ipc`, `cache_miss_rate`, `branch_mpki`, `stall_frac`, `llc_mpki`) use counted windows only (undefined otherwise); rate features use every window. `n raw` / `n dm` are windows. A blank is an undefined correlation: `ctx_sw_rate` is 0 in every window (the context-switch counter never ticks for the attached process), and `freq_mhz` is constant within a pinned-clock cell and phase. Windows: n = 161 cells (dataset v2 (nov2026 rig) 161 cells); dataset v2 (nov2026 rig; v1 has no counters or sysfs). **Perf overhead caveat**: perf counters were enabled in every v2 cell except `ref`, so power measured here includes the cost of counting (section 7.2).
 
-**forward** (65851 windows at most, 161 cells):
+**forward** (65848 windows at most, 161 cells):
 
 | feature | n cells | n raw | Spearman raw | Pearson raw | n dm | Spearman dm | Pearson dm |
 |---|---|---|---|---|---|---|---|
-| busy | 161 | 65851 | +0.350 | +0.575 | 65851 | +0.428 | +0.694 |
-| cycles_rate | 161 | 65851 | +0.574 | +0.816 | 65851 | +0.597 | +0.755 |
-| instr_rate | 161 | 65851 | +0.594 | +0.586 | 65851 | +0.874 | +0.850 |
-| ipc | 161 | 65851 | +0.145 | +0.004 | 65851 | +0.778 | +0.624 |
-| cache_miss_rate | 161 | 65851 | -0.069 | +0.014 | 65851 | -0.457 | -0.251 |
-| branch_mpki | 161 | 65851 | -0.286 | -0.471 | 65851 | -0.241 | -0.608 |
-| stall_frac | 161 | 65851 | +0.078 | +0.247 | 65851 | -0.604 | -0.290 |
-| llc_mpki | 161 | 65851 | -0.148 | -0.120 | 65851 | -0.602 | -0.380 |
-| ctx_sw_rate | 161 | 65851 |  |  | 65851 |  |  |
-| pf_rate | 161 | 65851 | +0.073 | +0.060 | 65851 | -0.278 | -0.186 |
-| freq_mhz | 161 | 65851 | +0.495 | +0.645 | 65851 | +0.058 | +0.103 |
-| temp_C | 161 | 65851 | +0.706 | +0.772 | 65851 | +0.205 | +0.403 |
+| busy | 161 | 65848 | +0.350 | +0.575 | 65848 | +0.428 | +0.694 |
+| cycles_rate | 161 | 65848 | +0.574 | +0.816 | 65848 | +0.597 | +0.755 |
+| instr_rate | 161 | 65848 | +0.594 | +0.586 | 65848 | +0.874 | +0.850 |
+| ipc | 161 | 65848 | +0.145 | +0.004 | 65848 | +0.778 | +0.624 |
+| cache_miss_rate | 161 | 65848 | -0.069 | +0.014 | 65848 | -0.457 | -0.251 |
+| branch_mpki | 161 | 65848 | -0.286 | -0.471 | 65848 | -0.241 | -0.608 |
+| stall_frac | 161 | 65848 | +0.078 | +0.247 | 65848 | -0.604 | -0.290 |
+| llc_mpki | 161 | 65848 | -0.148 | -0.120 | 65848 | -0.602 | -0.380 |
+| ctx_sw_rate | 161 | 65848 |  |  | 65848 |  |  |
+| pf_rate | 161 | 65848 | +0.073 | +0.060 | 65848 | -0.278 | -0.186 |
+| freq_mhz | 161 | 65848 | +0.495 | +0.645 | 65848 | +0.058 | +0.103 |
+| temp_C | 161 | 65848 | +0.706 | +0.772 | 65848 | +0.205 | +0.403 |
 
 **idle** (7204 windows at most, 161 cells):
 
@@ -358,66 +358,66 @@ Spearman and Pearson correlation of `P_W` with each counter feature, per phase g
 | busy | 161 | 7203 | +0.309 | +0.696 | 7203 | +0.842 | +0.930 |
 | cycles_rate | 161 | 7204 | +0.318 | +0.722 | 7204 | +0.842 | +0.938 |
 | instr_rate | 161 | 7203 | +0.314 | +0.639 | 7203 | +0.792 | +0.804 |
-| ipc | 161 | 1948 | +0.156 | +0.256 | 1948 | +0.354 | +0.283 |
-| cache_miss_rate | 161 | 1948 | -0.147 | +0.177 | 1948 | +0.003 | +0.153 |
-| branch_mpki | 161 | 1948 | -0.407 | -0.434 | 1948 | -0.312 | -0.358 |
-| stall_frac | 161 | 1948 | +0.246 | +0.550 | 1948 | +0.202 | +0.428 |
-| llc_mpki | 161 | 1948 | -0.247 | -0.104 | 1948 | -0.172 | -0.151 |
+| ipc | 161 | 1948 | +0.156 | +0.256 | 1948 | +0.355 | +0.283 |
+| cache_miss_rate | 161 | 1948 | -0.148 | +0.176 | 1948 | +0.002 | +0.154 |
+| branch_mpki | 161 | 1948 | -0.405 | -0.433 | 1948 | -0.311 | -0.359 |
+| stall_frac | 161 | 1948 | +0.246 | +0.550 | 1948 | +0.201 | +0.429 |
+| llc_mpki | 161 | 1948 | -0.247 | -0.104 | 1948 | -0.170 | -0.151 |
 | ctx_sw_rate | 161 | 7203 |  |  | 7203 |  |  |
-| pf_rate | 161 | 7203 | +0.292 | +0.406 | 7203 | +0.582 | +0.590 |
+| pf_rate | 161 | 7203 | +0.291 | +0.406 | 7203 | +0.582 | +0.590 |
 | freq_mhz | 161 | 7204 | +0.632 | +0.576 | 7204 | -0.010 | -0.017 |
 | temp_C | 161 | 7204 | +0.636 | +0.429 | 7204 | -0.019 | -0.206 |
 
-**serve** (18701 windows at most, 161 cells):
+**serve** (18704 windows at most, 161 cells):
 
 | feature | n cells | n raw | Spearman raw | Pearson raw | n dm | Spearman dm | Pearson dm |
 |---|---|---|---|---|---|---|---|
-| busy | 161 | 18701 | +0.588 | +0.793 | 18701 | +0.851 | +0.919 |
-| cycles_rate | 161 | 18701 | +0.849 | +0.912 | 18701 | +0.887 | +0.946 |
-| instr_rate | 161 | 18701 | +0.784 | +0.803 | 18701 | +0.924 | +0.914 |
-| ipc | 161 | 17093 | +0.127 | +0.101 | 17093 | +0.684 | +0.575 |
-| cache_miss_rate | 161 | 17093 | -0.018 | +0.013 | 17093 | -0.303 | -0.128 |
-| branch_mpki | 161 | 17093 | -0.203 | -0.313 | 17093 | -0.238 | -0.382 |
-| stall_frac | 161 | 17093 | +0.134 | +0.205 | 17093 | -0.458 | -0.188 |
-| llc_mpki | 161 | 17093 | -0.239 | -0.173 | 17093 | -0.535 | -0.303 |
-| ctx_sw_rate | 161 | 18701 |  |  | 18701 |  |  |
-| pf_rate | 161 | 18700 | +0.394 | +0.307 | 18700 | +0.196 | +0.252 |
-| freq_mhz | 161 | 18701 | +0.406 | +0.428 | 18701 | +0.044 | +0.032 |
-| temp_C | 161 | 18701 | +0.647 | +0.624 | 18701 | +0.018 | +0.007 |
+| busy | 161 | 18704 | +0.588 | +0.793 | 18704 | +0.851 | +0.919 |
+| cycles_rate | 161 | 18704 | +0.849 | +0.912 | 18704 | +0.887 | +0.946 |
+| instr_rate | 161 | 18704 | +0.784 | +0.803 | 18704 | +0.924 | +0.914 |
+| ipc | 161 | 17096 | +0.127 | +0.101 | 17096 | +0.684 | +0.575 |
+| cache_miss_rate | 161 | 17096 | -0.018 | +0.013 | 17096 | -0.303 | -0.128 |
+| branch_mpki | 161 | 17096 | -0.203 | -0.312 | 17096 | -0.239 | -0.381 |
+| stall_frac | 161 | 17096 | +0.134 | +0.205 | 17096 | -0.458 | -0.188 |
+| llc_mpki | 161 | 17096 | -0.239 | -0.173 | 17096 | -0.534 | -0.303 |
+| ctx_sw_rate | 161 | 18704 |  |  | 18704 |  |  |
+| pf_rate | 161 | 18703 | +0.394 | +0.307 | 18703 | +0.196 | +0.252 |
+| freq_mhz | 161 | 18704 | +0.406 | +0.429 | 18704 | +0.044 | +0.032 |
+| temp_C | 161 | 18704 | +0.647 | +0.624 | 18704 | +0.018 | +0.007 |
 
-**gap** (36267 windows at most, 34 cells):
-
-| feature | n cells | n raw | Spearman raw | Pearson raw | n dm | Spearman dm | Pearson dm |
-|---|---|---|---|---|---|---|---|
-| busy | 34 | 36260 | +0.397 | +0.774 | 36260 | +0.822 | +0.940 |
-| cycles_rate | 34 | 36263 | +0.410 | +0.822 | 36263 | +0.882 | +0.966 |
-| instr_rate | 34 | 36263 | +0.405 | +0.779 | 36263 | +0.848 | +0.928 |
-| ipc | 34 | 14448 | +0.410 | +0.345 | 14448 | +0.518 | +0.446 |
-| cache_miss_rate | 34 | 14449 | +0.046 | +0.135 | 14449 | +0.184 | +0.125 |
-| branch_mpki | 34 | 14448 | -0.586 | -0.446 | 14448 | -0.704 | -0.498 |
-| stall_frac | 34 | 14446 | +0.280 | +0.194 | 14446 | +0.390 | +0.179 |
-| llc_mpki | 34 | 14448 | -0.423 | -0.116 | 14448 | -0.479 | -0.135 |
-| ctx_sw_rate | 34 | 36262 |  |  | 36262 |  |  |
-| pf_rate | 34 | 36262 | +0.367 | +0.461 | 36262 | +0.685 | +0.544 |
-| freq_mhz | 34 | 36267 | +0.625 | +0.517 | 36267 |  |  |
-| temp_C | 34 | 36267 | +0.701 | +0.436 | 36267 | +0.128 | -0.035 |
-
-**pooled** (128023 windows at most, 161 cells):
+**gap** (36241 windows at most, 34 cells):
 
 | feature | n cells | n raw | Spearman raw | Pearson raw | n dm | Spearman dm | Pearson dm |
 |---|---|---|---|---|---|---|---|
-| busy | 161 | 128015 | +0.798 | +0.909 | 128015 | +0.643 | +0.816 |
-| cycles_rate | 161 | 128019 | +0.872 | +0.954 | 128019 | +0.716 | +0.857 |
-| instr_rate | 161 | 128018 | +0.865 | +0.892 | 128018 | +0.881 | +0.875 |
-| ipc | 161 | 99340 | +0.270 | +0.250 | 99340 | +0.709 | +0.527 |
-| cache_miss_rate | 161 | 99341 | +0.186 | +0.091 | 99341 | -0.305 | -0.134 |
-| branch_mpki | 161 | 99340 | -0.514 | -0.601 | 99340 | -0.272 | -0.312 |
-| stall_frac | 161 | 99338 | +0.396 | +0.421 | 99338 | -0.405 | -0.099 |
-| llc_mpki | 161 | 99340 | -0.255 | -0.217 | 99340 | -0.449 | -0.161 |
-| ctx_sw_rate | 161 | 128017 |  |  | 128017 |  |  |
-| pf_rate | 161 | 128016 | +0.688 | +0.484 | 128016 | -0.079 | -0.004 |
-| freq_mhz | 161 | 128023 | +0.381 | +0.361 | 128023 | +0.047 | +0.049 |
-| temp_C | 161 | 128023 | +0.790 | +0.767 | 128023 | +0.136 | +0.227 |
+| busy | 34 | 36234 | +0.393 | +0.770 | 36234 | +0.829 | +0.940 |
+| cycles_rate | 34 | 36237 | +0.406 | +0.818 | 36237 | +0.885 | +0.966 |
+| instr_rate | 34 | 36237 | +0.401 | +0.774 | 36237 | +0.858 | +0.928 |
+| ipc | 34 | 14422 | +0.404 | +0.338 | 14422 | +0.515 | +0.439 |
+| cache_miss_rate | 34 | 14423 | +0.050 | +0.142 | 14423 | +0.194 | +0.134 |
+| branch_mpki | 34 | 14422 | -0.581 | -0.443 | 14422 | -0.701 | -0.495 |
+| stall_frac | 34 | 14420 | +0.284 | +0.198 | 14420 | +0.393 | +0.184 |
+| llc_mpki | 34 | 14422 | -0.418 | -0.113 | 14422 | -0.474 | -0.133 |
+| ctx_sw_rate | 34 | 36236 |  |  | 36236 |  |  |
+| pf_rate | 34 | 36236 | +0.367 | +0.468 | 36236 | +0.695 | +0.555 |
+| freq_mhz | 34 | 36241 | +0.626 | +0.523 | 36241 |  |  |
+| temp_C | 34 | 36241 | +0.704 | +0.441 | 36241 | +0.127 | -0.035 |
+
+**pooled** (127997 windows at most, 161 cells):
+
+| feature | n cells | n raw | Spearman raw | Pearson raw | n dm | Spearman dm | Pearson dm |
+|---|---|---|---|---|---|---|---|
+| busy | 161 | 127989 | +0.798 | +0.909 | 127989 | +0.641 | +0.815 |
+| cycles_rate | 161 | 127993 | +0.872 | +0.954 | 127993 | +0.715 | +0.856 |
+| instr_rate | 161 | 127992 | +0.865 | +0.892 | 127992 | +0.881 | +0.875 |
+| ipc | 161 | 99314 | +0.272 | +0.252 | 99314 | +0.709 | +0.526 |
+| cache_miss_rate | 161 | 99315 | +0.186 | +0.091 | 99315 | -0.305 | -0.133 |
+| branch_mpki | 161 | 99314 | -0.514 | -0.602 | 99314 | -0.271 | -0.310 |
+| stall_frac | 161 | 99312 | +0.396 | +0.421 | 99312 | -0.406 | -0.098 |
+| llc_mpki | 161 | 99314 | -0.257 | -0.218 | 99314 | -0.449 | -0.160 |
+| ctx_sw_rate | 161 | 127991 |  |  | 127991 |  |  |
+| pf_rate | 161 | 127990 | +0.688 | +0.484 | 127990 | -0.080 | -0.004 |
+| freq_mhz | 161 | 127997 | +0.381 | +0.361 | 127997 | +0.047 | +0.049 |
+| temp_C | 161 | 127997 | +0.790 | +0.767 | 127997 | +0.136 | +0.227 |
 
 Forward phase, largest within-cell |Spearman|: `instr_rate` raw +0.59 / dm +0.87; `ipc` raw +0.15 / dm +0.78; `stall_frac` raw +0.08 / dm -0.60; `llc_mpki` raw -0.15 / dm -0.60; `cycles_rate` raw +0.57 / dm +0.60.
 
