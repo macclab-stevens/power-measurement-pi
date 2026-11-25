@@ -121,7 +121,9 @@ def predict_mode_a(t: pd.DataFrame, feats: pd.DataFrame, shas: dict, desc_train:
     nov = lb.novelty_by_model(desc, feats["base_model"], set(t["base_model"]))
     rows, frozen = [], {}
     for target in ri.TARGETS:
-        fits = mode_a.fit_candidates(t, target, seed, desc_train, REGIME)
+        # `desc` = training descriptors plus the lockbox-2 models' (B2NearestModel looks a test model up in it; every
+        # standardisation uses the training models only, so this adds no information from the lockbox)
+        fits = mode_a.fit_candidates(t, target, seed, desc, REGIME)
         for cand, f in fits.items():
             rec = _pickle(f["model"], f"mode_a_{target}_{cand}")
             frozen[f"{target}/{cand}"] = {**rec, "params": f["params"], "chosen": f["chosen"], "score": f["score"]}
