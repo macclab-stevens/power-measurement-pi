@@ -133,6 +133,10 @@ FAMILY_DESC = {
     "D": "free-running clock (DVFS), fan `auto` and `off`, serving at 1 / 5 / 15 requests per second, a stream of 50 different pictures, two workloads at once (`conc2`, `concspin`)",
     "soak": "30 minutes of continuous inference, fan `full`, yolo11n and yolo11m",
     "ref": "the v1 cross-check: yolov8n and yolo11n with the v1 command lines at 1500 / 2000 / 2400 MHz, counters off, no holdout (`dataset_version` 1)",
+    "lockbox": "holdout configurations measured after their predictions were frozen (never training data)",
+    "v3cal": "v3 calibration pairs: yolo11n, yolov8n, yolo11s, yolo12n, mbv3, effb0, resnet18 with the layer hooks on and off (`run_meta.layer_hooks`), 2400 MHz, 3 repeats each",
+    "v3add": "v3 training additions, hooks off: yolo12s, Swin-T, ViT-B/16, ConvNeXt-T, MaxViT-T at 2400 MHz and yolo12s, Swin-T at 1500 MHz, 3 repeats each",
+    "lockbox2": "second holdout (R3), hooks off: resnet34, mobilenet_v3_large, efficientnet_b1, swin_s, yolo12m at 2400 MHz, 3 repeats each, measured after the R3 predictions were frozen",
 }
 
 COVERAGE_DIMENSIONS = ("family", "dataset_version", "model", "imgsz", "batch", "threads", "variant",
