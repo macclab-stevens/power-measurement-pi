@@ -15,6 +15,11 @@ Pi's layer tables exactly.
   yolov8n, yolo11s, yolo12n, mbv3, effb0 and resnet18 at their existing configurations, 2400 MHz, 3 repeats each.
   That is 21 cells, about 30 minutes. It measures the instrumented-to-plain energy ratio, so the existing dataset can
   be mapped to deployment energy.
+- **Packaging and analysis of hooks-off cells:** `host/package_dataset.py` already packages them without a layer
+  table. Analytics still needs two changes before such cells are mixed with the existing ones:
+  - take their static features from `tools/static_features.py`;
+  - add a `layer_hooks` flag feature. `log_n_calls` describes the graph, while the hook cost exists only when hooks
+    are on.
 
 ## 2. A fresh lockbox for R2 (approval)
 

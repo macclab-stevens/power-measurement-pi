@@ -22,10 +22,14 @@ item of `docs/review/next-collection.md`.
 | S-LCO (a clock) | 16.1 % / 66 % | 3.8 % / 26 % | 15.1 % |
 | RANDOM (nothing structural) | 5.3 % / 46 % | 2.3 % / 24 % | 10.6 % |
 
-- **Most of the gain comes from the selection rule, not the new model.** Balanced inner error means each base model
-  counts once. Inner folds follow the regime: leave-one-model-out for a new model, random configurations for a seen
-  one. Under R1 the 49 YOLO rows picked a nearly unregularised ridge, which put EfficientNet-B0 at 45 times its
-  energy.
+- **Where the gains come from.**
+  - **The worst-case tail.** It collapses because of the selection rule: balanced inner error, so each base model
+    counts once. Under R1 the 49 YOLO rows chose a nearly unregularised ridge, which put EfficientNet-B0 at 45 times
+    its energy. M1Ridge alone goes from 4,397 % to 136 % MaxAPE in S-LOMO; part of that is the R2 feature change.
+  - **The S-LOMO median.** It improves mostly because of the new candidate: AUTO picks M4Physics in 7 of 9 outer
+    folds.
+  - **The seen-model splits (variant, clock, random).** These gain from the inner folds following the regime:
+    random configurations when the base model is known.
 - **M4Physics**, an additive latency cost (MACs, activation bytes, module calls, clock, threads) times V²f-based
   power, is the most robust to a new model: MaxAPE 51 %, R² on log 0.97. It is worse than the flexible candidates
   when the model is known.
@@ -37,10 +41,21 @@ item of `docs/review/next-collection.md`.
 A closed-loop serve phase (request, then a 200 ms sleep) lasts as long as the latency makes it. R1 used the measured
 duration, which leaked the answer. The honest version predicts the duration as n · (latency + gap + overhead).
 
-| lockbox serve energy, 15 cells | R1 predictions | R2 predictions |
+Training serve phases (226 cells, S-LOMO predictions, `../deploy_validation.csv`):
+
+| scenario | median | mean | max |
+|---|---:|---:|---:|
+| measured duration (leaks) | 3.8 % | 6.0 % | — |
+| predicted duration (honest) | **8.6 %** | 12.1 % | 45 % |
+
+Lockbox serve phases (15 cells):
+
+| scenario | R1 predictions median / mean / max | R2 predictions median / mean / max |
 |---|---:|---:|
-| measured duration (leaks) | 1.05 % | 1.15 % |
-| predicted duration (honest) | 3.63 % | 1.89 % median, 8.5 % mean |
+| measured duration (leaks) | 1.05 / 1.91 / 5.2 % | 1.15 / 3.34 / 9.0 % |
+| predicted duration (honest) | 3.63 / 4.89 / 9.1 % | **1.89 / 8.51 / 20.2 %** |
+
+R2 has the better median but a worse mean and maximum, both driven by yolo12n (see the lockbox section).
 
 ## Mode L (live 100 ms accounting), 5 YOLO models with counters (`mode_l_r2.md`)
 
@@ -71,7 +86,7 @@ core voltage, `P = P0 + k V(f)^2 f` fits every forward-power series with **P0 = 
 | 2 configurations of the new model yolo12n | **6.6 %** | 22.9 % |
 
 **R2 is worse on the only new architecture.** yolo12n has attention blocks, and no training model does. Every
-candidate under-predicts its latency (by 10–35 %). M4Physics's additive cost has no term for attention, so it
+learned candidate under-predicts its latency (by 10–35 %). M4Physics's additive cost has no term for attention, so it
 under-predicts the most. One model is one data point, but it sits at the edge of the stated goal (predict "a model like one we have
 seen"). Without attention models in training, neither revision can be trusted on them.
 
