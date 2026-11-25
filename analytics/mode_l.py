@@ -165,10 +165,11 @@ def _select(rung: mm.Rung, seed: int, train: pd.DataFrame) -> dict:
 
 
 def fit_final(w: pd.DataFrame, cat: pd.DataFrame, qc: pd.DataFrame | None, rung_name: str, seed: int,
-              rungs: dict | None = None) -> tuple:
+              rungs: dict | None = None, suffix: str = "") -> tuple:
     """The shipped window model of one rung: the grid point is chosen by `_select` (leave one YOLO base
     model out over all training cells), then the model is refitted on every QC-primary counter cell of the
-    YOLO base models and pickled to derived/models/mode_l_<rung>.pkl. Lockbox cells never enter (a
+    YOLO base models and pickled to derived/models/mode_l_<rung><suffix>.pkl (`suffix` "" is the frozen R1 name; post hoc
+    R2 fits pass "_r2" so that they never overwrite a frozen pickle). Lockbox cells never enter (a
     `source` column marks them). Returns (model, {"path", "sha256", "params", "n_cells", "n_windows",
     "base_models"}). `seed` is the tree random_state (selection and final fit)."""
     rungs = rungs or mm.default_rungs()
@@ -184,7 +185,7 @@ def fit_final(w: pd.DataFrame, cat: pd.DataFrame, qc: pd.DataFrame | None, rung_
     model = _fit(rung, seed, params, train)
     out = settings.derived_dir() / "models"
     out.mkdir(parents=True, exist_ok=True)
-    path = out / f"mode_l_{rung_name}.pkl"
+    path = out / f"mode_l_{rung_name}{suffix}.pkl"
     path.write_bytes(pickle.dumps(model))
     return model, {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "params": params,
                    "n_cells": int(train["cell_id"].nunique()), "n_windows": len(train),

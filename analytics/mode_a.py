@@ -305,6 +305,35 @@ def fit_final(t: pd.DataFrame, candidate: str, target: str, seed: int, desc: pd.
                    "regime": regime}
 
 
+def fit_candidates(t: pd.DataFrame, target: str, seed: int, desc: pd.DataFrame, regime: str,
+                   grids: dict | None = None) -> dict:
+    """Post hoc scoring helper: the search of `fit_final` run once over `t` for every candidate of `target` plus AUTO,
+    with no pickles written. Inner folds are those of `regime` (`splits.inner_folds_for`, index 0, as in `fit_final`).
+    Returns {candidate or AUTO: {"model", "params", "score", "q5", "q95", "n_resid", "chosen"}}: the model refitted on
+    every row of `t` with the chosen grid point, the balanced inner error, the fold-weighted 5 % and 95 % quantiles of the
+    inner log residuals log(y / pred) (the 90 % interval of a prediction p is [p exp(q5), p exp(q95)], as in `_run_fold`;
+    NaN when there are fewer than two residuals) and, for AUTO, the candidate it picked (the lowest balanced error among
+    `AUTO_AMONG`, ties to the first). Only `t` is read."""
+    if regime not in REGIMES:
+        raise ValueError(f"unknown regime {regime!r}; expected one of {REGIMES}")
+    if target not in CANDIDATES_BY_TARGET:
+        raise ValueError(f"unknown target {target!r}")
+    grids = grids if grids is not None else mm.GRIDS
+    search = _Search(t, desc, grids, seed, splits.inner_folds_for(t, regime, seed))
+    truth = search.truth(target)
+    sel = {n: search.select(n, target) for n in CANDIDATES_BY_TARGET[target]}
+    t0 = t.reset_index(drop=True)
+    out = {}
+    for n, s in sel.items():
+        resid, wts = _residuals(truth, s["preds"])
+        q5, q95 = wquantile(resid, wts, [0.05, 0.95]) if resid.size >= 2 else (np.nan, np.nan)
+        out[n] = {"model": _make(n, desc, seed).fit(t0, target, s["params"]), "params": s["params"], "score": s["score"],
+                  "q5": float(q5), "q95": float(q95), "n_resid": int(resid.size), "chosen": n}
+    auto = min(AUTO_AMONG[target], key=lambda n: sel[n]["score"])
+    out[AUTO] = {**out[auto], "chosen": auto}
+    return out
+
+
 def learning_curve(t: pd.DataFrame, target: str, seed: int, candidate: str, params: dict | None,
                    desc: pd.DataFrame, max_subsets: int = 10) -> pd.DataFrame:
     """Fixed candidate and params (no inner search). Each YOLO base model is held out in turn; train on
