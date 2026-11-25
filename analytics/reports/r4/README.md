@@ -12,9 +12,9 @@ lockbox 2, now training data.
 - 83 configurations, 20 base models, 185 cells (`mode_a_configs_r4.csv`).
 - The static layer tables of the new configurations were built on the Pi 5. They match the NUC build exactly.
 
-**Status:** R4 is exploratory until lockbox 3 is scored. Lockbox 3 is six never-collected models, pre-registered in
-`host/matrix_v4.py` and measured only after the R4 predictions are frozen. Everything below is cross-validated on
-training data.
+**Status: lockbox 3 is scored once, confirmatory** (§5, `lockbox3.md`). It is six never-collected models,
+pre-registered in `host/matrix_v4.py`. Their predictions were frozen, committed, tagged `r4-frozen` and pushed before
+any of them was measured. §1–4 are cross-validated on training data.
 
 Commands: `uv run python r4.py {table, mode-a, hooks, mode-l, summary, power-table}`.
 
@@ -132,9 +132,52 @@ rates (L3k-trees, L5k-trees). The headline is the inference segment.
 - **Power per configuration** (`power_table_r4.md`): the live model is within 1.10 % median, the seen-model a priori
   prediction within 1.85 % and the new-model one within 2.44 %. The repeat spread is 0.29 %.
 
+## 5. Lockbox 3, confirmatory (`lockbox3.md`)
+
+Six never-collected models at mixed clocks, hooks off, 3 repeats each (18 cells, all ok).
+- The predictions were frozen at commit 14784a6 (tag `r4-frozen`, pushed) before the first cell.
+- Scored once with unchanged code: "confirmatory".
+
+| configuration | similar to | energy APE (AUTO) | inside 90 % | latency APE | power APE |
+|---|---|---:|---|---:|---:|
+| mbv2 224 @2400 | mbv3 / mbv3l | 1.7 % | yes | 6.6 % | 0.8 % |
+| effb2 224 @2400 | effb0 / effb1 | 2.0 % | yes | 3.0 % | 1.3 % |
+| convnexts 224 @2400 | convnextt | 5.1 % | yes | 5.8 % | 2.6 % |
+| resnet50 224 @1500 | resnet18 / resnet34 | 8.6 % | yes | 9.3 % | 1.7 % |
+| shufv2 224 @2000 (flagged novel) | mbv3 | 11.9 % | no | 27.4 % | 2.3 % |
+| vitb32 224 @2000 | vitb16 | 17.4 % | no | 24.4 % | 12.6 % |
+
+| headline (stated before measurement) | lockbox 3 (R4) | lockbox 2 (R3) |
+|---|---:|---:|
+| Mode A energy MdAPE, AUTO | **6.9 %** (MaxAPE 17.4 %) | 13.6 % (MaxAPE 16.9 %) |
+| inside the 90 % interval (conformal) | 4 / 6 | 3 / 5 (R3 intervals) |
+| power MdAPE, AUTO | **2.0 %** | 1.4 % |
+| serve-phase calculator, predicted duration | **3.5 %** | 5.9 % |
+| Mode L inference segment: best rung / L3-trees / lookup | **2.1 % (L3-trees)** / 2.1 % / 5.8 % | 2.4 % / – / 8.3 % (non-YOLO models) |
+
+What it shows:
+- **Halving the R3 error held up on models never measured.** The new-model error went from 13.6 % to 6.9 %. It is above
+  R4's cross-validated 3.9 %, as lockbox models sit in the harder part of that distribution (the S-LOMO 75th percentile
+  is 8.2 %, the 90th 11.3 %).
+- **The two misses are the two least-like models.**
+  - ShuffleNetV2's channel shuffle is new to training. The novelty flag marked it before measurement, the only flag
+    raised.
+  - ViT-B/32 has patch size 32, so 49 tokens against ViT-B/16's 196. The model predicted its latency 24 % too low and
+    its power 13 % too high: fewer, larger matrix products run at a different efficiency than any training model.
+- **Intervals: 4 of 6 inside, against 3 of 5 for R3.** Both misses are those two models. Six configurations cannot
+  test a 90 % rate (if the true rate were 90 %, 4 or fewer of 6 would happen about 11 % of the time). The conformal
+  intervals stay the R4 interval.
+- **Kernel counters:** on lockbox 3 the kernel rungs are mixed (L5k 2.2 % against L5 2.5 %, L3k 2.7 % against L3
+  2.1 %). Together with §4: no consistent gain.
+- **Model choice:** AUTO picked M1Ridge for energy and latency and M4Physics for power. M4Physics would have scored
+  6.4 % on energy here (M1Ridge 6.9 %), but with a MaxAPE of 34 %. On six configurations the two are not
+  distinguishable, as on lockbox 2.
+
 ## What is still open
 
-- **Lockbox 3:** freeze the R4 predictions, tag `r4-frozen`, measure 18 cells (about 20 minutes), score once.
+- **Lockbox 3 is spent.** Any change from here on is exploratory until the next holdout.
+- **New operator types** (channel shuffle, large-patch attention) are where the a priori predictor still misses by
+  10–25 %. Each needs a training model that has them.
 - **Harness:** short, thick leads to the 5 V and GND pins. Until then the board label is a correction, not a
   measurement.
 - **Quantised variants (S-LVO):** only three int8 / fp16 variants of two models exist, too few to learn or to score
