@@ -1,0 +1,157 @@
+{
+  "task": "image",
+  "model": "yolo12s.pt",
+  "modes": [
+    "forward"
+  ],
+  "imgsz": 640,
+  "conf": 0.25,
+  "seq_len": 64,
+  "batch": 1,
+  "optimizer": null,
+  "train_loss": null,
+  "bench_skipped": true,
+  "bench_forced_off_by_soak": false,
+  "bench_forced_off": null,
+  "variant": "yolo12s",
+  "quant": "fp32",
+  "prune": null,
+  "quant_weights_sha256": null,
+  "quantized_modules": null,
+  "quantized_compute_modules": null,
+  "executed_dtype": null,
+  "map_reference": null,
+  "layer_hooks": "off",
+  "serve_requests": 10,
+  "serve_gap_ms": 200.0,
+  "serve_fps": null,
+  "serve_missed_deadlines": null,
+  "serve_wall_s": 11.292,
+  "soak_minutes": null,
+  "concurrent": null,
+  "frames_done": {
+    "forward": 30
+  },
+  "latency_ms_per_frame": {
+    "mean": 929.509,
+    "median": 928.832,
+    "p95": 939.904,
+    "n": 29
+  },
+  "latency_ms_per_image": {
+    "mean": 929.509,
+    "median": 928.832,
+    "p95": 939.904,
+    "n": 29
+  },
+  "inputs": {
+    "source": "repeat",
+    "files": [
+      {
+        "path": "bus.jpg",
+        "sha256": "c02019c4979c191eb739ddd944445ef408dad5679acab6fd520ef9d434bfbc63"
+      }
+    ]
+  },
+  "holdout": null,
+  "dataset_version": 2,
+  "governor": "pinned",
+  "fan_mode": "full",
+  "load_weights_s": 20.3349,
+  "first_call_ms": {
+    "forward": 986.565
+  },
+  "threads": 4,
+  "threads_detail": {
+    "torch": 4,
+    "opencv": 4,
+    "omp_env": "4"
+  },
+  "frames_per_mode": 30,
+  "warmup_passes": 10,
+  "params_M": 9.286,
+  "mean_fps": null,
+  "baseline_W": 3.932466,
+  "baseline_A_W": 3.930073,
+  "baseline_B_W": 3.934858,
+  "baseline_drift_W": 0.004785,
+  "schema_version": 4,
+  "sampler": "monsoon",
+  "recorder_url": "http://192.168.0.11:8051",
+  "recorder_status_start": {
+    "recording": true,
+    "serial": 36517,
+    "vout_V": 5.4,
+    "current_limit_A": 6.0,
+    "sample_hz": 4992.466892021307,
+    "n_total": 1489168237,
+    "dropped": 0,
+    "raw_dropped_nonzero_blocks": 11610963,
+    "run_dir": "/home/macc2026/power-measurement-pi/host/data/20261121T115123",
+    "disk_free_gb": 345.6
+  },
+  "recorder_status_end": {
+    "recording": true,
+    "serial": 36517,
+    "vout_V": 5.4,
+    "current_limit_A": 6.0,
+    "sample_hz": 4992.471800922654,
+    "n_total": 1489568700,
+    "dropped": 0,
+    "raw_dropped_nonzero_blocks": 11614078,
+    "run_dir": "/home/macc2026/power-measurement-pi/host/data/20261121T115123",
+    "disk_free_gb": 345.5
+  },
+  "recorder_continuity_errors": [],
+  "perf_counters": {
+    "enabled": true,
+    "available": true,
+    "interval_ms": 100,
+    "events": [
+      "cycles",
+      "instructions",
+      "cache-references",
+      "cache-misses",
+      "branch-misses",
+      "stalled-cycles-backend",
+      "LLC-load-misses",
+      "task-clock",
+      "context-switches",
+      "page-faults",
+      "cpu-migrations"
+    ],
+    "t0_ns": 1795578229202223181,
+    "offset_ns": 40339770,
+    "offset_method": "first-line",
+    "error": null,
+    "paranoid": 2,
+    "scope": "user",
+    "min_pct_running": 100.0
+  },
+  "sysfs_period_s": 0.1,
+  "max_temp_C": 48.5,
+  "thermal_abort": null,
+  "throttled_start": 327680,
+  "throttled_end": 327680,
+  "pin_status_start": "governor=performance min_kHz=2400000 max_kHz=2400000 cur_kHz=2400000 fan_state=4/4 fan_rpm=8998 temp_mC=49050",
+  "pin_status_end": "governor=performance min_kHz=1500000 max_kHz=1500000 cur_kHz=1500000 fan_state=4/4 fan_rpm=9060 temp_mC=44100",
+  "t0_real_ns": 1795578198569173745,
+  "sync_tags": [
+    "start",
+    "end"
+  ],
+  "cpu_mhz_pinned": 1500,
+  "fan_full": true,
+  "pin_status": "governor=performance min_kHz=1500000 max_kHz=1500000 cur_kHz=1500000 fan_state=4/4 fan_rpm=8998 temp_mC=50700",
+  "achieved_sample_hz": 4992.2,
+  "throttle_bits": 327680,
+  "arch_fingerprint": {},
+  "op_sequence": {},
+  "hostname": "pimacc",
+  "kernel": "6.18.60+rpt-rpi-2712",
+  "ts": "20261124T224318",
+  "outdir": "runs/matrix/v3add_yolo12s_640_t4_hoff_1500_r01",
+  "torch_version": "2.14.0+cu130",
+  "join_contract": "measurement config_id = op+attrs+shape+dtype; layer_table.config_id <-> perop_power.config_id; path/callsite + mode are structural columns; E_mJ = P_W * t_ms; P_delta = P_mean - baseline_W",
+  "methodology": "steady-state isolation microbench (deepcopy leaf, dtype-aware cache-hot inputs, VDD_CORE PMIC rail); per-op power is attributed, not instantaneous | monsoon: 5 V input power @5 kHz, events on lab PTP wall clock, aligned offline by sync pulses (host/align.py)"
+}

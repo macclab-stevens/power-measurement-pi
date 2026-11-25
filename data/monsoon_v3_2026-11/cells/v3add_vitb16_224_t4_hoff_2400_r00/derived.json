@@ -1,0 +1,20 @@
+{
+  "energy_per_frame_mJ": 6361.55517578125,
+  "dyn_energy_per_frame_mJ": 3878.2455634244598,
+  "latency_ms_per_frame": 503.4477593520007,
+  "energy_per_image_mJ": 6361.55517578125,
+  "n_frames": 29,
+  "batch": 1,
+  "baseline_mean_P_W": 4.932605743408203,
+  "by_mode": {
+    "forward": {
+      "n_frames": 29,
+      "energy_per_frame_mJ": 6361.55517578125,
+      "dyn_energy_per_frame_mJ": 3878.2455634244598,
+      "latency_ms_per_frame": 503.4477593520007
+    }
+  },
+  "variant": "torchvision:vit_b_16",
+  "holdout": null,
+  "map_reference": null
+}

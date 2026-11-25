@@ -1,0 +1,1 @@
+config_id,class,config_json,input_kind,input_shapes,input_dtypes,macs,bytes_moved,t_eff,seq_len,window_s,N_calls,t_per_call_ms,P_mean_W,P_delta_W,baseline_interp_W,P_delta_ABAB_W,E_per_call_mJ,temp_start_C,temp_end_C,freq_start_MHz,freq_end_MHz,samples_used,SKIPPED,skip_reason,error
