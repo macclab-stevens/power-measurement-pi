@@ -80,3 +80,21 @@ What it shows:
   as pre-registered. Five configurations cannot separate the two reliably.
 - **Errors come from latency.** Power is predicted within about 1–5 %. The largest misses (Swin-S, yolo12m) are latency
   errors of 17–22 %.
+
+## 5. Mode L, leave one model out over all 15 models with counters (`mode_l_r3.md`)
+
+The R3 run holds out every vision model with counter cells: v2 YOLO and all v3 models. It took 3 h 20 min on the NUC.
+
+| rung | whole-cell MdAPE | inference segment | forward R² |
+|---|---:|---:|---:|
+| L0 lookup | 4.74 % | 4.88 % | 0.59 |
+| L3-trees | **1.19 %** | 1.64 % | 0.92 |
+| L5-cmos-trees | 1.27 % | 1.79 % | 0.91 |
+| L5-cmos (ridge) | 2.09 % | 1.93 % | 0.87 |
+
+- **By family of the held-out model** (best tree rung, whole-cell):
+  - YOLO v8/11: about 1.1 %;
+  - attention models (including yolo12): about 1.2 %;
+  - classifiers and CNNs: about 4 %, against the lookup's 7.2 %.
+- **The classifiers are the hardest family for live accounting.** They have few configurations each and short frames.
+- **L5's physics features help the ridge models but not the trees**, as in R2.
