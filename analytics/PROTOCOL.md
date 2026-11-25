@@ -153,3 +153,27 @@ under-voltage bits were current in any cell (all non-zero words are the 0x50000 
     and `run.py --layer-hooks off`.
   Every lockbox number of an R2 model is post hoc and labelled so. A confirmatory test of R2 needs a new lockbox
   (`docs/review/next-collection.md`).
+- 2026-11-24, **R3 and lockbox 2: written before any lockbox-2 cell exists.**
+  - **Data.** Training adds v3 (63 cells, `docs/review/next-collection.md`): hooks on/off calibration pairs of 7 models, and
+    training additions with the hooks off (yolo12s, Swin-T, ViT-B/16, ConvNeXt-T, MaxViT-T; yolo12s and Swin-T also at
+    1500 MHz). All 2400 MHz unless stated, 4 threads, fan full, counters on, sysfs at 10 Hz.
+  - **Hooks.** Hooks-off configurations get their own key (`|hooks=off`). The `hooks_on` and `hooks_log_calls` features
+    enter M1/M2, and M4 gets a call term times `hooks_on`, only when the training rows hold both settings.
+  - **Attention.** The per-module MAC count misses attention matrix products, so whole-model MACs come from
+    `tools/flop_count.py` (`static_flops.csv`). `frac_attn` enters M1/M2, the model descriptor and an M4 cost term only
+    when some training model has attention (frac_attn > 0.02).
+  - **Mode L.** Folds over every vision model with counters, no longer YOLO only.
+  - **Lockbox 2.** Five configurations, hooks off, never collected, each similar to a training model: resnet34:224
+    (resnet18), mbv3l:224 (mobilenet_v3_large; mbv3), effb1:224 (efficientnet_b1; effb0), swins:224 (swin_s; swint),
+    yolo12m:640 (yolo12s).
+  - **Predictor of record.** The R3 AUTO candidate of each target, chosen by balanced inner error in the new-model regime
+    on all training rows. Intervals are the fold-weighted 5/95 % quantiles of its inner residuals. The applicability flag
+    uses the R3 S-LOMO threshold. Every other candidate is reported as secondary. Mode L: every rung, fitted on all
+    training counter cells.
+  - **Freezing and scoring.** `lockbox2-freeze` writes `reports/r3/lockbox2_predictions.csv` and `lockbox2_frozen.json`
+    (pickles, hashes, code pin). Both are committed and tagged `r3-frozen` before measurement. `lockbox2-score` runs once,
+    fits nothing, and labels a code change exploratory.
+  - **Headline numbers, stated now.**
+    - Mode A: energy MdAPE of AUTO over the 5 configurations, with MaxAPE and 90 % coverage beside it.
+    - Calculator: median serve-phase APE with the predicted duration.
+    - Mode L: whole-cell and inference-segment MdAPE per rung.
