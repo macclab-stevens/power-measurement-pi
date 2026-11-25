@@ -221,6 +221,9 @@ def write_eda_config(cat, der, qc, cfgs, report_dir) -> str:
     prim = deploy._primary(cat, qc)
     vers = "; ".join(f"dataset {eda.VERSION.get(r, r)} ({r} rig, {int(n)} cells)" for r, n in prim.groupby("rig").size().items())
     L = ["# Exploration report: Raspberry Pi 5 power datasets, configuration level\n",
+         "> R2 (2026-11-24): section 2.1 (CMOS form with the measured core voltage) is new, and the trace-level "
+         "sections use slip-corrected 100 ms windows (`timefix.py`), which moves some window figures in the third "
+         "decimal. The R1 version is `r1_frozen/eda.md`.\n",
          "Descriptive only: nothing on this page fits or evaluates a predictor. All numbers use QC `primary` cells "
          f"only ({len(prim)} of {len(cat)} catalogue cells; {vers}). Energies are mJ per image (per frame / batch), "
          "latencies ms, power W. Every table states n and the dataset version; a configuration is one "

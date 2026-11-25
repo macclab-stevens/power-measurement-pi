@@ -1,3 +1,5 @@
+> **R1, the pre-registered analysis (frozen).** The post-review revision R2 (2026-11-24, exploratory) is summarised in [`r2/README.md`](r2/README.md); the measurement checks are in [`measurement_audit.md`](measurement_audit.md). This file is unchanged apart from this note; an exact copy is in `r1_frozen/`.
+
 # Worst-10 autopsy: Mode A, S-LOMO, energy per image
 
 Source: `results.md` section 5. Split S-LOMO, target `energy_mJ`, candidate AUTO, master-seed run

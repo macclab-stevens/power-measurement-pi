@@ -1,3 +1,5 @@
+> **R1, the pre-registered analysis (frozen).** The post-review revision R2 (2026-11-24, exploratory) is summarised in [`r2/README.md`](r2/README.md); the measurement checks are in [`measurement_audit.md`](measurement_audit.md). This file is unchanged apart from this note; an exact copy is in `r1_frozen/`.
+
 # Model card: Mode A (a priori per-image predictor)
 
 Predicts energy per image (mJ), latency per image (ms) and mean power (W) of an image-inference configuration from the model file's static features and the run configuration, before anything is run. Mode: a priori; nothing measured during the run is an input.

@@ -1,3 +1,5 @@
+> **R1, the pre-registered analysis (frozen).** The post-review revision R2 (2026-11-24, exploratory) is summarised in [`r2/README.md`](r2/README.md); the measurement checks are in [`measurement_audit.md`](measurement_audit.md). This file is unchanged apart from this note; an exact copy is in `r1_frozen/`.
+
 # Model card: Mode L (live 100 ms power model)
 
 Predicts board power (W) for each 100 ms window from the process's perf counters, sysfs state and the PMIC read, and accumulates it to energy. Mode: live, causal (features available at the window's end only); a ladder of rungs from a lookup (L0) to counters plus PMIC (L4).
