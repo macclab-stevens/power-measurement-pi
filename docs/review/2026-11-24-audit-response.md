@@ -153,3 +153,21 @@ freedom. The current free power-law fit has as many parameters as points.
   noted in their READMEs and not fixed.
 - **Hardware changes** (rewiring, `perf_event_paranoid`, 20 Hz sysfs, ≥ 20 base models). These are next-collection
   recommendations (`docs/review/next-collection.md`). Each needs approval and lab time.
+
+## 9. Outcome of the R2 revision (2026-11-24)
+
+The full numbers are in `analytics/reports/r2/README.md`. Against the audit's predictions:
+
+| audit claim | audit figure | our R2 result |
+|---|---:|---:|
+| S-LOMO energy MdAPE of a physics-decomposed model | 10.4 % | M4Physics 12.6 %; AUTO 13.5 % (R1 17.5 %) |
+| S-LOMO MAPE / MaxAPE | 13.6 % / — | M4Physics 14.3 % / 51 %; AUTO 17.7 % / 61 % (R1 246 % / 4,397 %) |
+| lockbox energy MdAPE, all | 5.4 % | 3.4 % (AUTO; post hoc) |
+| lockbox energy MdAPE, yolo12n | 2.7 % | **22.9 %** (worse than R1's 6.6 %); every candidate under-predicts yolo12n latency by 10–35 % |
+| calculator without the duration leak | 3.6 % | 3.6 % with R1 predictions, 1.9 % median (8.5 % mean) with R2 |
+| non-YOLO lockbox, inference-segment error of the CMOS Mode L | 5.3 % | 6.7 % (L5-cmos), against L3-trees 7.1 % and L0 9.0 % |
+
+- The audit's diagnosis of Mode A selection was right, and fixing it removed the catastrophic extrapolations.
+- Its yolo12n figure does not reproduce with our physics model. yolo12n is the only attention model, and an additive
+  cost without an attention term under-shoots it.
+- R2's 90 % intervals are narrower but under-cover (S-LOMO 74 %, against R1's 91 %). This is an open item.
