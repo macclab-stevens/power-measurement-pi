@@ -4,6 +4,8 @@ What to change before the next Monsoon campaign, in priority order. Each item na
 (`docs/review/2026-11-24-audit-response.md`, `analytics/audit/`). Items marked **(approval)** need lab time, root on
 the Pi, or physical rewiring.
 
+**Status 2026-11-25 (R4).** v4 ran: 128 hooks-off cells at paranoid=1, dataset `~/pi-power-data/v4` (packaged on the EliteBook, branch name `dataset-2026-11-v4` reserved, not pushed). Results: `analytics/reports/r4/README.md`.
+
 **Status 2026-11-25.**
 - **Done:** items 1, 2, 3 (the align fix; soak ticks not needed, no soak cells), 6 (sysfs at 10 Hz) and part of 8
   (attention models). The v3 collection ran: 63 cells, all ok, dataset branch `dataset-2026-11-v3`. Lockbox 2 ran: 15

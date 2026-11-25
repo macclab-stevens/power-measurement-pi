@@ -340,7 +340,7 @@ def main(argv=None) -> int:
     p.add_argument("--n-jobs", type=int, default=4)
     sub.add_parser("summary")
     p = sub.add_parser("power-table")
-    p.add_argument("--live-rung", default="L5k-trees")
+    p.add_argument("--live-rung", default="L5-cmos-trees")
     a = ap.parse_args(argv)
     return {"table": cmd_table, "mode-a": cmd_mode_a, "hooks": cmd_hooks, "mode-l": cmd_mode_l,
             "summary": cmd_summary, "power-table": cmd_power_table}[a.cmd](a)
