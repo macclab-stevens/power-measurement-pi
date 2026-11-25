@@ -75,10 +75,25 @@ def features_from_layer_table(lt: pd.DataFrame, batch: int = 1) -> dict:
     return out
 
 
-def static_table(cat: pd.DataFrame) -> pd.DataFrame:
+def static_layer_tables(static_dir=None) -> dict:
+    """{(base_model, imgsz): layer table} from `static_dir`/<base_model>_<imgsz>.csv (default analytics/static_v3/):
+    layer tables built on the NUC by tools/static_features.py for configurations whose cells ran with the hooks off and
+    so wrote none. A missing folder gives {}."""
+    d = Path(static_dir) if static_dir else Path(__file__).parent / "static_v3"
+    out = {}
+    if d.is_dir():
+        for p in sorted(d.glob("*_*.csv")):
+            m, s = p.stem.rsplit("_", 1)
+            out[(m, int(s))] = pd.read_csv(p)
+    return out
+
+
+def static_table(cat: pd.DataFrame, extra: dict | None = None) -> pd.DataFrame:
     """Static features per (base_model, imgsz) from FP32 batch-1 Mode A cells that have a
     layer_table.csv. The first cell by cell_id supplies the row; every candidate must agree on
-    `macs` within 0.1 % (else ValueError). No QC input: selection is by configuration only."""
+    `macs` within 0.1 % (else ValueError). No QC input: selection is by configuration only.
+    `extra` ({(base_model, imgsz): layer table}, see `static_layer_tables`) fills configurations no cell covers;
+    a cell's own layer table always wins."""
     sel = data.training_cells(cat)
     sel = sel[sel["mode_a_eligible"].astype(bool) & (sel["precision"] == "fp32")
               & (sel["batch"] == 1)].sort_values("cell_id")
@@ -96,9 +111,34 @@ def static_table(cat: pd.DataFrame) -> pd.DataFrame:
         if abs(f["macs"] - ref["macs"]) > MACS_AGREE_TOL * max(abs(ref["macs"]), 1.0):
             raise ValueError(f"layer tables of {key} disagree on macs: {ref['cell_id']}="
                              f"{ref['macs']} vs {r.cell_id}={f['macs']}")
+    for key, lt in (extra or {}).items():          # configurations whose cells have no layer table (hooks off)
+        if key not in feats:
+            feats[key] = {"cell_id": f"static:{key[0]}_{key[1]}", **features_from_layer_table(lt, batch=1)}
     st = pd.DataFrame.from_dict(feats, orient="index")
     st.index = pd.MultiIndex.from_tuples(st.index, names=["base_model", "imgsz"])
-    return st.sort_index()
+    return add_flops(st.sort_index())
+
+
+FLOPS_CSV = Path(__file__).parent / "static_flops.csv"
+
+
+def add_flops(st: pd.DataFrame, path=None) -> pd.DataFrame:
+    """`st` (indexed by base_model, imgsz, with `macs`) plus macs_total (whole-model count, tools/flop_count.py),
+    macs_attn = max(0, macs_total - macs) (matrix products the layer table misses: attention) and
+    frac_attn = macs_attn / macs_total. With no static_flops.csv the three columns are absent (R1 / R2 tables);
+    a configuration missing from an existing file raises ValueError."""
+    p = Path(path) if path else FLOPS_CSV
+    if not p.is_file():
+        return st
+    fl = pd.read_csv(p).set_index(["base_model", "imgsz"])["macs_total"]
+    missing = [k for k in st.index if k not in fl.index]
+    if missing:
+        raise ValueError(f"no whole-model MAC count in {p.name} for {missing[:3]}; run tools/flop_count.py")
+    st = st.copy()
+    st["macs_total"] = [float(fl.loc[k]) for k in st.index]
+    st["macs_attn"] = np.maximum(0.0, st["macs_total"] - st["macs"])
+    st["frac_attn"] = st["macs_attn"] / st["macs_total"]
+    return st
 
 
 def model_descriptor(st: pd.DataFrame) -> pd.DataFrame:
@@ -119,7 +159,13 @@ def model_descriptor(st: pd.DataFrame) -> pd.DataFrame:
             "log_macs_per_px": float(np.log(r["macs"] / size ** 2)),
             "depth": r["depth"],
             **{f"frac_macs_{g}": r[f"frac_macs_{g}"] for g in GROUPS},
+            **({"frac_attn": float(r["frac_attn"])} if "frac_attn" in r.index else {}),
         }
     out = pd.DataFrame.from_dict(rows, orient="index")
     out.index.name = "base_model"
+    if "frac_attn" in out.columns and out["frac_attn"].max() <= ATTN_VARY:
+        out = out.drop(columns="frac_attn")       # no attention model: the R1 / R2 descriptor, unchanged
     return out.sort_index()
+
+
+ATTN_VARY = 0.02    # frac_attn above this in some model: attention is present and enters descriptors and features

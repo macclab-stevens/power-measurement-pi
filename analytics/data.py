@@ -9,9 +9,12 @@ import pyarrow.parquet as pq
 
 import settings
 
-SOURCES = ("v1", "v2", "lockbox")
+SOURCES = ("v1", "v2", "v3", "lockbox", "lockbox2")
+HOLDOUT_SOURCES = ("lockbox", "lockbox2")   # never training data: every fit and table excludes them
 VISION_MODELS = ["yolov8n", "yolov8s", "yolov8m", "yolo11n", "yolo11s", "yolo11m",
-                 "effb0", "mbv3", "resnet18"]  # Mode A groups; splits.VISION re-exports this
+                 "effb0", "mbv3", "resnet18",
+                 # v3 (2026-11-24): yolo12n (calibration, now training data), attention and modern architectures
+                 "yolo12n", "yolo12s", "swint", "vitb16", "convnextt", "maxvitt"]  # Mode A groups; splits.VISION re-exports this
 
 
 def cell_dirs(root=None) -> list[Path]:
@@ -104,7 +107,7 @@ def _row(cell: Path, src: str, ix: pd.Series, m: dict) -> dict:
     governor, fan = m.get("governor") or "pinned", m.get("fan_mode") or "full"
     has_counters = (cell / "counters.csv").is_file() and bool(pc.get("enabled"))
     task = m["task"]
-    lock = src == "lockbox"      # a lockbox cell is never training data, whatever model it measures
+    lock = src in HOLDOUT_SOURCES   # a lockbox cell is never training data, whatever model it measures
     return {
         "cell_id": cell.name, "source": src, "path": str(cell), "task": task,
         "model_key": base, "base_model": base, "variant": variant_of(m, base, quant),
@@ -125,6 +128,7 @@ def _row(cell: Path, src: str, ix: pd.Series, m: dict) -> dict:
                                 and math.isnan(soak) and conc is None and governor == "pinned"
                                 and fan == "full"),
         "mode_l_eligible": has_counters and not lock,
+        "layer_hooks": m.get("layer_hooks") or "on",   # every cell before v3 ran with the hooks on
     }
 
 
@@ -132,7 +136,7 @@ CATALOGUE_COLUMNS = [
     "cell_id", "source", "path", "task", "model_key", "base_model", "variant", "precision", "quant",
     "n_quantized_modules", "imgsz", "batch", "threads", "cpu_mhz", "governor", "fan_mode",
     "serve_fps", "soak_minutes", "concurrent_mode", "input_source", "family", "repeat", "rig",
-    "dataset_version", "holdout", "has_counters", "mode_a_eligible", "mode_l_eligible"]
+    "dataset_version", "holdout", "has_counters", "mode_a_eligible", "mode_l_eligible", "layer_hooks"]
 
 
 def training_cells(cat: pd.DataFrame) -> pd.DataFrame:
@@ -140,7 +144,7 @@ def training_cells(cat: pd.DataFrame) -> pd.DataFrame:
     Every training and reporting path calls this, so none relies only on the eligibility flags."""
     if "source" not in cat.columns:          # a hand-built table with no source column has no lockbox rows
         return cat.reset_index(drop=True)
-    return cat[cat["source"] != "lockbox"].reset_index(drop=True)
+    return cat[~cat["source"].isin(HOLDOUT_SOURCES)].reset_index(drop=True)
 
 
 def catalogue(root=None) -> pd.DataFrame:

@@ -199,6 +199,31 @@ class B3LogLinear:
 # ---- learned models ---------------------------------------------------------------------------
 ALL_FEATURES = FEATURES_R2 + [RIG_FEATURE]
 R1_ALL_FEATURES = FEATURES + [RIG_FEATURE]   # what a model pickled before R2 (no `features_` attribute) was fitted on
+HOOK_FEATURES = ["hooks_on", "hooks_log_calls"]   # R3: layer hooks on (every cell before v3) or off
+
+
+def hooks_vary(train: pd.DataFrame) -> bool:
+    """True when the training rows hold both hooks-on and hooks-off configurations (v3 calibration pairs). Only then do
+    the hook features enter a fit: on an all-hooks-on table they are a constant and a copy of log_n_calls, and R2
+    stays exactly as it was."""
+    return "hooks_on" in train.columns and train["hooks_on"].nunique() > 1
+
+
+ATTN_FEATURE = "frac_attn"   # R3: share of the whole-model MACs the layer table misses (attention matrix products)
+ATTN_VARY = 0.02
+
+
+def attn_present(train: pd.DataFrame) -> bool:
+    """True when some training row has attention compute the layer table misses (frac_attn > ATTN_VARY). Only then does
+    the attention term enter a fit; R2's models (all CNNs and YOLO v8 / 11) stay exactly as they were."""
+    return ATTN_FEATURE in train.columns and float(train[ATTN_FEATURE].max()) > ATTN_VARY
+
+
+def features_for(train: pd.DataFrame) -> list[str]:
+    """M1 / M2 feature list for a training frame: ALL_FEATURES, plus HOOK_FEATURES when `hooks_vary` and frac_attn when
+    `attn_present`."""
+    return (list(ALL_FEATURES) + (HOOK_FEATURES if hooks_vary(train) else [])
+            + ([ATTN_FEATURE] if attn_present(train) else []))
 
 
 class M1Ridge:
@@ -209,7 +234,7 @@ class M1Ridge:
         y = _log_target(train, target)
         alpha = float((params or {}).get("alpha", 1.0))
         self.model_ = Pipeline([("scale", StandardScaler()), ("ridge", Ridge(alpha=alpha))])
-        self.features_ = list(ALL_FEATURES)
+        self.features_ = features_for(train)
         self.model_.fit(feature_matrix(train, self.features_), y)
         self._fitted = True
         return self
@@ -230,7 +255,7 @@ class M2Trees:
         _check_target(target)
         y = _log_target(train, target)
         p = {"random_state": settings.seed() if self.seed is None else self.seed, **(params or {})}
-        self.features_ = list(ALL_FEATURES)
+        self.features_ = features_for(train)
         self.model_ = HistGradientBoostingRegressor(**p).fit(feature_matrix(train, self.features_), y)
         self._fitted = True
         return self
@@ -291,27 +316,39 @@ class M4Physics:
     FLOOR = 1e-9
 
     @staticmethod
-    def latency_design(df: pd.DataFrame, beta: float) -> np.ndarray:
+    def latency_design(df: pd.DataFrame, beta: float, hooks: bool = False, attn: bool = False) -> np.ndarray:
+        """`hooks` (R3, set when the training rows hold hooks-on and hooks-off configurations) adds the term
+        n_module_calls*u*hooks_on: the per-call cost of the layer hooks, beside the per-call dispatch cost every run pays."""
         u = 1.0 / df["cpu_ghz"].to_numpy(float)
         s = df["threads"].to_numpy(float) ** beta
         macs, act = df["macs"].to_numpy(float), df["act_bytes"].to_numpy(float)
         i8, f16 = df["is_int8"].to_numpy(float), df["is_fp16"].to_numpy(float)
         m = macs * u / s
-        return np.column_stack([m * (1 - i8 - f16), m * i8, m * f16, act * u / s,
-                                df["n_module_calls"].to_numpy(float) * u, np.ones(len(df))])
+        calls = df["n_module_calls"].to_numpy(float) * u
+        cols = [m * (1 - i8 - f16), m * i8, m * f16, act * u / s, calls, np.ones(len(df))]
+        if hooks:
+            cols.insert(5, calls * df["hooks_on"].to_numpy(float))
+        if attn:                                   # R3: attention matrix products, at their own cost per MAC
+            cols.insert(-1, df["macs_attn"].to_numpy(float) * u / s)
+        return np.column_stack(cols)
 
     @staticmethod
-    def power_design(df: pd.DataFrame) -> np.ndarray:
+    def power_design(df: pd.DataFrame, hooks: bool = False) -> np.ndarray:
+        """`hooks` (R3) adds hooks_on: while the single-threaded hooks run, the other cores wait, which lowers power."""
         v2f = df["v2f"].to_numpy(float)
-        return np.column_stack([v2f, v2f * df["threads"].to_numpy(float), v2f * df["frac_macs_conv"].to_numpy(float),
-                                v2f * (df["log_act_bytes"].to_numpy(float) - df["log_macs"].to_numpy(float)),
-                                feature_matrix(df, [RIG_FEATURE])[:, 0], df["is_int8"].to_numpy(float),
-                                df["is_fp16"].to_numpy(float)])
+        cols = [v2f, v2f * df["threads"].to_numpy(float), v2f * df["frac_macs_conv"].to_numpy(float),
+                v2f * (df["log_act_bytes"].to_numpy(float) - df["log_macs"].to_numpy(float)),
+                feature_matrix(df, [RIG_FEATURE])[:, 0], df["is_int8"].to_numpy(float), df["is_fp16"].to_numpy(float)]
+        if hooks:
+            cols.append(df["hooks_on"].to_numpy(float))
+        return np.column_stack(cols)
 
     def fit(self, train, target, params=None):
         _check_target(target)
         params = params or {}   # the parts check their own targets; energy_mJ itself is never read
         self.target_ = target
+        self.hooks_ = hooks_vary(train)
+        self.attn_ = attn_present(train)
         if target in ("latency_ms", "energy_mJ"):
             lat = params.get("latency", {}) if target == "energy_mJ" else params
             self._fit_latency(train, float(lat.get("beta", 1.0)))
@@ -326,7 +363,7 @@ class M4Physics:
         if not np.all(np.isfinite(y)) or np.any(y <= 0):
             raise ValueError("latency_ms must be finite and positive on the training set")
         w = _row_weights(train, y)
-        A = self.latency_design(train, beta) * w[:, None]
+        A = self.latency_design(train, beta, self.hooks_, self.attn_) * w[:, None]
         if not np.isfinite(A).all():
             raise ValueError("M4Physics latency design has non-finite values (macs, act_bytes, n_module_calls, "
                              "cpu_ghz, threads must be finite)")
@@ -341,14 +378,15 @@ class M4Physics:
         sw = _row_weights(train, y) ** 2
         sw = sw / sw.mean()
         self.pwr_model_ = Pipeline([("scale", StandardScaler()), ("ridge", Ridge(alpha=alpha))])
-        self.pwr_model_.fit(self.power_design(train), y, ridge__sample_weight=sw)
+        self.pwr_model_.fit(self.power_design(train, self.hooks_), y, ridge__sample_weight=sw)
         self.alpha_ = alpha
 
     def predict_latency(self, test):
-        return np.maximum(self.latency_design(test, self.beta_) @ self.lat_coef_, self.FLOOR)
+        return np.maximum(self.latency_design(test, self.beta_, getattr(self, "hooks_", False), getattr(self, "attn_", False))
+                          @ self.lat_coef_, self.FLOOR)
 
     def predict_power(self, test):
-        return np.maximum(self.pwr_model_.predict(self.power_design(test)), self.FLOOR)
+        return np.maximum(self.pwr_model_.predict(self.power_design(test, getattr(self, "hooks_", False))), self.FLOOR)
 
     def predict(self, test):
         _need_fit(self)

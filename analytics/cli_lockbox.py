@@ -37,7 +37,7 @@ def guard(what: str, force: bool = False) -> int | None:
 def _training_catalogue():
     import data
     cat = data.catalogue()
-    return cat[cat["source"] != "lockbox"].reset_index(drop=True)
+    return cat[~cat["source"].isin(data.HOLDOUT_SOURCES)].reset_index(drop=True)
 
 
 def cmd_final_mode_l(args) -> int:
@@ -108,7 +108,7 @@ def cmd_lockbox_predict(args) -> int:
         if not p.is_file():
             return _fail(f"{p} is missing; run `uv run python cli.py tables` / `qc` first")
     full = data.catalogue()                                    # derive_all caches only for the full catalogue
-    cat = full[full["source"] != "lockbox"].reset_index(drop=True)
+    cat = full[~full["source"].isin(data.HOLDOUT_SOURCES)].reset_index(drop=True)
     try:
         out = lockbox.run_predict(
             paths, args.config or lockbox.DEFAULT_CONFIGS, args.static_dir, _seed(args), t=pd.read_csv(paths.configs_csv),
@@ -202,7 +202,7 @@ def cmd_lockbox_posthoc(args) -> int:
             return _fail(f"{p} is missing; run `uv run python cli.py tables` / `qc` first")
     try:
         cat = data.catalogue()
-        cat_t = cat[cat["source"] != "lockbox"].reset_index(drop=True)
+        cat_t = cat[~cat["source"].isin(data.HOLDOUT_SOURCES)].reset_index(drop=True)
         der = derive.derive_all(cat, cache=True)
         out = ph.run_posthoc(paths, _seed(args), cat=cat, der=der, qc_train=pd.read_csv(paths.qc_csv),
                              qc_l=qc.run_qc(ls.require_lockbox(cat), der), t=pd.read_csv(paths.configs_csv),
@@ -218,6 +218,66 @@ def cmd_lockbox_posthoc(args) -> int:
     print(out["mode_l_summary"].to_string(index=False))
     print(f"report -> {out['md']}; run {out['run_id']}")
     return 0
+
+
+def cmd_lockbox2_freeze(args) -> int:
+    """R3: fit on the training data (v1 + v2 + v3) and freeze the lockbox-2 predictions and models (lockbox2.py)."""
+    import data
+    import derive
+    import pandas as pd
+    import lockbox
+    import lockbox2
+    import report_inputs as ri
+    import static
+    import windows
+    paths = ri.Paths.default()
+    try:
+        cat = data.catalogue()
+        cat_t = cat[~cat["source"].isin(data.HOLDOUT_SOURCES)].reset_index(drop=True)
+        recs = ri.read_records(paths.runs_log)
+        slomo = lockbox.slomo_runs(paths, recs, _seed(args))["energy_mJ"].df
+        out = lockbox2.freeze(paths, _seed(args), t=pd.read_csv(paths.configs_csv),
+                              desc_train=static.model_descriptor(static.static_table(cat_t, static.static_layer_tables())),
+                              w_train=windows.build_windows(cat_t), cat=cat, qc=pd.read_csv(paths.qc_csv),
+                              threshold=lockbox.threshold_from_slomo(slomo), static_dir=args.static_dir, n_jobs=args.n_jobs)
+    except (lockbox.LockboxError, ri.ReportInputError, ValueError) as exc:
+        return _fail(exc)
+    p = out["pred"]
+    print(p[p["role"] == "primary"][["model", "imgsz", "target", "chosen", "pred", "lo90", "hi90", "flagged"]].to_string(index=False))
+    print(f"frozen -> {out['path']}; commit reports/r3/ and tag before measuring lockbox 2")
+    return 0
+
+
+def cmd_lockbox2_score(args) -> int:
+    """R3: score lockbox 2 once with the frozen models (lockbox2.py)."""
+    import data
+    import derive
+    import pandas as pd
+    import lockbox
+    import lockbox2
+    import report_inputs as ri
+    paths = ri.Paths.default()
+    try:
+        cat = data.catalogue()
+        out = lockbox2.score(paths, _seed(args), cat=cat, der=derive.derive_all(cat, cache=True),
+                             qc_train=pd.read_csv(paths.qc_csv), allow_code_change=args.allow_code_change)
+    except (lockbox.LockboxError, ri.ReportInputError, ValueError) as exc:
+        return _fail(exc)
+    print(out["label"])
+    print(out["summary"].to_string(index=False))
+    print(f"report -> {out['md']}")
+    return 0
+
+
+def add_lockbox2_freeze_args(p) -> None:
+    add_seed(p)
+    p.add_argument("--static-dir", default=None, help="lockbox-2 static CSVs (default analytics/lockbox2_static)")
+    p.add_argument("--n-jobs", type=int, default=2, help="Mode L rungs fitted in parallel (default 2)")
+
+
+def add_lockbox2_score_args(p) -> None:
+    add_seed(p)
+    p.add_argument("--allow-code-change", action="store_true", help="score although the code changed (labelled exploratory)")
 
 
 def add_seed(p) -> None:
@@ -276,6 +336,10 @@ COMMANDS = {
     "lockbox-calculator-gap": ("post hoc (R2): serve-phase calculator on the lockbox with the frozen predictions and the "
                                "closed-loop gap scenario (no measured duration) -> reports/r2/lockbox_calculator_gap.{csv,md}; "
                                "fits nothing", cmd_lockbox_calculator_gap, None),
+    "lockbox2-freeze": ("R3: fit on v1+v2+v3 and freeze the lockbox-2 predictions and models -> reports/r3/lockbox2_predictions.csv "
+                        "and lockbox2_frozen.json (refuses once lockbox-2 cells exist)", cmd_lockbox2_freeze, add_lockbox2_freeze_args),
+    "lockbox2-score": ("R3: score lockbox 2 once with the frozen models -> reports/r3/lockbox2.md (refuses a second time)",
+                       cmd_lockbox2_score, add_lockbox2_score_args),
     "lockbox-posthoc": ("post hoc (R2): R2 Mode A / calculator / Mode L fitted on training data only, scored on the seen lockbox "
                         "-> reports/r2/lockbox_posthoc.md and CSVs (never a confirmatory test)", cmd_lockbox_posthoc,
                         add_posthoc_args),

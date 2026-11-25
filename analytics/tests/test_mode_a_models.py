@@ -471,3 +471,30 @@ def Pipeline_fit(df, cols, y):
     from sklearn.pipeline import Pipeline
     from sklearn.preprocessing import StandardScaler
     return Pipeline([("scale", StandardScaler()), ("ridge", Ridge(alpha=1.0))]).fit(mm.feature_matrix(df, cols), y)
+
+
+def test_hook_features_enter_only_when_hooks_vary():
+    import pandas as pd
+    t = pd.DataFrame({"hooks_on": [1, 1, 1]})
+    assert not mm.hooks_vary(t) and mm.features_for(t) == mm.ALL_FEATURES
+    t2 = pd.DataFrame({"hooks_on": [1, 0, 1]})
+    assert mm.hooks_vary(t2) and mm.features_for(t2) == mm.ALL_FEATURES + mm.HOOK_FEATURES
+
+
+def test_m4_hook_term_only_with_hooks():
+    import pandas as pd
+    df = pd.DataFrame({"cpu_ghz": [2.4, 2.4], "threads": [4, 4], "macs": [1e9, 2e9], "act_bytes": [1e6, 2e6],
+                       "is_int8": [0, 0], "is_fp16": [0, 0], "n_module_calls": [100, 200], "hooks_on": [1, 0]})
+    a, b = mm.M4Physics.latency_design(df, 1.0), mm.M4Physics.latency_design(df, 1.0, hooks=True)
+    assert a.shape == (2, 6) and b.shape == (2, 7)
+    assert b[0, 5] == b[0, 4] and b[1, 5] == 0.0          # the hook term is the call term on hooks-on rows only
+
+
+def test_attention_term_only_with_attention_models():
+    import pandas as pd
+    df = pd.DataFrame({"cpu_ghz": [2.4], "threads": [4], "macs": [1e9], "act_bytes": [1e6], "is_int8": [0], "is_fp16": [0],
+                       "n_module_calls": [100], "macs_attn": [5e8]})
+    assert mm.M4Physics.latency_design(df, 1.0, attn=True).shape == (1, 7)
+    assert not mm.attn_present(pd.DataFrame({"frac_attn": [0.0, 0.01]}))
+    t = pd.DataFrame({"frac_attn": [0.0, 0.3], "hooks_on": [1, 1]})
+    assert mm.attn_present(t) and mm.features_for(t)[-1] == "frac_attn"

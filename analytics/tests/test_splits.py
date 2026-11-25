@@ -118,7 +118,7 @@ def test_inner_folds_stay_inside_training_table():
     f = splits.make_splits(t, 1)["S-LOMO"][0]
     train_t = t[t["config_key"].isin(f.train_keys)]
     inner = splits.inner_folds(train_t)
-    assert len(inner) == 8
+    assert len(inner) == train_t["base_model"].nunique()
     ok = set(train_t["config_key"])
     for tr, va in inner:
         assert set(tr) | set(va) <= ok

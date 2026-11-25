@@ -125,7 +125,7 @@ def pooled_window_metrics(g: pd.DataFrame) -> dict:
 
 # ------------------------------------------------------------------ outer / inner folds
 
-def _prep(w: pd.DataFrame, cat: pd.DataFrame, qc: pd.DataFrame | None, yolo=splits.YOLO) -> pd.DataFrame:
+def _prep(w: pd.DataFrame, cat: pd.DataFrame, qc: pd.DataFrame | None, yolo=splits.VISION) -> pd.DataFrame:
     """Windows of QC-primary catalogue cells of the `yolo` base models, with `base_model`, sorted by
     (cell_id, w_idx). attrs["excluded"] maps every other base model to its window and cell counts."""
     cat = data.training_cells(cat) if "source" in cat.columns else cat
@@ -176,7 +176,7 @@ def fit_final(w: pd.DataFrame, cat: pd.DataFrame, qc: pd.DataFrame | None, rung_
     if rung_name not in rungs:
         raise ValueError(f"unknown rung {rung_name!r}; expected one of {list(rungs)}")
     if "source" in cat.columns:
-        cat = cat[cat["source"] != "lockbox"]
+        cat = cat[~cat["source"].isin(data.HOLDOUT_SOURCES)]
     train = _prep(w, cat, qc)
     if train.empty:
         raise ValueError("no QC-primary YOLO counter windows to fit on")
@@ -214,7 +214,8 @@ def run_lomo(w: pd.DataFrame, cat: pd.DataFrame, seed: int, *, qc: pd.DataFrame 
     """Leave one YOLO base model out over the QC-primary counter cells of `w`; one row per
     (fold, test cell, rung). `seed` is the tree random_state. `rungs` defaults to
     `mode_l_models.default_rungs()`; `folds` restricts the held-out base models; results are identical
-    for any `n_jobs`. Only `splits.YOLO` base models are outer folds; windows of any other base model
+    for any `n_jobs`. Only `splits.VISION` base models are outer folds (R3; before v3 only the YOLO models had counters, so
+    this is the same set as R1/R2); windows of any other base model
     are excluded and counted in the result's `attrs["excluded"]`."""
     rungs = rungs or mm.default_rungs()
     w = _prep(w, cat, qc)

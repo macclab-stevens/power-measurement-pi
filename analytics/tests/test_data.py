@@ -15,7 +15,7 @@ CATALOGUE_COLS = [
     "cell_id", "source", "path", "task", "model_key", "base_model", "variant", "precision", "quant",
     "n_quantized_modules", "imgsz", "batch", "threads", "cpu_mhz", "governor", "fan_mode",
     "serve_fps", "soak_minutes", "concurrent_mode", "input_source", "family", "repeat", "rig",
-    "dataset_version", "holdout", "has_counters", "mode_a_eligible", "mode_l_eligible",
+    "dataset_version", "holdout", "has_counters", "mode_a_eligible", "mode_l_eligible", "layer_hooks",
 ]
 
 
@@ -31,7 +31,9 @@ def test_settings(tmp_path, monkeypatch):
 
 def test_vision_models():
     assert data.VISION_MODELS == ["yolov8n", "yolov8s", "yolov8m", "yolo11n", "yolo11s", "yolo11m",
-                                  "effb0", "mbv3", "resnet18"]
+                                  "effb0", "mbv3", "resnet18",
+                                  "yolo12n", "yolo12s", "swint", "vitb16", "convnextt", "maxvitt"]
+    assert data.HOLDOUT_SOURCES == ("lockbox", "lockbox2")
 
 
 def test_cell_dirs_skips_missing_sources(tmp_path):

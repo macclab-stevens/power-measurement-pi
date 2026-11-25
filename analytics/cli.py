@@ -97,7 +97,7 @@ def cmd_tables(args) -> int:
         return 1
     cat = data.catalogue()
     der = derive.derive_all(cat, cache=True)
-    t = tables.mode_a_table(cat, der, pd.read_csv(qc_path), static.static_table(cat))
+    t = tables.mode_a_table(cat, der, pd.read_csv(qc_path), static.static_table(cat, static.static_layer_tables()))
     REPORTS.mkdir(exist_ok=True)
     out = REPORTS / "mode_a_configs.csv"
     t.to_csv(out, index=False)
@@ -146,7 +146,7 @@ def _mode_a_inputs():
     if not src.is_file():
         print(f"error: {src} is missing; run `uv run python cli.py tables` first", file=sys.stderr)
         return None
-    return pd.read_csv(src), static.model_descriptor(static.static_table(data.catalogue()))
+    return pd.read_csv(src), static.model_descriptor(static.static_table(data.catalogue(), static.static_layer_tables()))
 
 
 def cmd_mode_a(args) -> int:

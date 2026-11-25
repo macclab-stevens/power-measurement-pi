@@ -125,7 +125,7 @@ def test_real_data(real_data):
     by_src = t["cell_ids"].map(lambda ids: "+".join(sorted({src[i] for i in ids.split(";")})))
     assert by_src.value_counts().to_dict() == {"v2": 43, "v1": 15}
     assert not t["macs"].isna().any()
-    assert set(t["base_model"]) <= set(data.VISION_MODELS) and len(data.VISION_MODELS) == 9
+    assert set(t["base_model"]) <= set(data.VISION_MODELS) and len(data.VISION_MODELS) == 15
     assert t["config_key"].is_unique
     nf = tables.noise_floor(t)
     assert 0.0001 < nf < 0.03
@@ -144,3 +144,11 @@ def test_add_derived_columns_adds_r2_columns():
     assert d["vcore_V"].iloc[0] == pytest.approx(0.8745)
     assert d["v2f"].iloc[0] == pytest.approx(0.8745 ** 2 * 2.0)
     assert d["log_n_calls"].iloc[0] == pytest.approx(np.log(100.0))
+
+
+def test_config_key_marks_hooks_off_only():
+    base = {"base_model": "m", "variant": "m", "precision": "fp32", "imgsz": 224, "batch": 1, "threads": 4,
+            "cpu_mhz": 2400, "rig": "nov2026"}
+    assert tables.config_key(base) == "m|m|fp32|224|1|4|2400|nov2026"
+    assert tables.config_key({**base, "layer_hooks": "on"}) == "m|m|fp32|224|1|4|2400|nov2026"
+    assert tables.config_key({**base, "layer_hooks": "off"}).endswith("|hooks=off")

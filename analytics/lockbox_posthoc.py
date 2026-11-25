@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
 
+import data
 import deploy
 import lockbox as lb
 import lockbox_score as ls
@@ -51,7 +52,7 @@ def check_training_only(t: pd.DataFrame, feats: pd.DataFrame | None = None, w: p
     column marking one, no `cell_ids` entry naming a lockbox cell or one of `lockbox_cells`, no configuration of `feats` (the
     lockbox feature rows), no window of a lockbox cell."""
     bad = set()
-    if "source" in t.columns and (t["source"] == "lockbox").any():
+    if "source" in t.columns and t["source"].isin(data.HOLDOUT_SOURCES).any():
         bad.add("a row with source lockbox")
     cells = {str(c) for c in lockbox_cells}
     if "cell_ids" in t.columns:
@@ -208,8 +209,8 @@ def fit_mode_l(w: pd.DataFrame, cat: pd.DataFrame, qc: pd.DataFrame, seed: int, 
     """{rung: (model, fit info)} of `mode_l.fit_final` for every rung of `rungs` (default `mode_l_models.default_rungs()`),
     pickled as `mode_l_<rung>_r2.pkl`. Lockbox rows in `cat` are dropped and a lockbox window in `w` raises LockboxError."""
     rungs = rungs or mlm.default_rungs()
-    lock = set(cat.loc[cat["source"] == "lockbox", "cell_id"]) if "source" in cat.columns else set()
-    cat = cat[cat["source"] != "lockbox"] if "source" in cat.columns else cat
+    lock = set(cat.loc[cat["source"].isin(data.HOLDOUT_SOURCES), "cell_id"]) if "source" in cat.columns else set()
+    cat = cat[~cat["source"].isin(data.HOLDOUT_SOURCES)] if "source" in cat.columns else cat
     check_training_only(pd.DataFrame({"config_key": []}), None, w, lock)
     res = Parallel(n_jobs=n_jobs)(delayed(mode_l.fit_final)(w, cat, qc, n, seed, rungs, SUFFIX) for n in rungs)
     return dict(zip(rungs, res))
@@ -362,7 +363,7 @@ def run_posthoc(paths: ri.Paths, seed: int, *, cat: pd.DataFrame, der: pd.DataFr
     the training descriptors, `w_train` the training windows (`windows.build_windows`), `w_lockbox` the lockbox windows
     (`lockbox_windows_r2`; computed from the catalogue when None). Nothing under derived/lockbox/ or reports/lockbox* is written."""
     cat_l = ls.require_lockbox(cat)
-    cat_t = cat[cat["source"] != "lockbox"]
+    cat_t = cat[~cat["source"].isin(data.HOLDOUT_SOURCES)]
     recs = ri.read_records(paths.runs_log) if Path(paths.runs_log).is_file() else []
     check_training_only(t, None, w_train, cat_l["cell_id"])
     pairs = sorted({(r.base_model, int(r.imgsz)) for r in cat_l.itertuples()})

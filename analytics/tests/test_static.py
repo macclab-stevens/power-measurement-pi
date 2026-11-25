@@ -151,7 +151,7 @@ def test_real_static_table_covers_mode_a(real_data):
     assert not missing
     assert 2.5e9 < st.loc[("yolo11n", 640), "macs"] < 4.5e9
     md = static.model_descriptor(st)
-    assert set(data.VISION_MODELS) <= set(md.index)
+    assert set(data.VISION_MODELS[:9]) <= set(md.index)      # the v1/v2 models; v3 ones appear once v3 is present
 
 
 def test_n_module_calls_counts_containers_and_leaves_with_multiplicity():
@@ -175,3 +175,12 @@ def test_n_module_calls_reads_the_lockbox_static_csv_through_the_same_path():
     p = pathlib.Path(static.__file__).parent / "lockbox_static" / "mbv3_224.csv"
     f = static.features_from_layer_table(pd.read_csv(p))
     assert f["n_module_calls"] == 208      # 208 hooked modules, each called once per image
+
+
+def test_static_layer_tables_reads_model_imgsz_csvs(tmp_path):
+    import pandas as pd
+    pd.DataFrame({"path": ["a"], "leaf": [True], "params": [1], "macs": [2], "bytes_moved": [8], "class": ["Conv2d"],
+                  "count": [1]}).to_csv(tmp_path / "swint_224.csv", index=False)
+    out = static.static_layer_tables(tmp_path)
+    assert list(out) == [("swint", 224)]
+    assert static.static_layer_tables(tmp_path / "missing") == {}

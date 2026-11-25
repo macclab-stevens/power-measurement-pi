@@ -555,12 +555,14 @@ def test_l0_and_l1_tolerate_pmic_windows_without_counter_columns():
     assert np.isfinite(mm.L1CellPmic().fit(pw, {}, sw).predict(pw)).all()
 
 
-def test_run_lomo_only_uses_yolo_base_models_and_reports_the_rest():
-    w, cat = make_windows(models=("yolov8n", "yolov8s", "yolov8m", "effb0"))
+def test_run_lomo_uses_every_vision_base_model_and_reports_the_rest():
+    """R3: every vision model with counters is an outer fold (before v3 only YOLO models had counters); a model
+    outside data.VISION_MODELS (here an LM key) is excluded and reported."""
+    w, cat = make_windows(models=("yolov8n", "yolov8s", "yolov8m", "effb0", "lm64"))
     res = mode_l.run_lomo(w, cat, seed=1, rungs={"L0": mm.default_rungs()["L0"]})
-    assert set(res["fold"]) == {"yolov8n", "yolov8s", "yolov8m"}
-    assert not any(c.startswith("effb0") for c in res["cell_id"])
-    assert res.attrs["excluded"] == {"effb0": {"windows": 2 * N_WIN, "cells": 2}}
+    assert set(res["fold"]) == {"yolov8n", "yolov8s", "yolov8m", "effb0"}
+    assert not any(c.startswith("lm64") for c in res["cell_id"])
+    assert res.attrs["excluded"] == {"lm64": {"windows": 2 * N_WIN, "cells": 2}}
 
 
 def test_cell_apes_zero_truth_is_nan_not_inf():

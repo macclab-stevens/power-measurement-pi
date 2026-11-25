@@ -246,7 +246,7 @@ def run_posthoc_gap(paths: ri.Paths, *, cat: pd.DataFrame, der: pd.DataFrame, qc
     predictions CSV and the training cells' idle table and serve cells; fits nothing and writes none of the frozen
     lockbox outputs (`lockbox.md`, `lockbox_predictions.csv`, derived/lockbox/)."""
     cat_l = require_lockbox(cat)
-    cat_t = cat[cat["source"] != "lockbox"]
+    cat_t = cat[~cat["source"].isin(data.HOLDOUT_SOURCES)]
     pred_path = Path(paths.out_dir) / lb.PREDICTIONS_CSV
     if not pred_path.is_file():
         raise lb.LockboxError(f"{pred_path} is missing")
@@ -489,7 +489,7 @@ def run_score(paths: ri.Paths, seed: int, *, cat: pd.DataFrame, der: pd.DataFram
     cell's layer table gives other static features than the CSV in `static_dir` the predictions were made with
     (`check_static`). The idle table is recomputed and compared with the recorded hash (reported, not a refusal)."""
     cat_l = require_lockbox(cat)
-    cat_t = cat[cat["source"] != "lockbox"]
+    cat_t = cat[~cat["source"].isin(data.HOLDOUT_SOURCES)]
     check_design(cat_l)
     recs = ri.read_records(paths.runs_log)
     pred_path = Path(paths.out_dir) / lb.PREDICTIONS_CSV

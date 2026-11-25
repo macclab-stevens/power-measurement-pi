@@ -13,7 +13,11 @@ MODE = "forward"
 
 
 def config_key(row) -> str:
-    return "|".join(str(row[c]) for c in CONFIG_COLS)
+    """CONFIG_COLS joined by "|"; a hooks-off cell (v3, `layer_hooks` "off") gets "|hooks=off" appended, so every
+    key from before v3 (all hooks on) is unchanged."""
+    k = "|".join(str(row[c]) for c in CONFIG_COLS)
+    hooks = row["layer_hooks"] if "layer_hooks" in row else "on"
+    return k + "|hooks=off" if str(hooks) == "off" else k
 
 
 def _cv(x: pd.Series) -> float:
@@ -49,6 +53,10 @@ def add_derived_columns(t: pd.DataFrame) -> pd.DataFrame:
         raise ValueError("n_module_calls must be finite and positive (log_n_calls); got "
                          f"{calls[~(np.isfinite(calls) & (calls > 0))].unique()[:3].tolist()}")
     t["log_n_calls"] = np.log(calls)
+    # R3: the measured cells paid the layer-hook cost only when the hooks were on (every cell before v3)
+    hooks = t["layer_hooks"] if "layer_hooks" in t.columns else pd.Series("on", index=t.index)
+    t["hooks_on"] = (hooks.astype(str) != "off").astype(int)
+    t["hooks_log_calls"] = t["hooks_on"] * t["log_n_calls"]
     t["is_int8"] = (t["precision"] == "int8").astype(int)
     t["is_fp16"] = (t["precision"] == "fp16").astype(int)
     return t
@@ -74,6 +82,7 @@ def mode_a_table(cat: pd.DataFrame, der: pd.DataFrame, qc: pd.DataFrame, st: pd.
             raise ValueError(f"no static features for configuration {key}: no FP32 batch-1 layer table "
                              f"for (base_model, imgsz) = {sk}")
         r = {"config_key": key, **{k: first[k] for k in CONFIG_COLS},
+             "layer_hooks": first["layer_hooks"] if "layer_hooks" in first else "on",
              "quant": first["quant"], "n_quantized_modules": first["n_quantized_modules"],
              "n_cells": len(g), "cell_ids": ";".join(g["cell_id"])}
         for out, col in MEASURES.items():
