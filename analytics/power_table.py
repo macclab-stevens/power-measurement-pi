@@ -36,7 +36,7 @@ COLS = ["source", "model", "precision", "imgsz", "cpu_mhz", "threads", "batch", 
 
 
 def _latest(recs, paths, **kw):
-    hits = [r for r in recs if all(r.get(k) == v for k, v in kw.items()) and (paths.mode_a_dir / f"{r['run_id']}.parquet").is_file()]
+    hits = [r for r in recs if runlog.label_of(r) == "monsoon" and all(r.get(k) == v for k, v in kw.items()) and (paths.mode_a_dir / f"{r['run_id']}.parquet").is_file()]
     return hits[-1] if hits else None
 
 

@@ -150,6 +150,7 @@ def _mode_a_inputs():
 
 
 def cmd_mode_a(args) -> int:
+    import hashlib
     import tempfile
     import time
     import uuid
@@ -157,10 +158,18 @@ def cmd_mode_a(args) -> int:
     import mode_a
     import runlog
     import splits
+    import tables
     inputs = _mode_a_inputs()
     if inputs is None:
         return 1
     t, desc = inputs
+    label = args.label
+    if label == "board":     # before anything is split, hashed or run
+        try:
+            t = tables.board_view(t)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
     seed = args.seed if args.seed is not None else settings.seed()
     sp = splits.make_splits(t, seed)
     names = [args.split] if args.split else list(sp)
@@ -169,7 +178,9 @@ def cmd_mode_a(args) -> int:
         print(f"error: unknown split {unknown}; expected one of {list(sp)}", file=sys.stderr)
         return 1
     targets = [args.target] if args.target else list(mode_a.CANDIDATES_BY_TARGET)
-    table_sha = runlog.file_hash(REPORTS / "mode_a_configs.csv")
+    # a board run's table is not the file on disk: hash the table it ran on, so its sha is never a monsoon table's
+    table_sha = (runlog.file_hash(REPORTS / "mode_a_configs.csv") if label == "monsoon"
+                 else hashlib.sha256(t.to_csv(index=False).encode()).hexdigest())
     out = settings.derived_dir() / "mode_a"
     out.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:   # hash of the folds actually used (RANDOM depends on seed)
@@ -185,7 +196,7 @@ def cmd_mode_a(args) -> int:
                    for c, g in res.groupby("candidate", sort=False)}
             run_id = uuid.uuid4().hex
             res.to_parquet(out / f"{run_id}.parquet", index=False)
-            runlog.append({"run_id": run_id, "command": "mode-a", "split": name, "target": target, "seed": seed,
+            runlog.append({"run_id": run_id, "command": "mode-a", "label": label, "split": name, "target": target, "seed": seed,
                            "split_sha256": used[f"{name}.csv"],
                            "split_file_sha256": runlog.file_hash(committed) if committed.is_file() else None,
                            "table_sha256": table_sha, "n_jobs": args.n_jobs, "metrics": per,
@@ -367,6 +378,9 @@ def add_seed_arg(p) -> None:
 
 
 def add_mode_a_args(p) -> None:
+    p.add_argument("--label", choices=["monsoon", "board"], default="monsoon",
+                   help="target the Monsoon's measured energy and power (default) or the board's, i.e. minus the "
+                        "supply harness's I^2 R heat; a board run is recorded with label board and its own table sha")
     p.add_argument("--split", help="one of S-LOMO S-LSO S-LVO S-LCO RANDOM (default: all)")
     p.add_argument("--target", choices=["energy_mJ", "latency_ms", "mean_P_W"], help="default: all three")
     p.add_argument("--seed", type=int, help="default: the config.toml seed")
@@ -391,7 +405,8 @@ COMMANDS = {
                "qc_cells.csv from `qc`)", cmd_tables, None),
     "splits": ("write analytics/splits/<split>.csv from reports/mode_a_configs.csv; print sha256 per file",
                cmd_splits, None),
-    "mode-a": ("nested Mode A evaluation per split and target -> derived/mode_a/<run_id>.parquet and runs.jsonl",
+    "mode-a": ("nested Mode A evaluation per split and target (--label board: board-level energy and power) -> "
+               "derived/mode_a/<run_id>.parquet and runs.jsonl",
                cmd_mode_a, add_mode_a_args),
     "deploy-validate": ("validate the deployment calculator on serve, ondemand, fan and soak cells using the "
                         "latest S-LOMO Mode A runs (the --seed one if present) -> reports/deploy_validation.csv",

@@ -21,6 +21,20 @@ same way among the M1 and M2 grid points on `latency_ms` and `mean_P_W`; M4's pa
 error among `AUTO_AMONG`. The pooled MdAPE (`_mdape`) is kept for the applicability threshold only. Inner
 predictions are cached per outer fold, keyed by candidate, grid point (sorted JSON) and target, so M3 and
 M4 reuse the inner predictions of their parts' targets.
+
+R4 extras (the existing candidates, AUTO, lo90 and hi90 are unchanged; these are added alongside so they can be compared
+on the same folds, nothing is chosen here):
+  * `lo90_cf` / `hi90_cf`, in every block: a conformal interval at the base-model level. The scores are |r| of the same
+    inner log residuals and fold weights as the quantile interval; with K contributing inner folds (leave-one-base-model-out:
+    one per held-out base model) q is the weighted "higher" quantile at level min(1, (1 - 0.1)(1 + 1/K)) (`conformal_halfwidth`)
+    and the interval is yhat * exp(-/+ q); NaN with fewer than two residuals.
+  * `ENS` and `STACK`, combinations of the selected M1Ridge and M4Physics of the same outer fold (no new fits): ENS is their
+    geometric mean; STACK is exp(w log p_M1 + (1 - w) log p_M4) with w in `STACK_W` chosen by the balanced inner error on the
+    two candidates' inner predictions (ties: first). Their inner predictions, scores and intervals come from the combined
+    inner predictions. They are not fittable classes: `fit_final` raises ValueError for them and `fit_candidates` skips them.
+  * `M5Pooled` (M4Physics plus architecture-family offsets, `mode_a_models`), a normal candidate on the same terms as M4Physics.
+  * `AUTO_R4`: the lowest balanced inner error among `AUTO_AMONG` + `R4_EXTRA` (ties: first); `AUTO` itself still
+    chooses among `AUTO_AMONG` only.
 """
 import hashlib
 import itertools
@@ -37,18 +51,24 @@ import settings
 import splits
 
 AUTO = "AUTO"
+COMBO_PARTS = ("M1Ridge", "M4Physics")
 APPLICABLE_MDAPE = 0.15
 BASELINES = ["B0Median", "B1MacsProportional", "B2NearestModel", "B3LogLinear"]
 LEARNED = ["M1Ridge", "M2Trees"]
 PARTS = {"latency": "latency_ms", "power": "mean_P_W"}
-FACTORED = ("M3Factored", "M4Physics")   # energy = latency part x power part
-CANDIDATES_BY_TARGET = {"energy_mJ": BASELINES + LEARNED + ["M3Factored", "M4Physics"],
-                        "latency_ms": BASELINES + LEARNED + ["M4Physics"],
-                        "mean_P_W": BASELINES + LEARNED + ["M4Physics"]}
+FACTORED = ("M3Factored", "M4Physics", "M5Pooled")   # energy = latency part x power part
+AUTO_R4 = "AUTO_R4"
+COMBOS = ("ENS", "STACK")   # combinations of the selected M1Ridge and M4Physics (no class of their own)
+R4_EXTRA = ["ENS", "STACK", "M5Pooled"]
+STACK_W = (0.0, 0.25, 0.5, 0.75, 1.0)   # weight of M1Ridge in STACK's log-space blend (M4Physics gets 1 - w)
+CANDIDATES_BY_TARGET = {"energy_mJ": BASELINES + LEARNED + ["M3Factored", "M4Physics"] + R4_EXTRA,
+                        "latency_ms": BASELINES + LEARNED + ["M4Physics"] + R4_EXTRA,
+                        "mean_P_W": BASELINES + LEARNED + ["M4Physics"] + R4_EXTRA}
 AUTO_AMONG = {"energy_mJ": LEARNED + ["M3Factored", "M4Physics"], "latency_ms": LEARNED + ["M4Physics"],
               "mean_P_W": LEARNED + ["M4Physics"]}
 OUT_COLS = ["split", "fold", "similarity_class", "config_key", "base_model", "candidate", "target", "seed",
-            "y_true", "y_pred", "lo90", "hi90", "novelty", "flagged", "threshold", "params", "n_resid"]
+            "y_true", "y_pred", "lo90", "hi90", "lo90_cf", "hi90_cf", "novelty", "flagged", "threshold", "params",
+            "n_resid"]
 
 
 def _json(p) -> str:
@@ -57,7 +77,9 @@ def _json(p) -> str:
 
 def _make(name: str, desc: pd.DataFrame, seed: int | None = None):
     """A fresh candidate; `seed` reaches every HistGradientBoostingRegressor (M2, M3's M2 parts)."""
-    cls = mm.CANDIDATES[name]   # M4Physics is deterministic and takes no seed
+    if name in COMBOS:
+        raise ValueError(f"{name} combines the selected M1Ridge and M4Physics and has no model class of its own")
+    cls = mm.CANDIDATES[name]   # M4Physics and M5Pooled are deterministic and take no seed
     if name == "B2NearestModel":
         return cls(desc)
     return cls(seed) if name in ("M2Trees", "M3Factored") else cls()
@@ -125,11 +147,27 @@ class _Search:
     def preds_of(self, name: str, params: dict, target: str) -> list:
         """Inner predictions per fold of a chosen candidate with its `select` params (a factored candidate's
         energy predictions are the product of its parts')."""
+        if name == "ENS":
+            return self._ens(*(self.preds_of(n, params[n], target) for n in COMBO_PARTS))
+        if name == "STACK":
+            return self._stack(params["w"], *(self.preds_of(n, params[n], target) for n in COMBO_PARTS))
         if name in FACTORED and target == "energy_mJ":
             parts = [self.inner_pred(params[k]["name"], params[k]["params"], tgt) if name == "M3Factored"
                      else self.inner_pred(name, params[k], tgt) for k, tgt in PARTS.items()]
             return [lat * pw for lat, pw in zip(*parts)]
         return self.inner_pred(name, params, target)
+
+    @staticmethod
+    def _ens(p1: list, p4: list) -> list:
+        """Per inner fold, the geometric mean of two prediction lists."""
+        return [np.sqrt(np.asarray(a, float) * np.asarray(b, float)) for a, b in zip(p1, p4)]
+
+    @staticmethod
+    def _stack(w: float, p1: list, p4: list) -> list:
+        """Per inner fold, exp(w log p1 + (1 - w) log p4); +/- inf or NaN where a prediction is not positive."""
+        with np.errstate(all="ignore"):
+            return [np.exp(w * np.log(np.asarray(a, float)) + (1 - w) * np.log(np.asarray(b, float)))
+                    for a, b in zip(p1, p4)]
 
     def _best(self, names, target: str):
         """(name, params, inner preds, balanced error) of the best grid point among `names`."""
@@ -147,6 +185,19 @@ class _Search:
         """Chosen grid point of `name` with its inner predictions per fold, its balanced inner error
         (`score`, used to select) and its pooled inner MdAPE (`mdape`, informational)."""
         y = self.truth(target)
+        if name in COMBOS:
+            parts = {n: self.select(n, target) for n in COMBO_PARTS}
+            p1, p4 = (parts[n]["preds"] for n in COMBO_PARTS)
+            params = {n: parts[n]["params"] for n in COMBO_PARTS}
+            if name == "ENS":
+                preds = self._ens(p1, p4)
+            else:
+                cand = [(_balanced(y, self._stack(w, p1, p4)), w) for w in STACK_W]
+                w = min(cand, key=lambda c: c[0])[1]   # min keeps the first grid point on ties
+                preds = self._stack(w, p1, p4)
+                params = {"w": w, **params}
+            return {"params": params, "preds": preds, "score": _balanced(y, preds),
+                    "mdape": _mdape(_pooled(y), _pooled(preds))}
         if name not in FACTORED:
             n, params, preds, m = self._best([name], target)
             return {"params": params, "preds": preds, "score": m, "mdape": _mdape(_pooled(y), _pooled(preds))}
@@ -201,6 +252,22 @@ def _residuals(y_parts, p_parts) -> tuple:
     return np.concatenate(res), np.concatenate(wts)
 
 
+def conformal_halfwidth(resid, weights, alpha: float = 0.1, n_folds: int | None = None) -> float:
+    """Half-width q (log scale) of the base-model-level conformal interval: the weighted "higher" quantile of the scores
+    |resid| at level min(1, (1 - alpha)(1 + 1 / K)), i.e. the smallest score v with (weight of scores <= v) / (total weight)
+    >= level. K is the number of inner folds that contributed (`n_folds`; default round(sum(weights)), exact for the
+    per-fold weights of `_residuals`, which sum to 1 per fold). NaN with fewer than two residuals."""
+    r, w = np.abs(np.asarray(resid, float)), np.asarray(weights, float)
+    if r.size < 2:
+        return float("nan")
+    k = max(1, int(round(float(w.sum())))) if n_folds is None else int(n_folds)
+    level = min(1.0, (1 - alpha) * (1 + 1 / k))
+    order = np.argsort(r, kind="stable")
+    cum = np.cumsum(w[order]) / w.sum()
+    i = int(np.searchsorted(cum, level - 1e-9, side="left"))   # first score whose cumulative share reaches the level
+    return float(r[order][min(i, r.size - 1)])
+
+
 def _threshold(novelties, mdapes) -> float:
     """Largest inner-fold novelty whose inner AUTO MdAPE is below 15 %; 0.0 if there is none."""
     ok = [n for n, m in zip(novelties, mdapes) if m < APPLICABLE_MDAPE]
@@ -220,8 +287,9 @@ def _run_fold(train_t, test_t, fold_info: tuple, target: str, seed: int, desc, g
     regime = splits.regime_of(train_t, test_t)
     search = _Search(train_t, desc, grids, seed, splits.inner_folds_for(train_t, regime, seed, index))
     names = CANDIDATES_BY_TARGET[target]
-    sel = {n: search.select(n, target) for n in names}
+    sel = {n: search.select(n, target) for n in names}   # ENS / STACK are built from the cached M1Ridge and M4Physics searches
     auto = min(AUTO_AMONG[target], key=lambda n: sel[n]["score"])   # min keeps the first on ties
+    auto_r4 = min(AUTO_AMONG[target] + R4_EXTRA, key=lambda n: sel[n]["score"])
     truth = search.truth(target)
     # applicability threshold: novelty is a per-model notion, so always from leave-one-base-model-out inner
     # folds (AUTO's chosen point; the selection folds themselves when they already are those)
@@ -236,28 +304,38 @@ def _run_fold(train_t, test_t, fold_info: tuple, target: str, seed: int, desc, g
     novelty = test_t["base_model"].map(nov).to_numpy(float)
 
     final = {n: np.asarray(_make(n, desc, seed).fit(train_t, target, sel[n]["params"]).predict(test_t), float)
-             for n in names}   # one refit per candidate; AUTO reuses the chosen one
+             for n in names if n not in COMBOS}   # one refit per candidate; AUTO and AUTO_R4 reuse the chosen one
+    p1, p4 = (final[n] for n in COMBO_PARTS)
+    with np.errstate(all="ignore"):
+        if "ENS" in names:
+            final["ENS"] = np.sqrt(p1 * p4)
+        if "STACK" in names:
+            w = sel["STACK"]["params"]["w"]
+            final["STACK"] = np.exp(w * np.log(p1) + (1 - w) * np.log(p4))
 
     def block(label, name, params):
         s, yhat = sel[name], final[name]
         resid, wts = _residuals(truth, s["preds"])
         lo, hi = _interval(yhat, resid, wts)
+        q = conformal_halfwidth(resid, wts)
+        lo_cf, hi_cf = yhat * np.exp(-q), yhat * np.exp(q)   # NaN when q is
         shown = params if label == name else {"candidate": name, "params": params}
         return pd.DataFrame({
             "split": split, "fold": fold, "similarity_class": cls, "config_key": test_t["config_key"].to_numpy(),
             "base_model": test_t["base_model"].to_numpy(), "candidate": label, "target": target, "seed": seed,
             "y_true": test_t[target].to_numpy(float), "y_pred": yhat, "lo90": lo, "hi90": hi,
-            "novelty": novelty, "flagged": novelty > threshold, "threshold": threshold, "params": _json(shown),
+            "lo90_cf": lo_cf, "hi90_cf": hi_cf, "novelty": novelty, "flagged": novelty > threshold, "threshold": threshold, "params": _json(shown),
             "n_resid": int(resid.size)})
 
     parts = [block(n, n, sel[n]["params"]) for n in names]
     parts.append(block(AUTO, auto, sel[auto]["params"]))
+    parts.append(block(AUTO_R4, auto_r4, sel[auto_r4]["params"]))
     return pd.concat(parts, ignore_index=True)[OUT_COLS]
 
 
 def run_split(t: pd.DataFrame, folds: list, target: str, seed: int, desc: pd.DataFrame,
               n_jobs: int = 1, grids: dict | None = None) -> pd.DataFrame:
-    """Score every candidate (plus AUTO) on each outer fold: one row per (fold, test config, candidate).
+    """Score every candidate (plus AUTO and AUTO_R4) on each outer fold: one row per (fold, test config, candidate).
     Results are identical for any `n_jobs`. `grids` defaults to `mode_a_models.GRIDS`."""
     if target not in CANDIDATES_BY_TARGET:
         raise ValueError(f"unknown target {target!r}")
@@ -288,10 +366,13 @@ def fit_final(t: pd.DataFrame, candidate: str, target: str, seed: int, desc: pd.
     model-out inner folds (the model to predict is new), "seen-model" with random 5-fold folds over the
     configurations (its base model is in training). Returns (model, {"path", "sha256", "params", "regime"}).
     `seed` is the random_state of every HistGradientBoostingRegressor (selection and final fit) and seeds the
-    random inner folds."""
+    random inner folds. ENS and STACK are combinations of two selected candidates, not models: ValueError."""
     if regime not in REGIMES:
         raise ValueError(f"unknown regime {regime!r}; expected one of {REGIMES}")
     grids = grids if grids is not None else mm.GRIDS
+    if candidate in COMBOS:
+        raise ValueError(f"{candidate} is a combination of the selected M1Ridge and M4Physics, not a model: "
+                         "freeze those two and combine their predictions")
     if candidate not in mm.CANDIDATES:
         raise ValueError(f"unknown candidate {candidate!r}")
     folds = splits.inner_folds_for(t, regime, seed)
@@ -306,14 +387,15 @@ def fit_final(t: pd.DataFrame, candidate: str, target: str, seed: int, desc: pd.
 
 
 def fit_candidates(t: pd.DataFrame, target: str, seed: int, desc: pd.DataFrame, regime: str,
-                   grids: dict | None = None) -> dict:
+                   grids: dict | None = None, r4: bool = False) -> dict:
     """Post hoc scoring helper: the search of `fit_final` run once over `t` for every candidate of `target` plus AUTO,
     with no pickles written. Inner folds are those of `regime` (`splits.inner_folds_for`, index 0, as in `fit_final`).
     Returns {candidate or AUTO: {"model", "params", "score", "q5", "q95", "n_resid", "chosen"}}: the model refitted on
     every row of `t` with the chosen grid point, the balanced inner error, the fold-weighted 5 % and 95 % quantiles of the
     inner log residuals log(y / pred) (the 90 % interval of a prediction p is [p exp(q5), p exp(q95)], as in `_run_fold`;
     NaN when there are fewer than two residuals) and, for AUTO, the candidate it picked (the lowest balanced error among
-    `AUTO_AMONG`, ties to the first). Only `t` is read."""
+    `AUTO_AMONG`, ties to the first). Only `t` is read. The R4 extras are not fitted unless `r4` (then M5Pooled is, ENS and STACK
+    never are: they have no model to freeze), so the frozen lockbox outputs keep exactly their candidates."""
     if regime not in REGIMES:
         raise ValueError(f"unknown regime {regime!r}; expected one of {REGIMES}")
     if target not in CANDIDATES_BY_TARGET:
@@ -321,7 +403,8 @@ def fit_candidates(t: pd.DataFrame, target: str, seed: int, desc: pd.DataFrame, 
     grids = grids if grids is not None else mm.GRIDS
     search = _Search(t, desc, grids, seed, splits.inner_folds_for(t, regime, seed))
     truth = search.truth(target)
-    sel = {n: search.select(n, target) for n in CANDIDATES_BY_TARGET[target]}
+    sel = {n: search.select(n, target) for n in CANDIDATES_BY_TARGET[target]
+           if n not in COMBOS and (r4 or n not in R4_EXTRA)}
     t0 = t.reset_index(drop=True)
     out = {}
     for n, s in sel.items():

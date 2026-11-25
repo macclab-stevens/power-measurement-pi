@@ -309,7 +309,8 @@ def _latest_parquet(split: str, target: str, log_path=None, mode_a_dir=None, see
     best = best_seed = None
     for line in log.read_text().splitlines():
         rec = json.loads(line) if line.strip() else {}
-        if rec.get("command") == "mode-a" and rec.get("split") == split and rec.get("target") == target:
+        if rec.get("command") == "mode-a" and runlog.label_of(rec) == "monsoon" \
+                and rec.get("split") == split and rec.get("target") == target:
             if (out / f"{rec['run_id']}.parquet").is_file():
                 best = out / f"{rec['run_id']}.parquet"
                 if seed is not None and rec.get("seed") == seed:
@@ -339,7 +340,8 @@ def load_mode_a_preds(log_path=None, mode_a_dir=None, seed=None) -> pd.DataFrame
 def _run_ids_with_seed(target: str, seed: int, log_path=None) -> set:
     log = Path(log_path) if log_path else runlog.DEFAULT_LOG
     recs = [json.loads(x) for x in log.read_text().splitlines() if x.strip()]
-    return {r["run_id"] for r in recs if r.get("command") == "mode-a" and r.get("split") == "S-LOMO"
+    return {r["run_id"] for r in recs if r.get("command") == "mode-a" and runlog.label_of(r) == "monsoon"
+            and r.get("split") == "S-LOMO"
             and r.get("target") == target and r.get("seed") == seed}
 
 

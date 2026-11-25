@@ -96,6 +96,11 @@ def variant_of(m: dict, base: str, quant: str) -> str:
     return v
 
 
+def rig_of(meta: dict) -> str:
+    """The measurement rig of a cell: `oct2026` for the kernel 6.18.50 cells (v1), `nov2026` for every later one."""
+    return "oct2026" if str((meta or {}).get("kernel", "")).startswith("6.18.50") else "nov2026"
+
+
 def _row(cell: Path, src: str, ix: pd.Series, m: dict) -> dict:
     quant = m.get("quant") or "fp32"
     base = ix["model_key"]
@@ -120,7 +125,7 @@ def _row(cell: Path, src: str, ix: pd.Series, m: dict) -> dict:
         "input_source": (m.get("inputs") or {}).get("source") or "repeat",
         "family": "v1" if src == "v1" else ix["family"],
         "repeat": int(ix["repeat"]),
-        "rig": "oct2026" if str(m.get("kernel", "")).startswith("6.18.50") else "nov2026",
+        "rig": rig_of(m),
         "dataset_version": int(m.get("dataset_version") or 1),
         "holdout": m.get("holdout"),
         "has_counters": has_counters,

@@ -62,12 +62,12 @@ def read_records(path) -> list:
     return [json.loads(x) for x in p.read_text().splitlines() if x.strip()]
 
 
-def latest(recs: list, directory, *, suffix: str = "", **match) -> dict | None:
-    """Last record with `rec[k] == v` for every item of `match` whose `<run_id><suffix>.parquet` exists
-    in `directory`."""
+def latest(recs: list, directory, *, suffix: str = "", label: str = "monsoon", **match) -> dict | None:
+    """Last record of run label `label` (default: Monsoon, so a board-level run is never picked up) with
+    `rec[k] == v` for every item of `match` whose `<run_id><suffix>.parquet` exists in `directory`."""
     best = None
     for r in recs:
-        if all(r.get(k) == v for k, v in match.items()) and "run_id" in r \
+        if runlog.label_of(r) == label and all(r.get(k) == v for k, v in match.items()) and "run_id" in r \
                 and (Path(directory) / f"{r['run_id']}{suffix}.parquet").is_file():
             best = r
     return best
@@ -150,9 +150,9 @@ def load_table(path, what: str, command: str) -> pd.DataFrame:
     return pd.read_csv(p)
 
 
-def latest_record(recs: list, **match) -> dict | None:
-    """Last record matching `match` (no parquet needed)."""
-    hits = [r for r in recs if all(r.get(k) == v for k, v in match.items())]
+def latest_record(recs: list, *, label: str = "monsoon", **match) -> dict | None:
+    """Last record of run label `label` (default: Monsoon) matching `match` (no parquet needed)."""
+    hits = [r for r in recs if runlog.label_of(r) == label and all(r.get(k) == v for k, v in match.items())]
     return hits[-1] if hits else None
 
 

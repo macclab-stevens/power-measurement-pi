@@ -322,7 +322,7 @@ def test_no_candidate_reads_columns_outside_allowed_set(name, params, target):
     df["dyn_energy_mJ"] = 1.0
     df["energy_cv"] = 0.01
     allowed = set(mm.FEATURES) | set(mm.FEATURES_R2) | set(tables.CONFIG_COLS) | {"macs", "act_bytes", "n_module_calls"}
-    factored = name in ("M3Factored", "M4Physics") and target == "energy_mJ"
+    factored = name in ("M3Factored", "M4Physics", "M5Pooled") and target == "energy_mJ"
     extra = {"latency_ms", "mean_P_W"} if factored else {target}   # M3 and M4 fit their two parts
     train = df[sorted(allowed | extra)]
     test = df[sorted(allowed)]
@@ -498,3 +498,98 @@ def test_attention_term_only_with_attention_models():
     assert not mm.attn_present(pd.DataFrame({"frac_attn": [0.0, 0.01]}))
     t = pd.DataFrame({"frac_attn": [0.0, 0.3], "hooks_on": [1, 1]})
     assert mm.attn_present(t) and mm.features_for(t)[-1] == "frac_attn"
+
+
+# ---- R4: M5Pooled (M4Physics + architecture-family offsets) -----------------------------------------
+def _biased(models_bias: dict, seed=2):
+    """One block of rows per model name; latency x exp(bl), power x exp(bp)."""
+    base = m4_frame(n_models=len(models_bias), seed=seed)
+    old = sorted(set(base["base_model"]), key=lambda m: int(m[1:]))
+    out = []
+    for o, (name, (bl, bp)) in zip(old, models_bias.items()):
+        g = base[base["base_model"] == o].copy()
+        g["base_model"] = name
+        g["latency_ms"] = g["latency_ms"] * np.exp(bl)
+        g["mean_P_W"] = g["mean_P_W"] * np.exp(bp)
+        g["energy_mJ"] = g["latency_ms"] * g["mean_P_W"]
+        g["config_key"] = [f"{name}|{i}" for i in range(len(g))]
+        out.append(g)
+    return pd.concat(out, ignore_index=True)
+
+
+def test_family_of_and_table():
+    assert mm.family_of("yolo11s") == "yolo" and mm.family_of("effb0") == "mobile" and mm.family_of("mbv3") == "mobile"
+    assert mm.family_of("maxvitt") == "maxvit" and mm.family_of("swins") == "swin"
+    assert mm.family_of("never_seen") == "never_seen"
+    assert sum(f == "yolo" for f in mm.FAMILY.values()) == 9 and sum(f == "mobile" for f in mm.FAMILY.values()) == 7
+    assert set(mm.FAMILY.values()) == {"yolo", "mobile", "resnet", "convnext", "vit", "swin", "maxvit"}
+
+
+def test_family_offsets_are_shrunken_sums_of_per_model_means():
+    train = pd.DataFrame({"base_model": ["resnet18"] * 4 + ["resnet34"] * 1 + ["vitb16"] * 2 + ["solo"] * 2})
+    y, yhat = np.ones(len(train)), np.exp(-np.array([.1, .1, .1, .1, .3, .2, .2, .5, .5]))   # log y - log yhat = those values
+    b = mm.family_offsets(train, y, yhat, lam=1.0)
+    assert b["resnet"] == pytest.approx((0.1 + 0.3) / (2 + 1.0))      # each model once, whatever its rows (4 vs 1)
+    assert b["vit"] == pytest.approx(0.2 / 2.0) and b["solo"] == pytest.approx(0.5 / 2.0)
+    assert mm.family_offsets(train, y, yhat, lam=0.0)["resnet"] == pytest.approx(0.2)
+    assert mm.family_offsets(train, y, yhat, lam=1e9)["resnet"] == pytest.approx(0.0, abs=1e-8)
+
+
+def test_m5_equals_m4_without_offsets_and_with_zero_residuals():
+    df = m4_frame(n_models=4)
+    df["base_model"] = df["base_model"].map(dict(zip(sorted(set(df["base_model"])), ["resnet18", "resnet34", "vitb16", "swint"])))
+    for t, p in (("latency_ms", {"beta": 0.75, "lam": 1.0}), ("mean_P_W", {"alpha": 1e-6, "lam": 1.0})):
+        m5 = mm.M5Pooled().fit(df, t, p).predict(df)
+        m4 = mm.M4Physics().fit(df, t, {k: v for k, v in p.items() if k != "lam"}).predict(df)
+        np.testing.assert_allclose(m5, m4, rtol=1e-3)   # M4 is (near) exact here: offsets ~ 0
+
+
+def test_m5_sibling_gets_shrunken_offset_and_family_without_sibling_gets_plain_m4():
+    # resnet18 / resnet34 / resnet50 biased +20 % latency, vit models none; resnet50 is held out
+    bias = {"resnet18": (0.2, 0.0), "resnet34": (0.2, 0.0), "vitb16": (0.0, 0.0), "vitb32": (0.0, 0.0),
+            "resnet50": (0.2, 0.0), "convnextt": (0.2, 0.0)}
+    df = _biased(bias)
+    held = df[df["base_model"].isin(["resnet50", "convnextt"])]
+    train = df[~df["base_model"].isin(["resnet50", "convnextt"])]
+    m4 = mm.M4Physics().fit(train, "latency_ms", {"beta": 0.75})
+    rho = {m: float(np.mean(np.log(g["latency_ms"]) - np.log(m4.predict(g)))) for m, g in train.groupby("base_model")}
+    b_res = (rho["resnet18"] + rho["resnet34"]) / (2 + 1.0)
+    m5 = mm.M5Pooled().fit(train, "latency_ms", {"beta": 0.75, "lam": 1.0})
+    assert m5.lat_offset_["resnet"] == pytest.approx(b_res) and "convnext" not in m5.lat_offset_
+    p5, p4 = m5.predict(held), m4.predict(held)
+    is_res = (held["base_model"] == "resnet50").to_numpy()
+    np.testing.assert_allclose(p5[is_res], p4[is_res] * np.exp(b_res))          # sibling offset applied
+    np.testing.assert_allclose(p5[~is_res], p4[~is_res])                        # no training sibling: plain M4Physics
+    assert 0 < b_res < (rho["resnet18"] + rho["resnet34"]) / 2                   # shrunken towards 0, same sign as the bias
+    # the offset moves the prediction towards the truth for the sibling
+    y = held["latency_ms"].to_numpy()
+    assert abs(np.log(p5[is_res] / y[is_res])).mean() < abs(np.log(p4[is_res] / y[is_res])).mean()
+
+
+def test_m5_lambda_shrinks_and_power_has_its_own_offsets():
+    bias = {"resnet18": (0.0, 0.3), "resnet34": (0.0, 0.3), "vitb16": (0.0, 0.0), "vitb32": (0.0, 0.0)}
+    df = _biased(bias)
+    offs = [mm.M5Pooled().fit(df, "mean_P_W", {"alpha": 1e-6, "lam": lam}).pwr_offset_["resnet"] for lam in (0.0, 1.0, 4.0, 1e9)]
+    assert offs[0] > offs[1] > offs[2] > offs[3] and offs[3] == pytest.approx(0.0, abs=1e-6)
+    m4 = mm.M4Physics().fit(df, "mean_P_W", {"alpha": 1e-6})
+    rho = [float(np.mean(np.log(g["mean_P_W"]) - np.log(m4.predict(g)))) for _, g in df[df["base_model"].str.startswith("resnet")].groupby("base_model")]
+    assert offs[0] == pytest.approx(np.mean(rho)) and offs[0] > 0     # lam = 0: the mean residual of the family
+    m = mm.M5Pooled().fit(df, "energy_mJ", {"latency": {"beta": 0.75, "lam": 1.0}, "power": {"alpha": 1e-6, "lam": 0.0}})
+    assert abs(m.lat_offset_["resnet"]) < 0.01 and m.pwr_offset_["resnet"] == pytest.approx(offs[0])   # separate lam, separate offsets
+    np.testing.assert_allclose(m.predict(df), m.predict_latency(df) * m.predict_power(df))
+
+
+def test_m5_is_deterministic_and_registered():
+    df = _biased({"resnet18": (0.1, 0.1), "resnet34": (0.1, 0.1), "vitb16": (0, 0)})
+    a = mm.M5Pooled().fit(df, "energy_mJ", {}).predict(df)
+    b = mm.M5Pooled().fit(df, "energy_mJ", {}).predict(df)
+    np.testing.assert_array_equal(a, b)
+    assert mm.CANDIDATES["M5Pooled"] is mm.M5Pooled
+    assert [(g["beta"], g["lam"]) for g in mm.GRIDS["M5Pooled"]["latency_ms"]] == list(
+        itertools.product((0.5, 0.75, 1.0), (0.5, 1.0, 2.0, 4.0)))
+    assert [(g["alpha"], g["lam"]) for g in mm.GRIDS["M5Pooled"]["mean_P_W"]] == list(
+        itertools.product((0.01, 0.1, 1.0, 10.0, 100.0), (0.5, 1.0, 2.0, 4.0)))
+    with pytest.raises(ValueError):
+        mm.grid_for(mm.GRIDS, "M5Pooled", "energy_mJ")
+    with pytest.raises(ValueError):
+        mm.M5Pooled().fit(df, "latency_ms", {"lam": -1.0})

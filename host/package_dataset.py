@@ -137,6 +137,8 @@ FAMILY_DESC = {
     "v3cal": "v3 calibration pairs: yolo11n, yolov8n, yolo11s, yolo12n, mbv3, effb0, resnet18 with the layer hooks on and off (`run_meta.layer_hooks`), 2400 MHz, 3 repeats each",
     "v3add": "v3 training additions, hooks off: yolo12s, Swin-T, ViT-B/16, ConvNeXt-T, MaxViT-T at 2400 MHz and yolo12s, Swin-T at 1500 MHz, 3 repeats each",
     "lockbox2": "second holdout (R3), hooks off: resnet34, mobilenet_v3_large, efficientnet_b1, swin_s, yolo12m at 2400 MHz, 3 repeats each, measured after the R3 predictions were frozen",
+    "v4": "v4 deployment replica, hooks off, perf_event_paranoid=1 (kernel-visible software counters): every hooks-on training configuration of v1 / v2 / v3 / lockbox 1 again, plus 1500 / 2000 MHz for the models measured only at 2400 MHz and 320 px for the torchvision CNNs, 2 repeats each",
+    "lockbox3": "third holdout (R4), hooks off, paranoid=1: mobilenet_v2 2400, shufflenet_v2_x1_0 2000, resnet50 1500, efficientnet_b2 2400, vit_b_32 2000, convnext_small 2400 MHz, 3 repeats each, measured after the R4 predictions were frozen",
 }
 
 COVERAGE_DIMENSIONS = ("family", "dataset_version", "model", "imgsz", "batch", "threads", "variant",

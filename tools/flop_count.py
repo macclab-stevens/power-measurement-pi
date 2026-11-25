@@ -27,7 +27,10 @@ from tasks import make_task  # noqa: E402
 
 KEYS = {"mobilenet_v3_small": "mbv3", "efficientnet_b0": "effb0", "resnet18": "resnet18", "swin_t": "swint",
         "vit_b_16": "vitb16", "convnext_tiny": "convnextt", "maxvit_t": "maxvitt", "resnet34": "resnet34",
-        "mobilenet_v3_large": "mbv3l", "efficientnet_b1": "effb1", "swin_s": "swins"}
+        "mobilenet_v3_large": "mbv3l", "efficientnet_b1": "effb1", "swin_s": "swins",
+        # lockbox 3 (R4)
+        "mobilenet_v2": "mbv2", "shufflenet_v2_x1_0": "shufv2", "resnet50": "resnet50", "efficientnet_b2": "effb2",
+        "vit_b_32": "vitb32", "convnext_small": "convnexts"}
 
 
 def _sdpa_cpu_flops(query_shape, key_shape, value_shape, *args, out_shape=None, **kwargs) -> int:

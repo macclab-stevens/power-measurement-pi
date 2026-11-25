@@ -91,7 +91,7 @@ def test_spy_no_test_key_reaches_any_fit(monkeypatch):
                 return super().predict(test)
         return Spy
 
-    for name in ("M1Ridge", "M2Trees"):
+    for name in ("M1Ridge", "M2Trees", "M4Physics", "M5Pooled"):
         monkeypatch.setitem(mm.CANDIDATES, name, spy(mm.CANDIDATES[name]))
     res = mode_a.run_split(t, folds, "energy_mJ", 1, desc, grids=SMALL_GRIDS)
     assert len(res) and log
@@ -146,7 +146,7 @@ def test_auto_accuracy_and_interval_coverage(synth_result):
 def test_each_config_once_per_fold_and_candidate(synth_result):
     t, desc, res = synth_result
     expect = {"B0Median", "B1MacsProportional", "B2NearestModel", "B3LogLinear", "M1Ridge", "M2Trees",
-              "M3Factored", "M4Physics", "AUTO"}
+              "M3Factored", "M4Physics", "AUTO", "ENS", "STACK", "M5Pooled", "AUTO_R4"}
     assert set(res["candidate"]) == expect
     assert not res.duplicated(["fold", "config_key", "candidate"]).any()
     assert len(res) == len(t) * len(expect)
@@ -338,7 +338,7 @@ def test_real_data_one_slomo_fold_energy(real_data):
     res = mode_a.run_split(t, [fold], "energy_mJ", settings.seed(), desc, n_jobs=1)
     wall = time.perf_counter() - t0
     print(f"real-data S-LOMO yolo11s energy: {wall:.1f} s")   # printed, not asserted: it depends on the machine
-    assert len(res) == len(fold.test_keys) * 9
+    assert len(res) == len(fold.test_keys) * 13
     assert res["y_pred"].notna().all() and (res["y_pred"] > 0).all()
 
 

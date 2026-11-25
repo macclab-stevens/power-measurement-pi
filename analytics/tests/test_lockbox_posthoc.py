@@ -32,7 +32,8 @@ def test_fit_candidates_matches_fit_final_has_intervals_and_writes_no_pickle(tmp
     t, desc = make_dataset(TRAIN[:5])
     for regime in mode_a.REGIMES:
         res = mode_a.fit_candidates(t, "energy_mJ", MASTER, desc, regime, SMALL_GRIDS)
-        assert set(res) == set(mode_a.CANDIDATES_BY_TARGET["energy_mJ"]) | {mode_a.AUTO}
+        # the frozen set: the R4 extras (ENS and STACK have no model; M5Pooled is opt-in) are not fitted
+        assert set(res) == (set(mode_a.CANDIDATES_BY_TARGET["energy_mJ"]) - set(mode_a.R4_EXTRA)) | {mode_a.AUTO}
         assert res[mode_a.AUTO]["chosen"] in mode_a.AUTO_AMONG["energy_mJ"]
         assert res[mode_a.AUTO]["score"] == min(res[c]["score"] for c in mode_a.AUTO_AMONG["energy_mJ"])
         assert all(f["q5"] < f["q95"] and f["n_resid"] >= 2 for f in res.values())

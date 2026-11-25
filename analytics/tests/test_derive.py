@@ -8,6 +8,7 @@ import pytest
 
 import data
 import derive
+import harness
 import runlog
 import settings
 from conftest import make_cell
@@ -91,6 +92,67 @@ def test_derive_cell_hand_computation(tmp_path):
     assert r["trace_E_J"] == pytest.approx(allE / 1000) and r["trace_dur_s"] == pytest.approx(allD / 1000)
     assert math.isnan(r["serve_E_mJ"]) and r["serve_n_requests"] == 0
     assert r["slips_total"] == 0 and r["slips_in_scored"] == 0
+
+
+def _write_trace(cell, I_A=2.0, t_end=60.0):
+    """power_trace.parquet at 1 kHz with a constant current, on the phase_energy time axis."""
+    t = np.arange(0.0, t_end, 0.001)
+    pd.DataFrame({"t_s": t, "I_A": np.full(len(t), I_A)}).to_parquet(cell / "power_trace.parquet")
+
+
+def _frame_spans(rows):
+    ft = derive.frame_table(pd.DataFrame(rows).assign(iter=lambda d: d["iter"].astype(object)), "forward")
+    return ft.loc[[1, 2, 3]]
+
+
+@pytest.mark.parametrize("meta,rig", [({}, "nov2026"), ({"kernel": "6.18.50+rpt-rpi-2712"}, "oct2026")])
+def test_board_columns_subtract_harness_loss(tmp_path, meta, rig):
+    cell = _cell(tmp_path, meta=meta)
+    _write_trace(cell, I_A=2.0)
+    (r,) = derive.derive_cell(cell)
+    ft = _frame_spans(phase_rows())
+    loss = harness.R_OHM[rig] * 2.0 ** 2 * (ft["t_end_s"] - ft["t_start_s"]) * 1000.0     # mJ per frame
+    assert r["energy_board_mJ_per_image"] == pytest.approx((ft["E_mJ"] - loss).mean(), rel=1e-6)
+    assert r["mean_P_board_W"] == pytest.approx((ft["E_mJ"] - loss).sum() / ft["dur_ms"].sum(), rel=1e-6)
+    assert r["energy_board_mJ_per_image"] < r["energy_mJ_per_image"] and r["mean_P_board_W"] < r["mean_P_W"]
+    assert r["energy_mJ_per_image"] == pytest.approx(ft["E_mJ"].mean())      # the Monsoon columns are unchanged
+
+
+def test_board_columns_follow_the_kept_frames_and_batch(tmp_path):
+    cell = _cell(tmp_path, meta={"batch": 2}, slips=[{"t_ns": T0 + 30_020_000_000, "step_ms": 5.0}])
+    _write_trace(cell, I_A=1.5)
+    (r,) = derive.derive_cell(cell)
+    ft = _frame_spans(phase_rows()).loc[[1, 3]]                               # frame 2 overlaps the slip
+    loss = 0.212 * 1.5 ** 2 * (ft["t_end_s"] - ft["t_start_s"]) * 1000.0
+    assert r["n_frames_slip_excluded"] == 1
+    assert r["energy_board_mJ_per_image"] == pytest.approx((ft["E_mJ"] - loss).mean() / 2, rel=1e-6)
+    assert r["mean_P_board_W"] == pytest.approx((ft["E_mJ"] - loss).sum() / ft["dur_ms"].sum(), rel=1e-6)
+
+
+def test_board_columns_nan_without_trace_or_frames(tmp_path):
+    (r,) = derive.derive_cell(_cell(tmp_path))                  # no power_trace.parquet
+    assert math.isnan(r["energy_board_mJ_per_image"]) and math.isnan(r["mean_P_board_W"])
+    assert r["energy_mJ_per_image"] > 0
+    rows = [x for x in phase_rows() if x["phase"] != "forward" or str(x["iter"]) == "0"]
+    cell = _cell(tmp_path, "empty", rows=rows)
+    (e,) = derive.derive_cell(cell)                             # no measured frame: the trace is never read
+    assert e["n_frames"] == 0 and math.isnan(e["energy_board_mJ_per_image"]) and math.isnan(e["mean_P_board_W"])
+
+
+def test_board_columns_nan_when_a_frame_is_outside_the_trace(tmp_path):
+    cell = _cell(tmp_path)
+    _write_trace(cell, t_end=35.0)                              # frame 3 starts at 40 s
+    (r,) = derive.derive_cell(cell)
+    assert math.isnan(r["energy_board_mJ_per_image"]) and math.isnan(r["mean_P_board_W"])
+
+
+def test_cache_key_covers_harness(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANALYTICS_DATA", str(tmp_path))
+    _cell(tmp_path, "a")
+    cat = data.catalogue()
+    k = derive._cache_key(cat)
+    monkeypatch.setattr(harness, "__file__", str(Path(derive.__file__)))   # any other file than harness.py
+    assert derive._cache_key(cat) != k
 
 
 def test_batch_halves_per_image(tmp_path):

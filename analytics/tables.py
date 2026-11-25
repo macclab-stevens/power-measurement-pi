@@ -8,7 +8,9 @@ import settings
 
 CONFIG_COLS = ["base_model", "variant", "precision", "imgsz", "batch", "threads", "cpu_mhz", "rig"]
 MEASURES = {"energy_mJ": "energy_mJ_per_image", "latency_ms": "latency_ms_per_image",
-            "mean_P_W": "mean_P_W", "dyn_energy_mJ": "dyn_energy_mJ_per_image"}
+            "mean_P_W": "mean_P_W", "dyn_energy_mJ": "dyn_energy_mJ_per_image",
+            "energy_board_mJ": "energy_board_mJ_per_image", "mean_P_board_W": "mean_P_board_W"}   # board = minus harness I^2 R
+BOARD_COLS = ["energy_board_mJ_per_image", "mean_P_board_W"]
 MODE = "forward"
 
 
@@ -69,7 +71,11 @@ def mode_a_table(cat: pd.DataFrame, der: pd.DataFrame, qc: pd.DataFrame, st: pd.
     ok = qc.loc[qc["primary"].astype(bool), "cell_id"]
     c = data.training_cells(cat)
     c = c[c["mode_a_eligible"].astype(bool) & c["cell_id"].isin(ok)]
-    d = der[der["mode"] == MODE][["cell_id", *MEASURES.values()]]
+    d = der[der["mode"] == MODE]
+    for col in BOARD_COLS:                   # a derivation table from before the board columns gives NaN
+        if col not in d.columns:
+            d = d.assign(**{col: np.nan})
+    d = d[["cell_id", *MEASURES.values()]]
     c = c.merge(d, on="cell_id", how="inner")
     c = c[np.isfinite(c["energy_mJ_per_image"].astype(float))].copy()
     c["config_key"] = [config_key(r) for _, r in c.iterrows()]
@@ -98,6 +104,17 @@ def mode_a_table(cat: pd.DataFrame, der: pd.DataFrame, qc: pd.DataFrame, st: pd.
         return t
     t = add_derived_columns(t)
     return t.reset_index(drop=True)
+
+
+def board_view(t: pd.DataFrame) -> pd.DataFrame:
+    """The configuration table with the board-level labels in place of the Monsoon ones: `energy_mJ` is
+    `energy_board_mJ`, `mean_P_W` is `mean_P_board_W` (latency unchanged), and the configurations where either
+    is NaN are dropped. Raises ValueError if the table has no board columns (it predates them)."""
+    need = ["energy_board_mJ", "mean_P_board_W"]
+    if any(c not in t.columns for c in need):
+        raise ValueError(f"the configuration table has no {need} columns; re-run `uv run python cli.py tables`")
+    b = t.assign(energy_mJ=t["energy_board_mJ"], mean_P_W=t["mean_P_board_W"])
+    return b.dropna(subset=["energy_mJ", "mean_P_W"]).reset_index(drop=True)
 
 
 def noise_floor(t: pd.DataFrame) -> float:

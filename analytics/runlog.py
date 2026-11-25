@@ -13,6 +13,12 @@ DEFAULT_LOG = settings.HERE / "runs.jsonl"
 SOURCES = ("v1", "v2", "lockbox")
 
 
+def label_of(rec: dict) -> str:
+    """A run record's label: `board` for a Mode A run on the board-level targets, `monsoon` for every other
+    record (the label field is absent from all records written before it existed)."""
+    return rec.get("label") or "monsoon"
+
+
 def file_hash(path) -> str:
     """sha256 hex of a file's bytes."""
     h = hashlib.sha256()

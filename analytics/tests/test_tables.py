@@ -26,7 +26,8 @@ def _cat_row(cid, **kw):
 
 def _der(cid, e, lat, mode="forward"):
     return {"cell_id": cid, "mode": mode, "energy_mJ_per_image": e, "latency_ms_per_image": lat,
-            "mean_P_W": 5.0, "dyn_energy_mJ_per_image": e * 0.6}
+            "mean_P_W": 5.0, "dyn_energy_mJ_per_image": e * 0.6,
+            "energy_board_mJ_per_image": e * 0.93, "mean_P_board_W": 4.65}
 
 
 def _qc(cid, primary=True):
@@ -152,3 +153,36 @@ def test_config_key_marks_hooks_off_only():
     assert tables.config_key(base) == "m|m|fp32|224|1|4|2400|nov2026"
     assert tables.config_key({**base, "layer_hooks": "on"}) == "m|m|fp32|224|1|4|2400|nov2026"
     assert tables.config_key({**base, "layer_hooks": "off"}).endswith("|hooks=off")
+
+
+def test_board_columns_are_config_means():
+    cat = [_cat_row("a"), _cat_row("b")]
+    t = _build(cat, [_der("a", 100.0, 50.0), _der("b", 110.0, 52.0)], [_qc(c) for c in "ab"])
+    m = t.iloc[0]
+    assert m["energy_board_mJ"] == pytest.approx(0.93 * 105.0) and m["mean_P_board_W"] == pytest.approx(4.65)
+    assert m["energy_mJ"] == pytest.approx(105.0)
+
+
+def test_table_from_a_derivation_without_board_columns_has_nan_board():
+    der = [{k: v for k, v in _der("a", 100.0, 50.0).items() if "board" not in k}]
+    t = _build([_cat_row("a")], der, [_qc("a")])
+    assert math.isnan(t.iloc[0]["energy_board_mJ"]) and math.isnan(t.iloc[0]["mean_P_board_W"])
+    assert t.iloc[0]["energy_mJ"] == pytest.approx(100.0)
+
+
+def test_board_view_replaces_targets_and_drops_nan():
+    cat = [_cat_row("a"), _cat_row("b", imgsz=320), _cat_row("c", cpu_mhz=1500)]
+    der = [_der("a", 100.0, 50.0), _der("b", 40.0, 20.0), {**_der("c", 60.0, 30.0), "mean_P_board_W": np.nan}]
+    t = _build(cat, der, [_qc(c) for c in "abc"], _st([("yolo11n", 640), ("yolo11n", 320)]))
+    b = tables.board_view(t)
+    assert len(t) == 3 and len(b) == 2 and list(b.index) == [0, 1]
+    assert b["energy_mJ"].tolist() == pytest.approx(b["energy_board_mJ"].tolist())
+    assert b["mean_P_W"].tolist() == pytest.approx([4.65, 4.65])
+    assert b["latency_ms"].tolist() == t.loc[t["config_key"].isin(b["config_key"]), "latency_ms"].tolist()
+    assert sorted(t["energy_mJ"]) == [40.0, 60.0, 100.0]       # the input is not modified
+
+
+def test_board_view_needs_the_board_columns():
+    t = _build([_cat_row("a")], [_der("a", 100.0, 50.0)], [_qc("a")]).drop(columns=["energy_board_mJ"])
+    with pytest.raises(ValueError, match="re-run"):
+        tables.board_view(t)

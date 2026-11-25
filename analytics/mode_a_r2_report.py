@@ -131,7 +131,7 @@ def _runs(paths, recs, sha_now: str, seed: int) -> tuple:
     r1, r2, prev = {}, {}, {}
     for split in ri.SPLITS:
         for target in ri.TARGETS:
-            hits = [r for r in recs if r.get("command") == "mode-a" and r.get("split") == split
+            hits = [r for r in recs if r.get("command") == "mode-a" and runlog.label_of(r) == "monsoon" and r.get("split") == split
                     and r.get("target") == target and r.get("seed") == seed
                     and (paths.mode_a_dir / f"{r['run_id']}.parquet").is_file()]
             now = [r for r in hits if r.get("table_sha256") == sha_now]

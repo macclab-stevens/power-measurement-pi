@@ -1,9 +1,12 @@
-"""Mode A candidates (baselines B0-B3, learned M1-M3) and the novelty distance.
+"""Mode A candidates (baselines B0-B3, learned M1-M3, physics M4, partially pooled M5) and the novelty distance.
 
 Every candidate has `fit(train, target, params) -> self` and `predict(test) -> np.ndarray` (positive
 values in the target's unit). `fit` only sees the rows it is given and never mutates them; `predict`
 before `fit` raises ValueError. Learned candidates fit log(target) and return exp(prediction).
 `rig_nov` is derived from the `rig` column (1 if "nov2026") wherever FEATURES are assembled.
+M5Pooled is M4Physics plus one log-space offset per architecture family (`FAMILY`), latency and power separately: a
+model whose family has training siblings inherits their shrunken mean log residual, a model of a family with no
+training model is predicted by plain M4Physics.
 """
 import itertools
 
@@ -397,10 +400,79 @@ class M4Physics:
         return self.predict_latency(test) * self.predict_power(test)
 
 
+# R4: architecture families (a base model not listed is its own family)
+FAMILY: dict[str, str] = {
+    **{m: "yolo" for m in ("yolov8n", "yolov8s", "yolov8m", "yolo11n", "yolo11s", "yolo11m", "yolo12n", "yolo12s", "yolo12m")},
+    **{m: "mobile" for m in ("mbv3", "mbv3l", "mbv2", "shufv2", "effb0", "effb1", "effb2")},   # inverted-residual / depthwise CNNs
+    **{m: "resnet" for m in ("resnet18", "resnet34", "resnet50")},
+    **{m: "convnext" for m in ("convnextt", "convnexts")},
+    **{m: "vit" for m in ("vitb16", "vitb32")},
+    **{m: "swin" for m in ("swint", "swins")},
+    "maxvitt": "maxvit",
+}
+
+
+def family_of(model: str) -> str:
+    """Architecture family of a base model: `FAMILY[model]`, or the model's own name when it is not listed."""
+    return FAMILY.get(model, model)
+
+
+def family_offsets(train: pd.DataFrame, y: np.ndarray, yhat: np.ndarray, lam: float) -> dict[str, float]:
+    """Shrunken family offsets in log space: b_f = (sum over the training base models m of f of rho_m) / (n_f + lam),
+    rho_m the mean over m's rows of log y - log yhat and n_f the number of training base models of f (each counts once
+    whatever its row count). Only families with a training model appear."""
+    r = pd.Series(np.log(np.asarray(y, float)) - np.log(np.asarray(yhat, float)))
+    rho = r.groupby(train["base_model"].to_numpy()).mean()
+    fam = pd.Series([family_of(m) for m in rho.index], index=rho.index)
+    return {f: float(rho[fam == f].sum() / ((fam == f).sum() + lam)) for f in sorted(set(fam))}
+
+
+class M5Pooled(M4Physics):
+    """M4Physics with partial pooling over architecture families, for all three targets.
+
+    The M4Physics part is fitted on the training rows (latency NNLS, power ridge; same params beta / alpha). Each training
+    base model's mean in-sample log residual rho_m = mean(log y - log yhat_M4) gives the family offset
+    b_f = sum_{m in f} rho_m / (n_f + lam) (`family_offsets`), applied as yhat_M4 * exp(b_family_of(model)), b = 0 for a
+    family without a training model. The latency and power parts have their own offsets; energy_mJ is their product.
+    params: latency_ms {"beta", "lam"}, mean_P_W {"alpha", "lam"} (lam default 1), energy_mJ {"latency": {...}, "power": {...}}.
+    Deterministic: takes no seed. predict needs a `base_model` column."""
+
+    def fit(self, train, target, params=None):
+        params = params or {}
+        if target == "energy_mJ":
+            lat, pw = params.get("latency", {}), params.get("power", {})
+        else:
+            lat = pw = params
+        self.lam_lat_, self.lam_pwr_ = float(lat.get("lam", 1.0)), float(pw.get("lam", 1.0))
+        if self.lam_lat_ < 0 or self.lam_pwr_ < 0:
+            raise ValueError("M5Pooled lam must be non-negative")
+        return super().fit(train, target, params)
+
+    def _fit_latency(self, train, beta):
+        super()._fit_latency(train, beta)
+        self.lat_offset_ = family_offsets(train, train["latency_ms"].to_numpy(float),
+                                          M4Physics.predict_latency(self, train), self.lam_lat_)
+
+    def _fit_power(self, train, alpha):
+        super()._fit_power(train, alpha)
+        self.pwr_offset_ = family_offsets(train, train["mean_P_W"].to_numpy(float),
+                                          M4Physics.predict_power(self, train), self.lam_pwr_)
+
+    @staticmethod
+    def _shift(test: pd.DataFrame, offsets: dict[str, float]) -> np.ndarray:
+        return np.exp([offsets.get(family_of(m), 0.0) for m in test["base_model"]])
+
+    def predict_latency(self, test):
+        return M4Physics.predict_latency(self, test) * self._shift(test, self.lat_offset_)
+
+    def predict_power(self, test):
+        return M4Physics.predict_power(self, test) * self._shift(test, self.pwr_offset_)
+
+
 CANDIDATES: dict[str, type] = {"B0Median": B0Median, "B1MacsProportional": B1MacsProportional,
                                "B2NearestModel": B2NearestModel, "B3LogLinear": B3LogLinear,
                                "M1Ridge": M1Ridge, "M2Trees": M2Trees, "M3Factored": M3Factored,
-                               "M4Physics": M4Physics}
+                               "M4Physics": M4Physics, "M5Pooled": M5Pooled}
 
 GRIDS: dict[str, list[dict] | dict | None] = {
     "B0Median": [{}], "B1MacsProportional": [{}], "B2NearestModel": [{}], "B3LogLinear": [{}],
@@ -412,12 +484,16 @@ GRIDS: dict[str, list[dict] | dict | None] = {
     "M4Physics": {"latency_ms": [{"beta": b} for b in (0.5, 0.75, 1.0)],
                   "mean_P_W": [{"alpha": float(a)} for a in (0.01, 0.1, 1, 10, 100)],
                   "energy_mJ": None},
+    # M5Pooled: the M4Physics grid times the shrinkage lam of the family offsets; energy picks both parts
+    "M5Pooled": {"latency_ms": [{"beta": b, "lam": float(lam)} for b, lam in itertools.product((0.5, 0.75, 1.0), (0.5, 1, 2, 4))],
+                 "mean_P_W": [{"alpha": float(a), "lam": float(lam)} for a, lam in itertools.product((0.01, 0.1, 1, 10, 100), (0.5, 1, 2, 4))],
+                 "energy_mJ": None},
 }
 
 
 def grid_for(grids: dict, name: str, target: str) -> list[dict]:
     """The grid points of candidate `name` for `target`: `grids[name]`, or `grids[name][target]` for a
-    candidate (M4Physics) whose grid is per target. ValueError if there is none."""
+    candidate (M4Physics, M5Pooled) whose grid is per target. ValueError if there is none."""
     g = grids[name]
     if isinstance(g, dict):
         g = g.get(target)

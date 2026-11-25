@@ -3,7 +3,8 @@
 Reproduces host/verify_cell.py (_frame_table, derived_metrics) from phase_energy.csv: the `*_raw`
 columns equal derived.json. The primary columns additionally drop every frame that overlaps a
 power-meter time slip (alignment.json), so one resynchronisation glitch cannot bend a cell's mean.
-Durations and energies are read from dur_ms / E_mJ, never recomputed from the trace.
+Durations and energies are read from dur_ms / E_mJ, never recomputed from the trace. The board-level
+columns subtract the supply harness's I^2 R heat (harness.py), integrated from the trace over each frame.
 """
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 import data
+import harness
 import runlog
 import settings
 
@@ -25,7 +27,8 @@ COLUMNS = [
     "energy_mJ_per_image", "latency_ms_per_image", "mean_P_W", "dyn_energy_mJ_per_image",
     "energy_mJ_per_image_raw", "latency_ms_per_image_raw", "baseline_W", "baseline_A_W",
     "baseline_B_W", "serve_n_requests", "serve_dur_ms", "serve_E_mJ", "serve_idle_dur_ms",
-    "serve_idle_E_mJ", "trace_E_J", "trace_dur_s", "slips_total", "slips_in_scored"]
+    "serve_idle_E_mJ", "trace_E_J", "trace_dur_s", "slips_total", "slips_in_scored",
+    "energy_board_mJ_per_image", "mean_P_board_W"]
 NAN = float("nan")
 
 
@@ -64,6 +67,19 @@ def slip_overlaps(frames: pd.DataFrame, slips: list[tuple[float, float]]) -> np.
     a = frames["t_start_s"].to_numpy(dtype=float)[:, None]
     b = frames["t_end_s"].to_numpy(dtype=float)[:, None]
     return ((a <= s1[None, :]) & (b >= s0[None, :])).any(axis=1)
+
+
+def harness_per_frame(cell, frames: pd.DataFrame, rig: str) -> np.ndarray:
+    """harness.harness_mJ of every row of `frames` (t_start_s, t_end_s) from the cell's power trace and the
+    rig's resistance; all NaN when there are no frames, no trace (or one without `t_s` and `I_A`) or no
+    resistance for the rig. The trace is read only when there are frames."""
+    nan = np.full(len(frames), np.nan)
+    r = harness.R_OHM.get(rig, NAN)
+    path = Path(cell) / "power_trace.parquet"
+    if frames.empty or not np.isfinite(r) or not path.is_file() or not {"t_s", "I_A"} <= set(pq.read_schema(path).names):
+        return nan
+    tr = data.read_trace(cell, ["t_s", "I_A"])
+    return harness.harness_mJ(tr["t_s"], tr["I_A"], frames["t_start_s"], frames["t_end_s"], r)
 
 
 def _baselines(pe: pd.DataFrame) -> tuple[float, float, float]:
@@ -109,6 +125,7 @@ def derive_cell(cell) -> list[dict]:
     all_frames = pd.concat(tables.values()) if tables else pd.DataFrame(columns=["t_start_s", "t_end_s"])
     # slips overlapping any measured frame of any mode
     in_scored = sum(bool(slip_overlaps(all_frames, [s]).any()) for s in slips)
+    rig = data.rig_of(meta)
     out = []
     for mode, t in tables.items():
         row = {**common, "mode": mode, "n_frames": len(t), "slips_in_scored": in_scored}
@@ -123,8 +140,11 @@ def derive_cell(cell) -> list[dict]:
                        latency_ms_per_image_raw=float(t["dur_ms"].mean()) / batch)
         if kept.empty:
             row.update(energy_mJ_per_image=NAN, latency_ms_per_image=NAN, mean_P_W=NAN,
-                       dyn_energy_mJ_per_image=NAN)
+                       dyn_energy_mJ_per_image=NAN, energy_board_mJ_per_image=NAN, mean_P_board_W=NAN)
         else:
+            board = kept["E_mJ"].to_numpy(dtype=float) - harness_per_frame(cell, kept, rig)   # NaN if no trace
+            row.update(energy_board_mJ_per_image=float(board.mean()) / batch,
+                       mean_P_board_W=float(board.sum() / kept["dur_ms"].sum()))
             row.update(energy_mJ_per_image=float(kept["E_mJ"].mean()) / batch,
                        latency_ms_per_image=float(kept["dur_ms"].mean()) / batch,
                        mean_P_W=float(kept["E_mJ"].sum() / kept["dur_ms"].sum()),   # mJ / ms = W
@@ -137,6 +157,7 @@ def _cache_key(cat: pd.DataFrame) -> str:
     import hashlib
     h = hashlib.sha256()
     h.update(runlog.file_hash(Path(__file__)).encode())
+    h.update(runlog.file_hash(Path(harness.__file__)).encode())
     h.update(runlog.data_hash().encode())
     h.update("\n".join(sorted(cat["cell_id"].astype(str))).encode())
     return h.hexdigest()
