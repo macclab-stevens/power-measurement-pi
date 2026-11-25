@@ -65,11 +65,13 @@ misses per second. The grid is selected on the inference segment.
 | rung | whole-cell MdAPE | inference segment | forward R² |
 |---|---:|---:|---:|
 | L0 lookup | 5.72 % | 5.76 % | 0.50 |
-| L3-trees (R1 best) | 1.26 % | 2.00 % | 0.89 |
-| **L5-cmos-trees** | **1.11 %** | **1.67 %** | **0.90** |
+| L3-trees, R1 (frozen run) | 1.16 % | 1.78 % | — |
+| L3-trees, R2 re-run | 1.29 % | 1.96 % | 0.90 |
+| L5-cmos-trees, R2 | 1.17 % | 1.68 % | 0.90 |
 
-The gain is small and has no confidence interval. All-window R² (0.81–0.98) mostly measures the idle/active split;
-use forward R².
+The new features buy nothing on whole-cell energy (1.17 % against R1's 1.16 %) and little on the inference segment
+(1.68 % against 1.78 %). The R1 → R2 change of L3-trees itself comes from two things: the slip-corrected labels and
+selection on the inference segment. All-window R² (0.81–0.98) mostly measures the idle/active split; use forward R².
 
 ## Power against clock (`../eda.md` §2.1)
 
@@ -91,7 +93,7 @@ under-predicts the most. One model is one data point, but it sits at the edge of
 seen"). Without attention models in training, neither revision can be trusted on them.
 
 Mode L on the lockbox:
-- YOLO cells: L5-cmos-trees 0.44 % whole-cell, against R1 L3-trees 0.42 %.
+- YOLO cells: L5-cmos-trees 0.5 % whole-cell and 1.1 % on the inference segment, against R1 L3-trees 0.42 % / 1.63 %.
 - Classifiers, which no counter model saw: L5-cmos 4.4 %, against L0 4.5 % and R1 L3-trees 4.9 %.
 
 Live counter models still do not transfer across families.

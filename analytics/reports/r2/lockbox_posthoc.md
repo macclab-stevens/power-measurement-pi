@@ -4,12 +4,12 @@
 
 ## Provenance
 
-- run `0539d50dbcf842a3aef334a2cb8ca597`; seed 20261122; training configurations 58 (base models: effb0, mbv3, resnet18, yolo11m, yolo11n, yolo11s, yolov8m, yolov8n, yolov8s), training cells 403; lockbox cells 15 (15 QC-primary)
+- run `6fa902daae464555b30ac3a5386c5fab`; seed 20261122; training configurations 58 (base models: effb0, mbv3, resnet18, yolo11m, yolo11n, yolo11s, yolov8m, yolov8n, yolov8s), training cells 403; lockbox cells 15 (15 QC-primary)
 - regimes: yolo12n:320 new-model; yolo12n:640 new-model; mbv3:224 seen-model; resnet18:224 seen-model; yolov8n:480 seen-model
 - AUTO chose (balanced inner error): energy_mJ/new-model: M4Physics; energy_mJ/seen-model: M1Ridge; latency_ms/new-model: M4Physics; latency_ms/seen-model: M1Ridge; mean_P_W/new-model: M4Physics; mean_P_W/seen-model: M2Trees
 - truth equals the frozen truth table (derived/lockbox/<run>_truth.parquet): yes
 - lockbox cells with a slip correction in the windows: lockbox_mbv3_224_t4_2400_r00, lockbox_mbv3_224_t4_2400_r01, lockbox_resnet18_224_t4_2400_r00, lockbox_resnet18_224_t4_2400_r01, lockbox_yolo12n_320_t4_2400_r00, lockbox_yolo12n_320_t4_2400_r02, lockbox_yolo12n_640_t4_2400_r00, lockbox_yolo12n_640_t4_2400_r02, lockbox_yolov8n_480_t4_2400_r00, lockbox_yolov8n_480_t4_2400_r01, lockbox_yolov8n_480_t4_2400_r02
-- Mode L finals (pickle, sha256): L0 `mode_l_L0_r2.pkl` `82891f0b31dc`; L1 `mode_l_L1_r2.pkl` `6dfee5a62efa`; L1-cell `mode_l_L1-cell_r2.pkl` `57fc0574b627`; L2 `mode_l_L2_r2.pkl` `50f88b882507`; L3-ridge `mode_l_L3-ridge_r2.pkl` `404991f6c653`; L3-trees `mode_l_L3-trees_r2.pkl` `38fff326e4d9`; L4-ridge `mode_l_L4-ridge_r2.pkl` `1d679b7abcd3`; L4-trees `mode_l_L4-trees_r2.pkl` `3118286b1a6c`; L5-cmos `mode_l_L5-cmos_r2.pkl` `690c045ab67d`; L5-cmos-trees `mode_l_L5-cmos-trees_r2.pkl` `715f93e244d1`
+- Mode L finals (pickle, sha256): L0 `mode_l_L0_r2.pkl` `3e47b5cfefc4`; L1 `mode_l_L1_r2.pkl` `81eca6889157`; L1-cell `mode_l_L1-cell_r2.pkl` `a00025350139`; L2 `mode_l_L2_r2.pkl` `b99e8cf96ce3`; L3-ridge `mode_l_L3-ridge_r2.pkl` `de35dcf020fa`; L3-trees `mode_l_L3-trees_r2.pkl` `6e09a1e2af8f`; L4-ridge `mode_l_L4-ridge_r2.pkl` `5b69c0fd8c9e`; L4-trees `mode_l_L4-trees_r2.pkl` `8572ea53ffe9`; L5-cmos `mode_l_L5-cmos_r2.pkl` `898b87661078`; L5-cmos-trees `mode_l_L5-cmos-trees_r2.pkl` `9b96aba88f36`
 - R1 columns read from the frozen run `bfff786a637b4030ade0f37ee1cf9163`
 
 ## Mode A: AUTO and M4Physics, R2 beside R1 (post hoc (R2))
@@ -116,25 +116,25 @@ R2 finals fitted on QC-primary training YOLO counter cells (slip-corrected windo
 | family | rung | n_cells | whole | inference | block_1s | fwd_mae_W | fwd_r2 | all_r2 | R1 whole | R1 inference | R1 1 s block |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | YOLO | L0 | 9 | 3.738 | 1.838 | 5.738 | 0.351 | 0.896 | 0.910 | 3.738 | 1.839 | 5.748 |
-| YOLO | L1 | 9 | 5.419 | 18.399 | 21.784 | 1.818 | -0.984 | -0.157 | 5.419 | 18.400 | 21.785 |
-| YOLO | L1-cell | 9 | 5.696 | 28.100 | 26.648 | 2.228 | -2.541 | -0.724 | 5.695 | 28.092 | 26.808 |
+| YOLO | L1 | 9 | 5.420 | 18.399 | 21.783 | 1.818 | -0.984 | -0.157 | 5.419 | 18.400 | 21.785 |
+| YOLO | L1-cell | 9 | 5.696 | 28.099 | 26.648 | 2.228 | -2.541 | -0.724 | 5.695 | 28.092 | 26.808 |
 | YOLO | L2 | 9 | 1.317 | 1.446 | 1.642 | 0.206 | 0.967 | 0.952 | 1.316 | 1.439 | 1.646 |
 | YOLO | L3-ridge | 9 | 2.259 | 1.683 | 3.306 | 0.240 | 0.958 | 0.914 | 2.259 | 1.686 | 3.394 |
-| YOLO | L3-trees | 9 | 0.366 | 1.830 | 0.998 | 0.195 | 0.970 | 0.992 | 0.416 | 1.626 | 0.998 |
+| YOLO | L3-trees | 9 | 0.375 | 1.808 | 0.997 | 0.201 | 0.969 | 0.992 | 0.416 | 1.626 | 0.998 |
 | YOLO | L4-ridge | 9 | 2.331 | 1.733 | 3.678 | 0.240 | 0.959 | 0.916 | 2.331 | 1.736 | 3.767 |
-| YOLO | L4-trees | 9 | 0.419 | 1.697 | 1.010 | 0.194 | 0.971 | 0.992 | 0.363 | 1.763 | 0.982 |
+| YOLO | L4-trees | 9 | 0.368 | 1.655 | 0.996 | 0.190 | 0.972 | 0.992 | 0.363 | 1.763 | 0.982 |
 | YOLO | L5-cmos | 9 | 2.288 | 2.160 | 2.735 | 0.258 | 0.952 | 0.935 |  |  |  |
-| YOLO | L5-cmos-trees | 9 | 0.438 | 1.517 | 0.972 | 0.182 | 0.975 | 0.993 |  |  |  |
+| YOLO | L5-cmos-trees | 9 | 0.544 | 1.070 | 1.288 | 0.188 | 0.973 | 0.987 |  |  |  |
 | non-YOLO | L0 | 6 | 4.499 | 8.998 | 8.291 | 0.889 | 0.022 | 0.895 | 4.506 | 8.984 | 8.320 |
-| non-YOLO | L1 | 6 | 6.050 | 16.036 | 20.050 | 1.904 | -4.840 | 0.041 | 6.049 | 16.035 | 19.980 |
+| non-YOLO | L1 | 6 | 6.050 | 16.035 | 20.050 | 1.904 | -4.840 | 0.041 | 6.049 | 16.035 | 19.980 |
 | non-YOLO | L1-cell | 6 | 3.912 | 11.815 | 17.652 | 1.915 | -6.391 | -0.274 | 3.912 | 11.815 | 17.575 |
-| non-YOLO | L2 | 6 | 5.773 | 7.550 | 6.165 | 0.741 | 0.323 | 0.939 | 5.773 | 7.536 | 6.169 |
+| non-YOLO | L2 | 6 | 5.773 | 7.550 | 6.166 | 0.741 | 0.323 | 0.939 | 5.773 | 7.536 | 6.169 |
 | non-YOLO | L3-ridge | 6 | 4.756 | 6.469 | 4.580 | 0.608 | 0.500 | 0.911 | 4.756 | 6.466 | 4.575 |
-| non-YOLO | L3-trees | 6 | 4.669 | 7.098 | 5.435 | 0.676 | 0.432 | 0.973 | 4.862 | 7.355 | 5.591 |
+| non-YOLO | L3-trees | 6 | 4.931 | 7.238 | 5.659 | 0.693 | 0.404 | 0.972 | 4.862 | 7.355 | 5.591 |
 | non-YOLO | L4-ridge | 6 | 4.771 | 6.539 | 4.460 | 0.610 | 0.503 | 0.912 | 4.768 | 6.536 | 4.484 |
-| non-YOLO | L4-trees | 6 | 4.696 | 6.951 | 5.476 | 0.662 | 0.457 | 0.974 | 4.941 | 7.341 | 5.707 |
+| non-YOLO | L4-trees | 6 | 4.924 | 7.333 | 5.697 | 0.700 | 0.389 | 0.971 | 4.941 | 7.341 | 5.707 |
 | non-YOLO | L5-cmos | 6 | 4.362 | 6.707 | 3.857 | 0.615 | 0.442 | 0.920 |  |  |  |
-| non-YOLO | L5-cmos-trees | 6 | 4.502 | 7.165 | 5.069 | 0.670 | 0.429 | 0.973 |  |  |  |
+| non-YOLO | L5-cmos-trees | 6 | 4.529 | 7.705 | 4.831 | 0.700 | 0.351 | 0.968 |  |  |  |
 
 ## Probe: Mode L power x measured latency of another repeat, against Mode A R2 AUTO
 
@@ -147,11 +147,11 @@ Median APE (percent) of the energy per image of repeat k, from the mean predicte
 | L1-cell | 30 | 22.29 | 3.40 | 30.00 | 22.29 | 7.47 |
 | L2 | 30 | 7.31 | 3.40 | 30.00 | 7.32 | 7.47 |
 | L3-ridge | 30 | 5.86 | 3.40 | 30.00 | 5.86 | 7.47 |
-| L3-trees | 30 | 7.82 | 3.40 | 30.00 | 8.08 | 7.47 |
+| L3-trees | 30 | 7.84 | 3.40 | 30.00 | 8.08 | 7.47 |
 | L4-ridge | 30 | 6.06 | 3.40 | 30.00 | 6.07 | 7.47 |
-| L4-trees | 30 | 7.46 | 3.40 | 30.00 | 7.99 | 7.47 |
+| L4-trees | 30 | 7.97 | 3.40 | 30.00 | 7.99 | 7.47 |
 | L5-cmos | 30 | 5.49 | 3.40 |  |  |  |
-| L5-cmos-trees | 30 | 7.94 | 3.40 |  |  |  |
+| L5-cmos-trees | 30 | 7.18 | 3.40 |  |  |  |
 
 ## Per configuration (Mode A, AUTO, M4Physics and R1 primary)
 
@@ -213,7 +213,7 @@ Median APE (percent) of the energy per image of repeat k, from the mean predicte
 | cell_id | rung | E_true_J | E_pred_J | ape | ape_meas | ape_1s | mae_fwd_W |
 |---|---|---|---|---|---|---|---|
 | lockbox_mbv3_224_t4_2400_r00 | L0 | 2343.089 | 2445.976 | 4.391 | 9.974 | 8.724 | 0.920 |
-| lockbox_mbv3_224_t4_2400_r01 | L0 | 233.031 | 256.570 | 10.101 | 10.848 | 10.641 | 0.993 |
+| lockbox_mbv3_224_t4_2400_r01 | L0 | 233.031 | 256.570 | 10.101 | 10.848 | 10.642 | 0.993 |
 | lockbox_mbv3_224_t4_2400_r02 | L0 | 232.700 | 255.880 | 9.961 | 10.661 | 10.579 | 0.977 |
 | lockbox_resnet18_224_t4_2400_r00 | L0 | 929.095 | 934.659 | 0.599 | 8.021 | 7.588 | 0.880 |
 | lockbox_resnet18_224_t4_2400_r01 | L0 | 321.379 | 306.572 | 4.607 | 7.447 | 7.858 | 0.835 |
@@ -227,49 +227,49 @@ Median APE (percent) of the energy per image of repeat k, from the mean predicte
 | lockbox_yolov8n_480_t4_2400_r00 | L0 | 2031.288 | 2107.221 | 3.738 | 2.098 | 5.738 | 0.332 |
 | lockbox_yolov8n_480_t4_2400_r01 | L0 | 129.402 | 134.108 | 3.636 | 1.091 | 4.990 | 0.264 |
 | lockbox_yolov8n_480_t4_2400_r02 | L0 | 128.810 | 133.087 | 3.321 | 1.838 | 4.812 | 0.310 |
-| lockbox_mbv3_224_t4_2400_r00 | L3-trees | 2343.089 | 2354.553 | 0.489 | 8.116 | 1.196 | 0.738 |
-| lockbox_mbv3_224_t4_2400_r01 | L3-trees | 233.031 | 248.386 | 6.589 | 8.503 | 8.318 | 0.767 |
-| lockbox_mbv3_224_t4_2400_r02 | L3-trees | 232.700 | 247.686 | 6.440 | 8.290 | 8.242 | 0.749 |
-| lockbox_resnet18_224_t4_2400_r00 | L3-trees | 929.095 | 915.547 | 1.458 | 5.300 | 1.390 | 0.577 |
-| lockbox_resnet18_224_t4_2400_r01 | L3-trees | 321.379 | 306.771 | 4.545 | 5.626 | 5.121 | 0.610 |
-| lockbox_resnet18_224_t4_2400_r02 | L3-trees | 319.845 | 304.516 | 4.793 | 6.081 | 5.750 | 0.656 |
-| lockbox_yolo12n_320_t4_2400_r00 | L3-trees | 2779.006 | 2784.332 | 0.192 | 2.065 | 0.998 | 0.193 |
-| lockbox_yolo12n_320_t4_2400_r01 | L3-trees | 113.366 | 115.110 | 1.539 | 2.227 | 1.399 | 0.192 |
-| lockbox_yolo12n_320_t4_2400_r02 | L3-trees | 112.846 | 114.905 | 1.824 | 2.517 | 1.806 | 0.213 |
-| lockbox_yolo12n_640_t4_2400_r00 | L3-trees | 2938.571 | 2949.314 | 0.366 | 1.830 | 0.833 | 0.199 |
-| lockbox_yolo12n_640_t4_2400_r01 | L3-trees | 214.953 | 217.345 | 1.113 | 1.299 | 1.795 | 0.221 |
-| lockbox_yolo12n_640_t4_2400_r02 | L3-trees | 214.013 | 217.414 | 1.589 | 2.005 | 1.673 | 0.214 |
-| lockbox_yolov8n_480_t4_2400_r00 | L3-trees | 2031.288 | 2035.316 | 0.198 | 1.384 | 0.895 | 0.184 |
-| lockbox_yolov8n_480_t4_2400_r01 | L3-trees | 129.402 | 129.010 | 0.304 | 0.776 | 0.586 | 0.131 |
-| lockbox_yolov8n_480_t4_2400_r02 | L3-trees | 128.810 | 128.478 | 0.257 | 0.890 | 0.574 | 0.158 |
-| lockbox_mbv3_224_t4_2400_r00 | L5-cmos | 2343.089 | 2479.527 | 5.823 | 10.508 | 4.130 | 0.955 |
-| lockbox_mbv3_224_t4_2400_r01 | L5-cmos | 233.031 | 251.153 | 7.777 | 10.127 | 9.797 | 0.913 |
+| lockbox_mbv3_224_t4_2400_r00 | L3-trees | 2343.089 | 2356.772 | 0.584 | 8.316 | 1.055 | 0.756 |
+| lockbox_mbv3_224_t4_2400_r01 | L3-trees | 233.031 | 248.109 | 6.471 | 8.353 | 7.965 | 0.753 |
+| lockbox_mbv3_224_t4_2400_r02 | L3-trees | 232.700 | 247.472 | 6.348 | 8.164 | 7.825 | 0.737 |
+| lockbox_resnet18_224_t4_2400_r00 | L3-trees | 929.095 | 914.926 | 1.525 | 5.604 | 1.334 | 0.610 |
+| lockbox_resnet18_224_t4_2400_r01 | L3-trees | 321.379 | 305.776 | 4.855 | 5.998 | 5.466 | 0.651 |
+| lockbox_resnet18_224_t4_2400_r02 | L3-trees | 319.845 | 303.833 | 5.006 | 6.312 | 5.853 | 0.680 |
+| lockbox_yolo12n_320_t4_2400_r00 | L3-trees | 2779.006 | 2783.536 | 0.163 | 2.519 | 0.997 | 0.228 |
+| lockbox_yolo12n_320_t4_2400_r01 | L3-trees | 113.366 | 115.172 | 1.593 | 2.421 | 1.322 | 0.208 |
+| lockbox_yolo12n_320_t4_2400_r02 | L3-trees | 112.846 | 115.019 | 1.925 | 2.733 | 1.880 | 0.232 |
+| lockbox_yolo12n_640_t4_2400_r00 | L3-trees | 2938.571 | 2948.594 | 0.341 | 1.808 | 0.848 | 0.210 |
+| lockbox_yolo12n_640_t4_2400_r01 | L3-trees | 214.953 | 217.235 | 1.062 | 1.245 | 1.589 | 0.218 |
+| lockbox_yolo12n_640_t4_2400_r02 | L3-trees | 214.013 | 217.250 | 1.513 | 1.924 | 1.591 | 0.213 |
+| lockbox_yolov8n_480_t4_2400_r00 | L3-trees | 2031.288 | 2032.952 | 0.082 | 1.466 | 0.898 | 0.184 |
+| lockbox_yolov8n_480_t4_2400_r01 | L3-trees | 129.402 | 128.917 | 0.375 | 0.819 | 0.470 | 0.133 |
+| lockbox_yolov8n_480_t4_2400_r02 | L3-trees | 128.810 | 128.416 | 0.305 | 0.911 | 0.454 | 0.160 |
+| lockbox_mbv3_224_t4_2400_r00 | L5-cmos | 2343.089 | 2479.526 | 5.823 | 10.508 | 4.130 | 0.955 |
+| lockbox_mbv3_224_t4_2400_r01 | L5-cmos | 233.031 | 251.153 | 7.776 | 10.127 | 9.797 | 0.913 |
 | lockbox_mbv3_224_t4_2400_r02 | L5-cmos | 232.700 | 250.416 | 7.613 | 9.944 | 9.556 | 0.898 |
-| lockbox_resnet18_224_t4_2400_r00 | L5-cmos | 929.095 | 956.055 | 2.902 | 3.218 | 3.584 | 0.351 |
+| lockbox_resnet18_224_t4_2400_r00 | L5-cmos | 929.095 | 956.055 | 2.902 | 3.219 | 3.584 | 0.351 |
 | lockbox_resnet18_224_t4_2400_r01 | L5-cmos | 321.379 | 312.848 | 2.654 | 3.444 | 3.171 | 0.373 |
-| lockbox_resnet18_224_t4_2400_r02 | L5-cmos | 319.845 | 311.489 | 2.613 | 3.470 | 3.071 | 0.374 |
-| lockbox_yolo12n_320_t4_2400_r00 | L5-cmos | 2779.006 | 2949.640 | 6.140 | 6.384 | 5.790 | 0.542 |
+| lockbox_resnet18_224_t4_2400_r02 | L5-cmos | 319.845 | 311.489 | 2.613 | 3.471 | 3.071 | 0.374 |
+| lockbox_yolo12n_320_t4_2400_r00 | L5-cmos | 2779.006 | 2949.639 | 6.140 | 6.384 | 5.790 | 0.542 |
 | lockbox_yolo12n_320_t4_2400_r01 | L5-cmos | 113.366 | 116.926 | 3.140 | 5.692 | 3.577 | 0.480 |
 | lockbox_yolo12n_320_t4_2400_r02 | L5-cmos | 112.846 | 115.428 | 2.288 | 5.163 | 2.735 | 0.434 |
-| lockbox_yolo12n_640_t4_2400_r00 | L5-cmos | 2938.571 | 3046.931 | 3.688 | 2.467 | 4.469 | 0.236 |
+| lockbox_yolo12n_640_t4_2400_r00 | L5-cmos | 2938.571 | 3046.931 | 3.687 | 2.467 | 4.469 | 0.236 |
 | lockbox_yolo12n_640_t4_2400_r01 | L5-cmos | 214.953 | 217.808 | 1.328 | 1.515 | 1.978 | 0.196 |
 | lockbox_yolo12n_640_t4_2400_r02 | L5-cmos | 214.013 | 218.579 | 2.133 | 2.160 | 2.314 | 0.211 |
-| lockbox_yolov8n_480_t4_2400_r00 | L5-cmos | 2031.288 | 2108.081 | 3.781 | 0.651 | 4.052 | 0.152 |
+| lockbox_yolov8n_480_t4_2400_r00 | L5-cmos | 2031.288 | 2108.080 | 3.780 | 0.651 | 4.052 | 0.152 |
 | lockbox_yolov8n_480_t4_2400_r01 | L5-cmos | 129.402 | 128.861 | 0.418 | 0.565 | 1.097 | 0.144 |
 | lockbox_yolov8n_480_t4_2400_r02 | L5-cmos | 128.810 | 128.578 | 0.180 | 0.560 | 1.073 | 0.156 |
-| lockbox_mbv3_224_t4_2400_r00 | L5-cmos-trees | 2343.089 | 2352.546 | 0.404 | 8.811 | 1.235 | 0.801 |
-| lockbox_mbv3_224_t4_2400_r01 | L5-cmos-trees | 233.031 | 248.789 | 6.762 | 8.727 | 8.593 | 0.787 |
-| lockbox_mbv3_224_t4_2400_r02 | L5-cmos-trees | 232.700 | 248.012 | 6.580 | 8.496 | 8.421 | 0.767 |
-| lockbox_resnet18_224_t4_2400_r00 | L5-cmos-trees | 929.095 | 916.366 | 1.370 | 4.830 | 1.408 | 0.526 |
-| lockbox_resnet18_224_t4_2400_r01 | L5-cmos-trees | 321.379 | 307.378 | 4.357 | 5.332 | 4.660 | 0.577 |
-| lockbox_resnet18_224_t4_2400_r02 | L5-cmos-trees | 319.845 | 304.979 | 4.648 | 5.835 | 5.479 | 0.629 |
-| lockbox_yolo12n_320_t4_2400_r00 | L5-cmos-trees | 2779.006 | 2784.614 | 0.202 | 2.276 | 0.972 | 0.207 |
-| lockbox_yolo12n_320_t4_2400_r01 | L5-cmos-trees | 113.366 | 115.196 | 1.615 | 2.359 | 1.400 | 0.202 |
-| lockbox_yolo12n_320_t4_2400_r02 | L5-cmos-trees | 112.846 | 115.065 | 1.966 | 2.879 | 1.791 | 0.242 |
-| lockbox_yolo12n_640_t4_2400_r00 | L5-cmos-trees | 2938.571 | 2951.436 | 0.438 | 1.517 | 0.827 | 0.174 |
-| lockbox_yolo12n_640_t4_2400_r01 | L5-cmos-trees | 214.953 | 216.984 | 0.945 | 1.010 | 1.505 | 0.192 |
-| lockbox_yolo12n_640_t4_2400_r02 | L5-cmos-trees | 214.013 | 216.896 | 1.347 | 1.644 | 1.308 | 0.178 |
-| lockbox_yolov8n_480_t4_2400_r00 | L5-cmos-trees | 2031.288 | 2035.471 | 0.206 | 1.250 | 0.825 | 0.187 |
-| lockbox_yolov8n_480_t4_2400_r01 | L5-cmos-trees | 129.402 | 129.045 | 0.277 | 0.671 | 0.703 | 0.130 |
-| lockbox_yolov8n_480_t4_2400_r02 | L5-cmos-trees | 128.810 | 128.648 | 0.125 | 0.621 | 0.498 | 0.147 |
+| lockbox_mbv3_224_t4_2400_r00 | L5-cmos-trees | 2343.089 | 2365.982 | 0.977 | 9.831 | 1.618 | 0.893 |
+| lockbox_mbv3_224_t4_2400_r01 | L5-cmos-trees | 233.031 | 250.306 | 7.413 | 9.665 | 9.443 | 0.871 |
+| lockbox_mbv3_224_t4_2400_r02 | L5-cmos-trees | 232.700 | 249.699 | 7.305 | 9.466 | 9.184 | 0.855 |
+| lockbox_resnet18_224_t4_2400_r00 | L5-cmos-trees | 929.095 | 918.655 | 1.124 | 4.327 | 1.404 | 0.474 |
+| lockbox_resnet18_224_t4_2400_r01 | L5-cmos-trees | 321.379 | 307.502 | 4.318 | 5.237 | 4.398 | 0.567 |
+| lockbox_resnet18_224_t4_2400_r02 | L5-cmos-trees | 319.845 | 304.684 | 4.740 | 5.943 | 5.265 | 0.641 |
+| lockbox_yolo12n_320_t4_2400_r00 | L5-cmos-trees | 2779.006 | 2794.113 | 0.544 | 3.353 | 1.337 | 0.292 |
+| lockbox_yolo12n_320_t4_2400_r01 | L5-cmos-trees | 113.366 | 115.934 | 2.266 | 3.367 | 1.871 | 0.292 |
+| lockbox_yolo12n_320_t4_2400_r02 | L5-cmos-trees | 112.846 | 115.633 | 2.469 | 3.823 | 1.814 | 0.325 |
+| lockbox_yolo12n_640_t4_2400_r00 | L5-cmos-trees | 2938.571 | 2957.496 | 0.644 | 0.885 | 1.390 | 0.144 |
+| lockbox_yolo12n_640_t4_2400_r01 | L5-cmos-trees | 214.953 | 216.079 | 0.524 | 0.371 | 0.811 | 0.149 |
+| lockbox_yolo12n_640_t4_2400_r02 | L5-cmos-trees | 214.013 | 216.209 | 1.026 | 1.070 | 0.891 | 0.159 |
+| lockbox_yolov8n_480_t4_2400_r00 | L5-cmos-trees | 2031.288 | 2037.100 | 0.286 | 1.328 | 1.288 | 0.195 |
+| lockbox_yolov8n_480_t4_2400_r01 | L5-cmos-trees | 129.402 | 129.163 | 0.185 | 0.606 | 0.589 | 0.137 |
+| lockbox_yolov8n_480_t4_2400_r02 | L5-cmos-trees | 128.810 | 128.796 | 0.010 | 0.544 | 0.618 | 0.166 |
 

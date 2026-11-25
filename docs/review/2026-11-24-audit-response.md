@@ -165,7 +165,7 @@ The full numbers are in `analytics/reports/r2/README.md`. Against the audit's pr
 | lockbox energy MdAPE, all | 5.4 % | 3.4 % (AUTO; post hoc) |
 | lockbox energy MdAPE, yolo12n | 2.7 % | **22.9 %** (worse than R1's 6.6 %); every learned candidate under-predicts yolo12n latency by 10–35 % |
 | calculator without the duration leak | 3.6 % | lockbox: 3.6 % median / 4.9 % mean / 9.1 % max with R1 predictions, 1.9 % / 8.5 % / 20.2 % with R2; training serve cells: 8.6 % / 12.1 % / 45 % (against 3.8 % with the leaked duration) |
-| non-YOLO lockbox, inference-segment error of the CMOS Mode L | 5.3 % | 6.7 % (L5-cmos), against L3-trees 7.1 % and L0 9.0 % |
+| non-YOLO lockbox, inference-segment error of the CMOS Mode L | 5.3 % | 6.7 % (L5-cmos), against L3-trees 7.2 % and L0 9.0 % |
 
 - The audit's diagnosis of Mode A selection was right, and fixing it removed the catastrophic extrapolations.
 - Its yolo12n figure does not reproduce with our physics model. yolo12n is the only attention model, and an additive
