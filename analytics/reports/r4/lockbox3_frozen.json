@@ -1,0 +1,554 @@
+{
+  "code": {
+    "code_sha256": "734bee4e7b6f10430c90a69c8b43fe09d52fbcd8ebadebb95b528762928e5d22",
+    "commit": "74a1964ffe98dcc6ce2230932ff5b8e16cf270a7",
+    "config_toml_sha256": "21284806746137e4932b18ddae07cb0fb3772a1c4de57fcc50768fa58aba4b55",
+    "dependency_files": {
+      "analytics/pyproject.toml": "10b2009b1c8e8fa75a2696b6914e73c25e0f1889e8a001bf24c3cb3713babe3a",
+      "analytics/uv.lock": "841412776913b1adaa1df7206de6e121284d07699be3765427f337aa7c891aa3"
+    },
+    "files": {
+      "analytics/cli.py": "3ff0a5a79736df7c2f8a7f71fbf3b547803322ec4c7c5616598df510c3215196",
+      "analytics/cli_lockbox.py": "ab601271ee35b9815243846d5388c336a69ddf94eb6ebedd8eb61eec43fb03a2",
+      "analytics/cli_report.py": "5b66f03e57ccc191ca759e99f29978080af5e54eb2934161b28f43bac14025d2",
+      "analytics/data.py": "cefb25f1cb128e10846f3d381faee9c494f5533b4d26c5ca027b3960952ce5b1",
+      "analytics/deploy.py": "b7356c203a52703ccc6cd4425c2a110a9e26959ee343412ef4ab97e32623d74d",
+      "analytics/derive.py": "42e2f2cff6d5250fcc469186422c40bcacd2e6386203ca7e12001804301b8907",
+      "analytics/eda.py": "f8a47c829229065d92c17435b33897d1cdca7598e6db14325f7cb8c4b2cabec9",
+      "analytics/eda_trace.py": "55c6c385a0e06b8e2cb677c2bd3aa41015943d72f488f0bd6785166d33c15927",
+      "analytics/eda_trace_write.py": "3830ba49a9cae576d70710948a09fb54823125c5ba678b6a6db11a72f3d5d50b",
+      "analytics/eda_write.py": "7e3bdcc0b0349ad852ea136941ce470203ec80e1c480d0f4cdffcc291585c5f6",
+      "analytics/evaluate.py": "60f3bbc0c1b92132c70bbe06a8808c855649f133d32df35a8234b9404fea2573",
+      "analytics/harness.py": "e7d6934e783e4f0b1fb7f401b2e72d4edeaec111713f760925b276d018bd7f74",
+      "analytics/lockbox.py": "12c2df1536d217a730ebf07dc1c5b22bba033896b9b723a9c72414a4ed07c92b",
+      "analytics/lockbox2.py": "06a833bd23afc29d42a066afd5f1dabe1b9e0a121b87bbd5a320b721eeff02c2",
+      "analytics/lockbox3.py": "6b407044d581a55c7b79783455e90ecc5708be58ff49129d7c950183fc543135",
+      "analytics/lockbox_checks.py": "e7be75167125b6677f22dccf36acbf49c63d7b083ba696557cd5fadd1899e3ec",
+      "analytics/lockbox_posthoc.py": "15ba2cce7531a9a95c9a0ecad38d47f4e0055b98fa75653354823ccdaeaa9732",
+      "analytics/lockbox_score.py": "eeb19cedca11adc48912a4435e7eb6b2c08ad99c572244f5f4dbf61aa848c94a",
+      "analytics/mode_a.py": "5bad158cc346690747abdfdb2214f2c1bde7b12c7d7a84feb4c5acd2797fd191",
+      "analytics/mode_a_extras.py": "bc12d8d82f6806b8ef20ee1bf99abf1a16c087328e7dd48ae37f62da571ea508",
+      "analytics/mode_a_models.py": "24cd31630e43215eb3764b8bac3721b7359ca3958e5e475dc1507ee418979626",
+      "analytics/mode_a_r2_report.py": "25ff54d4e43b269960941c422d8d38199d13475a57b7d1620b7a8bd45b4038df",
+      "analytics/mode_l.py": "e557d6c149948946034b31abe0d809c4ba8304eff2766fe6bcc2d9fc1cec9260",
+      "analytics/mode_l_models.py": "d8fbca7f0e7b588b997082eb7a322f1079dc71bb94f24eebe02fba97e45787a1",
+      "analytics/mode_l_r2_report.py": "f9629cd434792d2f73f91e48d4172c27d75f75f17549fc07f17a89acdaabbcb6",
+      "analytics/mode_l_r3_report.py": "71b3d22086a3d3e25803ce1a98d4ddb848699d5ee1a14d6f782936f37e7aba78",
+      "analytics/plotstyle.py": "c5e6427bf250147785d2bcd986d0c9daf75180ca0075996ef8b0c75ddc16834a",
+      "analytics/power_table.py": "a0207cbae0a3b60779c46a063587b7f913c9b6cfb20a9263f9d900c9836da03f",
+      "analytics/qc.py": "247f6a1a30b8941e47d13a64988c4e1f610c32cea96bd9007f64f3d7f5b938ea",
+      "analytics/r4.py": "1d7f8b00d9c845159dedfb7eec9db0b4eb76cb23e516f2121eed3721a0c5b0db",
+      "analytics/report.py": "3420e6f612f3c814b5e23ec97bd8881a7ded1096d50e237f0ff321b5836bdda4",
+      "analytics/report_cards.py": "c8f9c35710ada3addce3a6f8e1b9dc53dea124628c8fac4541b5fbf5f085acf3",
+      "analytics/report_figs.py": "4c2ae3100210fb107483724e849bac3a0b59b48cc38c65612efdd15594ea9667",
+      "analytics/report_frozen.py": "1a327daeed58139603bf741a413cd07553028c56c2a7307ae90b9eaffecb411f",
+      "analytics/report_inputs.py": "8d7d0833293b764b7538c858435a0cce56f37dfa6d35bd5426d967c1b90f40ca",
+      "analytics/report_l.py": "679dcc0599ca50be454c65bce5208b03ea350db072bc13230649d543eca1d611",
+      "analytics/report_tables.py": "d90f73bb581e75fcbd05a4012483c2efa2c6b046450ac9a626eda4751e909863",
+      "analytics/report_tables_l.py": "43fd3a22c3f25f3e4f9b57fa2f8c1ac8de5251f3d258cc6cc16bebd25ba320ad",
+      "analytics/runlog.py": "f2f12bdcfb488950dbeea83bb90194e7a48e46ed23c29994f04312b032223c18",
+      "analytics/settings.py": "72a351e29b42c2d66b0156e1e078b53858da650a771f5572159dcb9d4b4c492c",
+      "analytics/splits.py": "e7ef122a4b4ee81320c192042a62e12b1da5e9fffd2f300403b8578b109ad2c5",
+      "analytics/static.py": "5dd8fcb0d7ef9ac6facc27c7e81817082455f3d266556b34fbf45c5a57b7369b",
+      "analytics/tables.py": "ad7b03205139761859267dc68c42355c0572ea902aeff3c573f9d87c6a3912c3",
+      "analytics/timefix.py": "e7eb111d32db8463b80c7c149bd44f39e160fcde74ab71cf50dce19fe98fc17e",
+      "analytics/windows.py": "738a704e068d77dd84866860ad4fee0d7a04e2519ca70122da79a4f743a0255e"
+    }
+  },
+  "configs": [
+    "mbv2:224@2400",
+    "shufv2:224@2000",
+    "resnet50:224@1500",
+    "effb2:224@2400",
+    "vitb32:224@2000",
+    "convnexts:224@2400"
+  ],
+  "fixed": {
+    "batch": 1,
+    "layer_hooks": "off",
+    "precision": "fp32",
+    "rig": "nov2026",
+    "threads": 4
+  },
+  "frozen_at_ns": 1795636700468061073,
+  "interval": "base-model conformal (lo90, hi90); R3-style fold quantiles kept as lo90_r3, hi90_r3",
+  "mode_a": {
+    "energy_mJ/AUTO": {
+      "chosen": "M1Ridge",
+      "params": {
+        "alpha": 0.01
+      },
+      "path": "/home/macc-2026/pi-power-data/derived/models/lockbox3_r4/mode_a_energy_mJ_AUTO.pkl",
+      "qcf": 0.11199910335393604,
+      "score": 0.04498745769003601,
+      "sha256": "01bb38fcf8e8534ea67090981b75710280fabec3faed1536a31f72edaf456fcb"
+    },
+    "energy_mJ/B0Median": {
+      "chosen": "B0Median",
+      "params": {},
+      "path": "/home/macc-2026/pi-power-data/derived/models/lockbox3_r4/mode_a_energy_mJ_B0Median.pkl",
+      "qcf": 2.0940878690723803,
+      "score": 0.976836913536855,
+      "sha256": "6cfb8f5b302fb770d549b39d53b582c03d3d67289a1c5cb94693bcc852161981"
+    },
+    "energy_mJ/B1MacsProportional": {
+      "chosen": "B1MacsProportional",
+      "params": {},
+      "path": "/home/macc-2026/pi-power-data/derived/models/lockbox3_r4/mode_a_energy_mJ_B1MacsProportional.pkl",
+      "qcf": 1.2671957418695161,
+      "score": 0.5346398392069542,
+      "sha256": "d2667a76200ffd5a7e4e78f7930aa781fcd98b5a1d54317174c85b1c24ac7646"
+    },
+    "energy_mJ/B2NearestModel": {
+      "chosen": "B2NearestModel",
+      "params": {},
+      "path": "/home/macc-2026/pi-power-data/derived/models/lockbox3_r4/mode_a_energy_mJ_B2NearestModel.pkl",
+      "qcf": 0.6136739018962682,
+      "score": 0.27082561497796304,
+      "sha256": "4765ebd9e474de7bb796775f2dc3ed294f47e09873fe70e85b97d51af24062c1"
+    },
+    "energy_mJ/B3LogLinear": {
+      "chosen": "B3LogLinear",
+      "params": {},
+      "path": "/home/macc-2026/pi-power-data/derived/models/lockbox3_r4/mode_a_energy_mJ_B3LogLinear.pkl",
+      "qcf": 0.6461048032857768,
+      "score": 0.3173132563670859,
+      "sha256": "8cc69afa562d550536f47ea3a0e870db41c4b856dea8019c3712324fd347efd5"
+    },
+    "energy_mJ/M1Ridge": {
+      "chosen": "M1Ridge",
+      "params": {
+        "alpha": 0.01
+      },
+      "path": "/home/macc-2026/pi-power-data/derived/models/lockbox3_r4/mode_a_energy_mJ_M1Ridge.pkl",
+      "qcf": 0.11199910335393604,
+      "score": 0.04498745769003601,
+      "sha256": "01bb38fcf8e8534ea67090981b75710280fabec3faed1536a31f72edaf456fcb"
+    },
+    "energy_mJ/M2Trees": {
+      "chosen": "M2Trees",
+      "params": {
+        "learning_rate": 0.1,
+        "max_depth": 2,
+        "max_iter": 300,
+        "min_samples_leaf": 5
+      },
+      "path": "/home/macc-2026/pi-power-data/derived/models/lockbox3_r4/mode_a_energy_mJ_M2Trees.pkl",
+      "qcf": 0.5557291088083014,
+      "score": 0.18958628235562697,
+      "sha256": "e140af5d68c320e731675dce4326bf8e1003022f66fafd5b778d80418836131f"
+    },
+    "energy_mJ/M3Factored": {
+      "chosen": "M3Factored",
+      "params": {
+        "latency": {
+          "name": "M1Ridge",
+          "params": {
+            "alpha": 0.01
+          }
+        },
+        "power": {
+          "name": "M1Ridge",
+          "params": {
+            "alpha": 0.01
+          }
+        }
+      },
+      "path": "/home/macc-2026/pi-power-data/derived/models/lockbox3_r4/mode_a_energy_mJ_M3Factored.pkl",
+      "qcf": 0.11199899318389406,
+      "score": 0.044988574621705926,
+      "sha256": "aa92b4a3468c80f92d70806d6306bc20f54bba1a29174dd2f895dd252641d32f"
+    },
+    "energy_mJ/M4Physics": {
+      "chosen": "M4Physics",
+      "params": {
+        "latency": {
+          "beta": 0.5
+        },
+        "power": {
+          "alpha": 0.1
+        }
+      },
+      "path": "/home/macc-2026/pi-power-data/derived/models/lockbox3_r4/mode_a_energy_mJ_M4Physics.pkl",
+      "qcf": 0.2907184854991707,
+      "score": 0.12214053861210172,
+      "sha256": "f26ce886982e52c24fc78b0e59894e7c46e17bb7d60c0cb9b0ce35b0c36a735c"
+    },
+    "energy_mJ/M5Pooled": {
+      "chosen": "M5Pooled",
+      "params": {
+        "latency": {
+          "beta": 0.5,
+          "lam": 0.5
+        },
+        "power": {
+          "alpha": 0.01,
+          "lam": 2.0
+        }
+      },
+      "path": "/home/macc-2026/pi-power-data/derived/models/lockbox3_r4/mode_a_energy_mJ_M5Pooled.pkl",
+      "qcf": 0.288255987103188,
+      "score": 0.11578607821190914,
+      "sha256": "9f3f4d3723ca35d4d267a596e03061861f61f4dcb2dd7f1838a01257066ac287"
+    },
+    "latency_ms/AUTO": {
+      "chosen": "M1Ridge",
+      "params": {
+        "alpha": 0.01
+      },
+      "path": "/home/macc-2026/pi-power-data/derived/models/lockbox3_r4/mode_a_latency_ms_AUTO.pkl",
+      "qcf": 0.15338668980803316,
+      "score": 0.05827248359210933,
+      "sha256": "13e3b775e6a41af48c52b521f85c7e9d7d64c23403a3d2b4af8bc2f292be0108"
+    },
+    "latency_ms/B0Median": {
+      "chosen": "B0Median",
+      "params": {},
+      "path": "/home/macc-2026/pi-power-data/derived/models/lockbox3_r4/mode_a_latency_ms_B0Median.pkl",
+      "qcf": 2.228291332843675,
+      "score": 0.97314231745582,
+      "sha256": "1ea9d81276dc7991fc3d7c090e08c6e78772fdf88fadac3a54153b7b6f61a88f"
+    },
+    "latency_ms/B1MacsProportional": {
+      "chosen": "B1MacsProportional",
+      "params": {},
+      "path": "/home/macc-2026/pi-power-data/derived/models/lockbox3_r4/mode_a_latency_ms_B1MacsProportional.pkl",
+      "qcf": 1.332335902071399,
+      "score": 0.5928419897358912,
+      "sha256": "d1cf3e2c2eb18b00dcf1b1888d2f2698ca847f76a417ab5fe2b66e5b7908a552"
+    },
+    "latency_ms/B2NearestModel": {
+      "chosen": "B2NearestModel",
+      "params": {},
+      "path": "/home/macc-2026/pi-power-data/derived/models/lockbox3_r4/mode_a_latency_ms_B2NearestModel.pkl",
+      "qcf": 0.665424730679284,
+      "score": 0.3138909915584095,
+      "sha256": "dddf2becdb46979409d126cbe1750b7283e88cb6f9ed64c751c071d828d038db"
+    },
+    "latency_ms/B3LogLinear": {
+      "chosen": "B3LogLinear",
+      "params": {},
+      "path": "/home/macc-2026/pi-power-data/derived/models/lockbox3_r4/mode_a_latency_ms_B3LogLinear.pkl",
+      "qcf": 0.706842341029156,
+      "score": 0.3327952769324426,
+      "sha256": "7099abfa9f99ed53325d9c423a13b72c6ab9ee43c3b6bd919233eaa5d8958fee"
+    },
+    "latency_ms/M1Ridge": {
+      "chosen": "M1Ridge",
+      "params": {
+        "alpha": 0.01
+      },
+      "path": "/home/macc-2026/pi-power-data/derived/models/lockbox3_r4/mode_a_latency_ms_M1Ridge.pkl",
+      "qcf": 0.15338668980803316,
+      "score": 0.05827248359210933,
+      "sha256": "13e3b775e6a41af48c52b521f85c7e9d7d64c23403a3d2b4af8bc2f292be0108"
+    },
+    "latency_ms/M2Trees": {
+      "chosen": "M2Trees",
+      "params": {
+        "learning_rate": 0.1,
+        "max_depth": 2,
+        "max_iter": 300,
+        "min_samples_leaf": 5
+      },
+      "path": "/home/macc-2026/pi-power-data/derived/models/lockbox3_r4/mode_a_latency_ms_M2Trees.pkl",
+      "qcf": 0.6994350648984371,
+      "score": 0.21353791075143597,
+      "sha256": "f19291a21f07e9a716744be95660570a60eee752ce9b405cd17e7ff66b9d0b58"
+    },
+    "latency_ms/M4Physics": {
+      "chosen": "M4Physics",
+      "params": {
+        "beta": 0.5
+      },
+      "path": "/home/macc-2026/pi-power-data/derived/models/lockbox3_r4/mode_a_latency_ms_M4Physics.pkl",
+      "qcf": 0.2943582427078377,
+      "score": 0.13356550728641814,
+      "sha256": "eb88ae0006911918c8d367c3667ab6f5e0ae398ef325d79454144b498dc91c98"
+    },
+    "latency_ms/M5Pooled": {
+      "chosen": "M5Pooled",
+      "params": {
+        "beta": 0.5,
+        "lam": 0.5
+      },
+      "path": "/home/macc-2026/pi-power-data/derived/models/lockbox3_r4/mode_a_latency_ms_M5Pooled.pkl",
+      "qcf": 0.2819720570298134,
+      "score": 0.12711763442650523,
+      "sha256": "570fbcd474ce5e3d7702094b820dae175a55944400146e25bf984001220f5db7"
+    },
+    "mean_P_W/AUTO": {
+      "chosen": "M4Physics",
+      "params": {
+        "alpha": 0.1
+      },
+      "path": "/home/macc-2026/pi-power-data/derived/models/lockbox3_r4/mode_a_mean_P_W_AUTO.pkl",
+      "qcf": 0.06720390444402069,
+      "score": 0.021104190980273798,
+      "sha256": "e8a2751b5dd790dae6b660bed9d627cf38ba2c186326d3597a5c2c21043ec580"
+    },
+    "mean_P_W/B0Median": {
+      "chosen": "B0Median",
+      "params": {},
+      "path": "/home/macc-2026/pi-power-data/derived/models/lockbox3_r4/mode_a_mean_P_W_B0Median.pkl",
+      "qcf": 0.4544350143149314,
+      "score": 0.1336943626444253,
+      "sha256": "c0b9bfc75974aca196e5e1e5738f29f9cc2e1ea5090ff2faa5055984dedf3b80"
+    },
+    "mean_P_W/B1MacsProportional": {
+      "chosen": "B1MacsProportional",
+      "params": {},
+      "path": "/home/macc-2026/pi-power-data/derived/models/lockbox3_r4/mode_a_mean_P_W_B1MacsProportional.pkl",
+      "qcf": 0.16442617398284654,
+      "score": 0.06369698634029201,
+      "sha256": "0cfd8265030f4b47f407e166f06d499d5f13f0b0345a26bdf09fe5378c8e4be3"
+    },
+    "mean_P_W/B2NearestModel": {
+      "chosen": "B2NearestModel",
+      "params": {},
+      "path": "/home/macc-2026/pi-power-data/derived/models/lockbox3_r4/mode_a_mean_P_W_B2NearestModel.pkl",
+      "qcf": 0.13379601113127615,
+      "score": 0.0444099725572138,
+      "sha256": "a72aa16f05d747ec443af24d2fac681cd2fa563cef85be8982cec0381e3efb2d"
+    },
+    "mean_P_W/B3LogLinear": {
+      "chosen": "B3LogLinear",
+      "params": {},
+      "path": "/home/macc-2026/pi-power-data/derived/models/lockbox3_r4/mode_a_mean_P_W_B3LogLinear.pkl",
+      "qcf": 0.10477465199007452,
+      "score": 0.03945880948581288,
+      "sha256": "8a87921e2b167ea8c838ec2a6743cc241e974622ccdea2d152e0e35cfed7f22a"
+    },
+    "mean_P_W/M1Ridge": {
+      "chosen": "M1Ridge",
+      "params": {
+        "alpha": 0.01
+      },
+      "path": "/home/macc-2026/pi-power-data/derived/models/lockbox3_r4/mode_a_mean_P_W_M1Ridge.pkl",
+      "qcf": 0.07216326485041247,
+      "score": 0.022591085984200045,
+      "sha256": "121e1c15ece9c5fbc3d727983dba8ba788f13583895ae1937b98e29fafc956e6"
+    },
+    "mean_P_W/M2Trees": {
+      "chosen": "M2Trees",
+      "params": {
+        "learning_rate": 0.05,
+        "max_depth": 3,
+        "max_iter": 100,
+        "min_samples_leaf": 3
+      },
+      "path": "/home/macc-2026/pi-power-data/derived/models/lockbox3_r4/mode_a_mean_P_W_M2Trees.pkl",
+      "qcf": 0.09127981755475822,
+      "score": 0.025878919974360266,
+      "sha256": "a29e5ecf863df329f91b49ddfa16257dc7abee35d82d9b18d744b961a00e6f78"
+    },
+    "mean_P_W/M4Physics": {
+      "chosen": "M4Physics",
+      "params": {
+        "alpha": 0.1
+      },
+      "path": "/home/macc-2026/pi-power-data/derived/models/lockbox3_r4/mode_a_mean_P_W_M4Physics.pkl",
+      "qcf": 0.06720390444402069,
+      "score": 0.021104190980273798,
+      "sha256": "e8a2751b5dd790dae6b660bed9d627cf38ba2c186326d3597a5c2c21043ec580"
+    },
+    "mean_P_W/M5Pooled": {
+      "chosen": "M5Pooled",
+      "params": {
+        "alpha": 0.01,
+        "lam": 2.0
+      },
+      "path": "/home/macc-2026/pi-power-data/derived/models/lockbox3_r4/mode_a_mean_P_W_M5Pooled.pkl",
+      "qcf": 0.06693170054909015,
+      "score": 0.019786327502946902,
+      "sha256": "9456f4eb99c09623655af99681b2a6e2faa7d34ab25747ea311a5500d6a69602"
+    }
+  },
+  "mode_l": {
+    "L0": {
+      "base_models": [
+        "convnextt",
+        "effb0",
+        "maxvitt",
+        "mbv3",
+        "resnet18",
+        "swint",
+        "vitb16",
+        "yolo11m",
+        "yolo11n",
+        "yolo11s",
+        "yolo12n",
+        "yolo12s",
+        "yolov8m",
+        "yolov8n",
+        "yolov8s"
+      ],
+      "n_cells": 128,
+      "params": {},
+      "path": "/home/macc-2026/pi-power-data/derived/models/mode_l_L0_r4_lb3.pkl",
+      "sha256": "e9c15906ad040c3b3e972db9334c8adbaaf9da7b9efdebf13343b7c9f1e0cb01"
+    },
+    "L3-trees": {
+      "base_models": [
+        "convnextt",
+        "effb0",
+        "maxvitt",
+        "mbv3",
+        "resnet18",
+        "swint",
+        "vitb16",
+        "yolo11m",
+        "yolo11n",
+        "yolo11s",
+        "yolo12n",
+        "yolo12s",
+        "yolov8m",
+        "yolov8n",
+        "yolov8s"
+      ],
+      "n_cells": 128,
+      "params": {
+        "learning_rate": 0.1,
+        "max_depth": 5,
+        "max_iter": 200,
+        "min_samples_leaf": 50
+      },
+      "path": "/home/macc-2026/pi-power-data/derived/models/mode_l_L3-trees_r4_lb3.pkl",
+      "sha256": "dcc33660e018053777424520efc30b1eea62c46020b518ee650b2dcdcd1a4125"
+    },
+    "L3k-trees": {
+      "base_models": [
+        "convnextt",
+        "effb0",
+        "maxvitt",
+        "mbv3",
+        "resnet18",
+        "swint",
+        "vitb16",
+        "yolo11m",
+        "yolo11n",
+        "yolo11s",
+        "yolo12n",
+        "yolo12s",
+        "yolov8m",
+        "yolov8n",
+        "yolov8s"
+      ],
+      "n_cells": 128,
+      "params": {
+        "learning_rate": 0.1,
+        "max_depth": 5,
+        "max_iter": 200,
+        "min_samples_leaf": 50
+      },
+      "path": "/home/macc-2026/pi-power-data/derived/models/mode_l_L3k-trees_r4_lb3.pkl",
+      "sha256": "e3db6de031de3b3fa4d25936067bb0c0c3a5d3fcf369bbd2596d3c5584097062"
+    },
+    "L5-cmos-trees": {
+      "base_models": [
+        "convnextt",
+        "effb0",
+        "maxvitt",
+        "mbv3",
+        "resnet18",
+        "swint",
+        "vitb16",
+        "yolo11m",
+        "yolo11n",
+        "yolo11s",
+        "yolo12n",
+        "yolo12s",
+        "yolov8m",
+        "yolov8n",
+        "yolov8s"
+      ],
+      "n_cells": 128,
+      "params": {
+        "learning_rate": 0.1,
+        "max_depth": 5,
+        "max_iter": 200,
+        "min_samples_leaf": 50
+      },
+      "path": "/home/macc-2026/pi-power-data/derived/models/mode_l_L5-cmos-trees_r4_lb3.pkl",
+      "sha256": "61e9016be9961d6bce36e61edf525c6f51b0f6daa22fd6b4a0bb3d19309ccd9d"
+    },
+    "L5k-trees": {
+      "base_models": [
+        "convnextt",
+        "effb0",
+        "maxvitt",
+        "mbv3",
+        "resnet18",
+        "swint",
+        "vitb16",
+        "yolo11m",
+        "yolo11n",
+        "yolo11s",
+        "yolo12n",
+        "yolo12s",
+        "yolov8m",
+        "yolov8n",
+        "yolov8s"
+      ],
+      "n_cells": 128,
+      "params": {
+        "learning_rate": 0.1,
+        "max_depth": 5,
+        "max_iter": 200,
+        "min_samples_leaf": 50
+      },
+      "path": "/home/macc-2026/pi-power-data/derived/models/mode_l_L5k-trees_r4_lb3.pkl",
+      "sha256": "6ee36d0f64bf624b98451826c24673a0970a49fe5bc04046be266f8cc46651c5"
+    }
+  },
+  "predictions_csv": "lockbox3_predictions.csv",
+  "predictions_sha256": "be2d9805a6562b866881f9214a8beaced52adb9ef221f5492792579db5848d56",
+  "regime": "new-model",
+  "seed": 20261122,
+  "similar_to": {
+    "convnexts": "convnextt",
+    "effb2": "effb0 / effb1",
+    "mbv2": "mbv3 / mbv3l",
+    "resnet50": "resnet18 / resnet34",
+    "shufv2": "mbv3",
+    "vitb32": "vitb16"
+  },
+  "static_csv_sha256": {
+    "convnexts:224": "651c8bb145801b9bd3eae2c11cb5f3bb3474f9bdb0668b6dc7441b3858298e8d",
+    "effb2:224": "b9ffea07c1082e2f47100e7a7ecfe99649e9823d1b1a23fced109fe9a84d6c3b",
+    "mbv2:224": "2aea9685adcd6e2fba29d246a4fd67009d3059530d5a71818b3662722d400c0e",
+    "resnet50:224": "6a57ffd681da338f7db9130379478d91677df3d4867b56b6df7a404623486167",
+    "shufv2:224": "bcbb73f95565723fd75b42e07b7bfca6b843c4267bb7e64d164cedd3863deb4a",
+    "vitb32:224": "7ce69a0f10570a6c52d6b99cd56ff9c78961a273ce9eff487624c7eee2218f8e"
+  },
+  "static_flops_sha256": "c5112603b7a759aade95500cf45c520a7f52ed4f7debe73082a74aec3d55ed82",
+  "threshold": 3.3426122544723156,
+  "training": {
+    "base_models": [
+      "convnextt",
+      "effb0",
+      "effb1",
+      "maxvitt",
+      "mbv3",
+      "mbv3l",
+      "resnet18",
+      "resnet34",
+      "swins",
+      "swint",
+      "vitb16",
+      "yolo11m",
+      "yolo11n",
+      "yolo11s",
+      "yolo12m",
+      "yolo12n",
+      "yolo12s",
+      "yolov8m",
+      "yolov8n",
+      "yolov8s"
+    ],
+    "mode_l_cells": 128,
+    "n_configs": 83,
+    "table": "reports/r4/mode_a_configs_r4.csv",
+    "table_sha256": "93f37118b826acaa87fcd43b4381c085d0369ff83b0f153ac522ca95169109ff"
+  }
+}
