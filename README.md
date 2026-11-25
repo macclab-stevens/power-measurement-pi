@@ -1166,7 +1166,6 @@ tools/*.py            NUC-side dataset tools: COCO subsets, mAP, INT8 and pruned
 data/                 map_reference.json: mAP per model / variant (committed)
 inputs/               pictures the Pi reads (empty, crowded, a 50-picture stream); MANIFEST.json is committed
 tests/, host/tests/, tools/tests/   unit tests
-modeling/, trace_forecast/, analysis/   earlier analysis on the old PMIC data
 docs/                 design docs, plans, logs
 ```
 
@@ -1181,6 +1180,8 @@ Further reading:
   `docs/superpowers/plans/sp1-bringup-log.md`
 - Workloads and matrix plan (SP2 and SP3): `docs/superpowers/plans/2026-10-07-sp2-sp3-workloads-and-matrix.md`
 - The old on-board PMIC harness (schema v3), `collect.py`, model-agnostic adapters:
-  `docs/legacy-pmic-harness.md`
+  `docs/legacy-pmic-harness.md`. Its code (`collect.py`, `verify.py`, `analyze_trends.py`, `modeling/`,
+  `trace_forecast/`, `analysis/`) and its September runs (`runs/`, `test_eff.pth`) were removed from `main` on
+  2026-11-25. They are still in the history: `git checkout fc331b0 -- <path>`.
 - **Next step (not built yet), SP4:** one index across all cells, for training the power
   predictor.

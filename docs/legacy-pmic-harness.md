@@ -1,3 +1,6 @@
+> **Removed from `main` on 2026-11-25.** This harness and its September data are not part of the Monsoon setup. The
+> files are still in the history: `git checkout fc331b0 -- collect.py runs/ ...`.
+
 # Legacy: on-board PMIC harness (schema v3)
 
 > Archived from the README on 2026-10-08. This describes the original harness that measured power
