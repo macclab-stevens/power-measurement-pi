@@ -1,0 +1,20 @@
+{
+  "energy_per_frame_mJ": 20201.544921875,
+  "dyn_energy_per_frame_mJ": 10920.224067238698,
+  "latency_ms_per_frame": 1860.0205789974084,
+  "energy_per_image_mJ": 20201.544921875,
+  "n_frames": 19,
+  "batch": 1,
+  "baseline_mean_P_W": 4.989902019500732,
+  "by_mode": {
+    "forward": {
+      "n_frames": 19,
+      "energy_per_frame_mJ": 20201.544921875,
+      "dyn_energy_per_frame_mJ": 10920.224067238698,
+      "latency_ms_per_frame": 1860.0205789974084
+    }
+  },
+  "variant": "yolo12m",
+  "holdout": null,
+  "map_reference": null
+}
