@@ -390,10 +390,11 @@ def fit_candidates(t: pd.DataFrame, target: str, seed: int, desc: pd.DataFrame, 
                    grids: dict | None = None, r4: bool = False) -> dict:
     """Post hoc scoring helper: the search of `fit_final` run once over `t` for every candidate of `target` plus AUTO,
     with no pickles written. Inner folds are those of `regime` (`splits.inner_folds_for`, index 0, as in `fit_final`).
-    Returns {candidate or AUTO: {"model", "params", "score", "q5", "q95", "n_resid", "chosen"}}: the model refitted on
+    Returns {candidate or AUTO: {"model", "params", "score", "q5", "q95", "qcf", "n_resid", "chosen"}}: the model refitted on
     every row of `t` with the chosen grid point, the balanced inner error, the fold-weighted 5 % and 95 % quantiles of the
     inner log residuals log(y / pred) (the 90 % interval of a prediction p is [p exp(q5), p exp(q95)], as in `_run_fold`;
-    NaN when there are fewer than two residuals) and, for AUTO, the candidate it picked (the lowest balanced error among
+    NaN when there are fewer than two residuals), `qcf` the half-width of the base-model conformal interval
+    [p exp(-qcf), p exp(qcf)] (R4, `conformal_halfwidth`) and, for AUTO, the candidate it picked (the lowest balanced error among
     `AUTO_AMONG`, ties to the first). Only `t` is read. The R4 extras are not fitted unless `r4` (then M5Pooled is, ENS and STACK
     never are: they have no model to freeze), so the frozen lockbox outputs keep exactly their candidates."""
     if regime not in REGIMES:
@@ -411,7 +412,8 @@ def fit_candidates(t: pd.DataFrame, target: str, seed: int, desc: pd.DataFrame, 
         resid, wts = _residuals(truth, s["preds"])
         q5, q95 = wquantile(resid, wts, [0.05, 0.95]) if resid.size >= 2 else (np.nan, np.nan)
         out[n] = {"model": _make(n, desc, seed).fit(t0, target, s["params"]), "params": s["params"], "score": s["score"],
-                  "q5": float(q5), "q95": float(q95), "n_resid": int(resid.size), "chosen": n}
+                  "q5": float(q5), "q95": float(q95), "qcf": conformal_halfwidth(resid, wts), "n_resid": int(resid.size),
+                  "chosen": n}
     auto = min(AUTO_AMONG[target], key=lambda n: sel[n]["score"])
     out[AUTO] = {**out[auto], "chosen": auto}
     return out
